@@ -3,6 +3,12 @@
 All notable changes to OneRoof Zigbee. Versions follow [Semantic Versioning](https://semver.org):
 MAJOR = breaking (re-pairing or config migration needed), MINOR = features, PATCH = fixes.
 
+## [1.1.4] — 2026-08-21
+
+### Changed
+- Own Zigbee mark for the add-on icon, logo and the web UI favicon: a stylised "Z" with a radio arc on the
+  One Roof orange tile (an original glyph, not the trademarked Zigbee logo).
+
 ## [1.1.3] — 2026-08-21
 
 ### Changed — add-on page like the rest of the family
