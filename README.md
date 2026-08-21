@@ -1,8 +1,7 @@
 # OneRoof Zigbee
 
-**Zigbee gateway + MQTT broker in one app, written from scratch with security first.**
-A replacement for *Mosquitto + zigbee2mqtt* for Home Assistant — no vendor code, no
-third-party broker, no cloud, no surprises.
+**A Zigbee gateway with a built-in MQTT broker for Home Assistant, designed around security.**
+One process, one UI: pair your Zigbee devices, and Home Assistant connects straight to it.
 
 [![CI](https://github.com/NoammGr/Oneroof-Zigbee/actions/workflows/ci.yml/badge.svg)](https://github.com/NoammGr/Oneroof-Zigbee/actions/workflows/ci.yml)
 
@@ -10,26 +9,20 @@ third-party broker, no cloud, no surprises.
 
 ---
 
-## Why
+## Principles
 
-zigbee2mqtt is excellent software, but its security posture is "configure it
-yourself": plaintext MQTT by default, a join window that can stay open, a
-well-known default network key, a separate broker with its own logins, and a
-web UI exposed on the LAN. OneRoof Zigbee makes the safe thing the only thing:
+OneRoof Zigbee is written from scratch so that every security decision could be made on purpose:
 
-| | zigbee2mqtt + Mosquitto | OneRoof Zigbee |
-|---|---|---|
-| Processes | 2 add-ons, 2 configs | **1 process, 1 UI** |
-| Network key | default unless you change it | **random per install, encrypted at rest** |
-| MQTT | plaintext unless configured | **TLS 1.2+ by default** (own CA, one click for HA) |
-| Who may pair devices | anyone with MQTT access | **explicit `control_users`**; HA cannot |
-| Join window | can be left open | **capped, auto-closed, cooldown, install codes, strict mode** |
-| Unknown device appears | accepted | **evicted + alert** |
-| Firmware updates | downloaded from the internet | **only files you upload, verified, per device** |
-| Audit | logs | **tamper-evident hash-chained audit log** |
-| Code | ~250 k lines + 800 npm packages | **~9 k lines Python, 3 dependencies** |
+| Principle | How |
+|---|---|
+| **Secure by default** | Random network key per install, encrypted at rest. TLS 1.2+ for MQTT out of the box with a generated local CA. |
+| **Least privilege** | Only explicit *control users* may pair devices, remove them or rotate keys. Home Assistant's own user can control devices but cannot open the network. |
+| **A short, guarded join window** | Capped and auto-closing, with cooldown; install-code pairing; an optional strict mode that only admits devices with install codes. |
+| **Nothing uninvited** | A device appearing outside a join window is removed and raises an alert. Firmware comes only from files you upload and verify — the gateway never downloads anything. |
+| **Everything accountable** | A tamper-evident, hash-chained audit log records who did what; security alerts are published to Home Assistant. |
+| **Small enough to read** | About 9 k lines of Python and three dependencies. The UI is a single file that makes no external requests. |
 
-Read [SECURITY.md](SECURITY.md) — it is the honest version, including what this does *not* protect against.
+Read [SECURITY.md](SECURITY.md) for the full model, including what this does *not* protect against.
 
 ## What it does
 
@@ -136,3 +129,9 @@ Everything above is implemented and tested against simulated hardware; it has
 ## License
 
 Source-available, see [LICENSE](LICENSE).
+
+## Versions
+
+Releases are tagged `vX.Y.Z` and listed in [CHANGELOG.md](CHANGELOG.md). Tagging triggers the
+release workflow: tests → add-on images on GHCR (amd64, aarch64) → GitHub Release. The add-on's
+`version` in `addon/oneroof_zigbee/config.yaml` and `oneroof_zigbee.__version__` must match the tag.

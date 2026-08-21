@@ -1,6 +1,6 @@
 # OneRoof Zigbee (Home Assistant add-on)
 
-Zigbee gateway **and** MQTT broker in one add-on — replaces Mosquitto + zigbee2mqtt, security first.
+Zigbee gateway **and** MQTT broker in one add-on, designed around security.
 
 * Set `serial_port` (or `network_coordinator` for a LAN coordinator) and start.
 * First start prints the `homeassistant` and `admin` MQTT passwords **once** and writes the
