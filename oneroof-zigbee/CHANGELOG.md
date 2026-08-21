@@ -3,6 +3,14 @@
 All notable changes to OneRoof Zigbee. Versions follow [Semantic Versioning](https://semver.org):
 MAJOR = breaking (re-pairing or config migration needed), MINOR = features, PATCH = fixes.
 
+## [1.1.9] — 2026-08-21
+
+### Fixed — add-on would not start next to an existing broker add-on
+- The add-on no longer claims host ports 8883/1883 by default. Inside Home Assistant the MQTT integration
+  reaches the add-on by its internal hostname (now printed in the log), and an existing broker add-on
+  usually owns those host ports already, which made Docker refuse to create the container. Host ports can
+  be enabled in the add-on's Network section for clients outside Home Assistant.
+
 ## [1.1.8] — 2026-08-21
 
 ### Changed — releases no longer depend on pushing tags by hand

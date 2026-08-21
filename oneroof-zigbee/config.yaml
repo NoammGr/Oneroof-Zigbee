@@ -1,5 +1,5 @@
 name: One Roof Zigbee
-version: "1.1.8"
+version: "1.1.9"
 slug: oneroof_zigbee
 description: Zigbee gateway with a built-in MQTT broker, designed around security - pair devices, import a previous setup, everything under one roof.
 url: https://github.com/NoammGr/Oneroof-Zigbee
@@ -30,12 +30,15 @@ map:
   - type: homeassistant_config
     read_only: true
     path: /homeassistant
+# Host ports are OFF by default: inside Home Assistant the MQTT integration reaches the add-on by its
+# internal hostname (shown in the add-on log), and an existing broker add-on may already own 8883/1883
+# on the host. Enable a host port in the Network section only for clients outside Home Assistant.
 ports:
-  8883/tcp: 8883
+  8883/tcp: null
   1883/tcp: null
 ports_description:
   1883/tcp: Optional plaintext MQTT for legacy devices (enable with mqtt_plaintext_port)
-  8883/tcp: MQTT over TLS (always on; CA certificate is written to /addon_configs/…/tls/ca.crt)
+  8883/tcp: MQTT over TLS for clients outside Home Assistant (CA certificate in the add-on config folder, tls/ca.crt)
 options:
   network_coordinator: ""
   channel: 15

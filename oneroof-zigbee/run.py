@@ -144,8 +144,11 @@ async def main_async() -> int:
     ca = DATA / "tls" / "ca.crt"
     if ca.exists():
         from oneroof_zigbee.security.tls import fingerprint
+        host = os.environ.get("HOSTNAME", "")
         print(f"MQTT TLS: CA certificate at {ca}  (SHA-256 {fingerprint(ca)})")
-        print("In Home Assistant → Settings → Integrations → MQTT → Configure → Advanced: port 8883, upload this CA as 'Broker certificate'.", flush=True)
+        print(f"Home Assistant → Settings → Integrations → MQTT → Configure: broker = {host or '<this add-on hostname>'}, "
+              "port 8883, TLS on, user homeassistant; Advanced → upload this CA as 'Broker certificate'. "
+              "(No host port is needed inside Home Assistant.)", flush=True)
     hb = asyncio.create_task(heartbeat())
     try:
         rc = await run(cfg, CONFIG, managed=True)
