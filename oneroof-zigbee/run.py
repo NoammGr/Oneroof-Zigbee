@@ -192,15 +192,16 @@ async def heartbeat() -> None:
         await asyncio.sleep(30)
 
 
-def drop_privileges(serial_port: str, enabled: bool) -> None:
-    """Home Assistant add-ons run as root inside their (unprivileged) container; the Supervisor's
-    device and volume handling assumes it. By default we do the same. With the `drop_privileges`
-    option on, we give up root after proving in a child process that uid 1000 can open the serial
-    device; if it cannot, we stay root and say so."""
+def drop_privileges(serial_port: str, enabled: bool = True) -> None:
+    """Automatic least privilege. The add-on starts as root (the Supervisor's device and volume
+    handling assumes it). A throwaway child process then tries to open the serial device exactly
+    as configured, as uid 1000 with the device's group. Only if that succeeds does the main
+    process drop root; in every other case (device missing, open fails, check impossible) it
+    stays root like other add-ons and says so. `drop_privileges: false` forces root."""
     if os.geteuid() != 0:
         return
     if not enabled:
-        print("Running as root inside the add-on container (set drop_privileges: true to try an unprivileged user).", flush=True)
+        print("Running as root inside the add-on container (drop_privileges is off).", flush=True)
         return
     import grp
     import pwd
@@ -212,37 +213,43 @@ def drop_privileges(serial_port: str, enabled: bool) -> None:
             except OSError:
                 pass
     os.chown(DATA, uid, gid)
+    if not serial_port or serial_port.startswith("tcp://") or not os.path.exists(serial_port):
+        # network coordinator → nothing to prove on the device side; missing device → cannot prove, stay root
+        if serial_port.startswith("tcp://"):
+            _become(uid, gid, [gid])
+            return
+        print("Running as root inside the add-on container (serial device not present to verify unprivileged access).", flush=True)
+        return
     groups = [gid]
-    real = os.path.realpath(serial_port) if serial_port else ""
-    if real and os.path.exists(real):
+    try:
+        groups.append(os.stat(serial_port).st_gid)  # follows the by-id symlink; the device's group on THIS host
+    except OSError:
+        pass
+    pid = os.fork()
+    if pid == 0:  # child: can the unprivileged identity open the device exactly as configured?
         try:
-            groups.append(os.stat(real).st_gid)  # the device's group on THIS host (dialout, uucp, ...)
-        except OSError:
-            pass
+            os.setgroups(groups)
+            os.setgid(gid)
+            os.setuid(uid)
+            fd = os.open(serial_port, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+            os.close(fd)
+            os._exit(0)
+        except Exception:  # noqa: BLE001
+            os._exit(1)
+    _, status = os.waitpid(pid, 0)
+    if os.waitstatus_to_exitcode(status) != 0:
+        print(f"Running as root inside the add-on container: {serial_port} is not accessible to an unprivileged "
+              "user on this host (this is how other add-ons run too).", flush=True)
+        return
+    _become(uid, gid, groups)
 
-    def _become() -> None:
+
+def _become(uid: int, gid: int, groups: list[int]) -> None:
+    try:
         os.setgroups(groups)
         os.setgid(gid)
         os.setuid(uid)
-
-    if real:
-        pid = os.fork()
-        if pid == 0:  # child: can the unprivileged identity open the device?
-            try:
-                _become()
-                fd = os.open(real, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
-                os.close(fd)
-                os._exit(0)
-            except Exception:  # noqa: BLE001
-                os._exit(1)
-        _, status = os.waitpid(pid, 0)
-        if os.waitstatus_to_exitcode(status) != 0:
-            print(f"Serial device {serial_port} is not accessible to an unprivileged user on this host; "
-                  "running as root (like other add-ons).", flush=True)
-            return
-    try:
-        _become()
-        print(f"Running as uid {uid} (dropped root).", flush=True)
+        print(f"Running as uid {uid} (dropped root; verified the coordinator is accessible).", flush=True)
     except OSError as e:
         print(f"Could not drop privileges ({e}); running as root.", flush=True)
 
@@ -250,7 +257,7 @@ def drop_privileges(serial_port: str, enabled: bool) -> None:
 async def main_async() -> int:
     DATA.mkdir(parents=True, exist_ok=True)
     opts = json.loads(OPTIONS.read_text())
-    drop_privileges(str(opts.get("serial_port") or ""), bool(opts.get("drop_privileges", False)))
+    drop_privileges(coordinator_port(opts), bool(opts.get("drop_privileges", True)))
     if not opts.get("serial_port") and not opts.get("network_coordinator"):
         print("No coordinator configured. Open the add-on Configuration tab and pick your USB adapter under "
               "'serial_port' (or enter host:port under 'network_coordinator'), then start the add-on again.", flush=True)

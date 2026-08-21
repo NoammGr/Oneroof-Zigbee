@@ -3,6 +3,15 @@
 All notable changes to One Roof Zigbee. Version numbers are MAJOR.MINOR.PATCH:
 MAJOR = breaking (re-pairing or config migration needed), MINOR = features, PATCH = fixes.
 
+## [1.2.3] — 2026-08-21
+
+### Fixed — automatic least privilege, done right
+- The unprivileged-access check in 1.2.1 opened the *resolved* device path, which does not exist inside the
+  add-on container (only the `/dev/serial/by-id/...` name does), so the check was silently skipped and root
+  was dropped blindly. The check now opens the device exactly as configured, and whenever it cannot prove
+  access it stays root. Result: automatic — drops to uid 1000 where the host allows it, otherwise runs as
+  root like every other add-on, and the log states which. `drop_privileges: true` is the default again.
+
 ## [1.2.2] — 2026-08-21
 
 ### Changed — run as root inside the container by default (like all add-ons)
