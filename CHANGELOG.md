@@ -3,6 +3,17 @@
 All notable changes to OneRoof Zigbee. Versions follow [Semantic Versioning](https://semver.org):
 MAJOR = breaking (re-pairing or config migration needed), MINOR = features, PATCH = fixes.
 
+## [1.1.7] — 2026-08-21
+
+### Fixed — add-on image build on the Home Assistant base
+- The Supervisor builds the add-on on its own Alpine base image, which has no Python; the Dockerfile assumed
+  a Python image and failed with `pip: not found`. It now installs Python and the compiled dependencies
+  (`cryptography`, `yaml`, `pyserial`) from Alpine packages — no Rust/C build step, so it also builds quickly
+  on a Raspberry Pi — and installs only the gateway and one pure-Python dependency with pip. Verified locally
+  on `ghcr.io/home-assistant/base`: 38 MB image, runs as uid 1000.
+- `build.yaml` points at the per-architecture Home Assistant base images.
+- The "no control users" warning no longer fires before the UI-managed users are loaded.
+
 ## [1.1.6] — 2026-08-21
 
 ### Fixed
