@@ -57,16 +57,26 @@ async def run(cfg: Config, config_path: Path | None = None, *, managed: bool = F
         log.warning("no mqtt.control_users configured — nobody can open the join window until you add one")
 
     global _last_broker
-    broker = Broker(auth=passwords, acl=acl, host=cfg.mqtt.listen, port=cfg.mqtt.port, tls=_tls_context(cfg, cfg.mqtt.tls))
-    await broker.start()
-    _last_broker = broker
-    if cfg.mqtt.tls.enabled:
-        log.info("MQTT broker listening on %s:%d (TLS 1.2+)", cfg.mqtt.listen, cfg.mqtt.port)
+    if cfg.mqtt.external is not None:
+        from .mqtt.external import ExternalBroker
+        e = cfg.mqtt.external
+        broker = ExternalBroker(e.server, user=e.user, password=e.password, ca=str(e.ca) if e.ca else None, client_id=e.client_id)
+        await broker.start()
+        log.warning("using EXTERNAL broker %s — the built-in broker is not running; MQTT control requests are refused "
+                    "(use the UI); switch to the built-in TLS broker from Settings when ready", e.server)
     else:
-        log.warning("MQTT broker listening on %s:%d in PLAINTEXT — credentials and device state are readable on the network", cfg.mqtt.listen, cfg.mqtt.port)
-    if cfg.mqtt.plaintext_port is not None and cfg.mqtt.tls.enabled:
-        await broker.add_listener(cfg.mqtt.listen, cfg.mqtt.plaintext_port, tls=None)
-        log.warning("additional PLAINTEXT MQTT listener on %s:%d (mqtt.plaintext_port) — for legacy devices only", cfg.mqtt.listen, cfg.mqtt.plaintext_port)
+        broker = Broker(auth=passwords, acl=acl, host=cfg.mqtt.listen, port=cfg.mqtt.port, tls=_tls_context(cfg, cfg.mqtt.tls))
+        await broker.start()
+        if cfg.mqtt.tls.enabled:
+            log.info("MQTT broker listening on %s:%d (TLS 1.2+)", cfg.mqtt.listen, cfg.mqtt.port)
+        else:
+            log.warning("MQTT broker listening on %s:%d in PLAINTEXT — credentials and device state are readable on the network", cfg.mqtt.listen, cfg.mqtt.port)
+        if cfg.mqtt.plaintext_port is not None and cfg.mqtt.tls.enabled:
+            await broker.add_listener(cfg.mqtt.listen, cfg.mqtt.plaintext_port, tls=None)
+            log.warning("additional PLAINTEXT MQTT listener on %s:%d (mqtt.plaintext_port) — for legacy devices only", cfg.mqtt.listen, cfg.mqtt.plaintext_port)
+    _last_broker = broker
+    if cfg.compat.legacy_layout:
+        log.info("legacy layout: topics %s/<friendly name> and legacy discovery identities", cfg.mqtt.base_topic)
 
     reader, writer = await open_serial(cfg.serial.port, cfg.serial.baudrate, rtscts=cfg.serial.rtscts)
     transport = Transport(reader, writer)
@@ -143,9 +153,9 @@ def main(argv: list[str] | None = None) -> int:
     pr.add_argument("--ieee", help="device IEEE, e.g. 0x00124b00deadbeef (required with --install-code)")
     pr.add_argument("--install-code", help="install code from the device label, hex, spaces allowed")
     pr.add_argument("--close", action="store_true", help="close the window instead")
-    im = sub.add_parser("import-z2m", help="import a zigbee2mqtt installation (no re-pairing when keeping the same dongle)")
+    im = sub.add_parser("import", help="import a previous setup (no re-pairing when keeping the same dongle)")
     im.add_argument("-c", "--config", type=Path, default=Path("config.yaml"))
-    im.add_argument("z2m_dir", type=Path, help="zigbee2mqtt data folder (configuration.yaml, database.db, coordinator_backup.json)")
+    im.add_argument("source_dir", type=Path, help="data folder of the previous setup (configuration.yaml, database.db, coordinator_backup.json)")
     im.add_argument("--apply", action="store_true", help="write the result (default: preview only)")
     args = p.parse_args(argv)
 
@@ -171,8 +181,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if ok else 1
     if args.cmd == "pair":
         return asyncio.run(pair(cfg, args))
-    if args.cmd == "import-z2m":
-        return import_z2m(cfg, args)
+    if args.cmd == "import":
+        return import_previous(cfg, args)
     try:
         rc = asyncio.run(run(cfg, args.config))
     except KeyboardInterrupt:
@@ -184,7 +194,7 @@ def main(argv: list[str] | None = None) -> int:
     return rc
 
 
-def import_z2m(cfg: Config, args: argparse.Namespace) -> int:
+def import_previous(cfg: Config, args: argparse.Namespace) -> int:
     import json
 
     from .devices import Registry
@@ -192,16 +202,16 @@ def import_z2m(cfg: Config, args: argparse.Namespace) -> int:
     from .security import Keystore
 
     files = {}
-    for name in ("configuration.yaml", "database.db", "coordinator_backup.json"):
-        f = args.z2m_dir / name
+    for name in ("configuration.yaml", "database.db", "coordinator_backup.json", "state.json"):
+        f = args.source_dir / name
         if f.exists():
             files[name] = f.read_text(errors="replace")
     if not files:
-        print(f"no zigbee2mqtt files found in {args.z2m_dir}", file=sys.stderr)
+        print(f"no importable files found in {args.source_dir}", file=sys.stderr)
         return 2
     try:
         plan = build_plan(configuration_yaml=files.get("configuration.yaml"), database_db=files.get("database.db"),
-                          coordinator_backup=files.get("coordinator_backup.json"))
+                          coordinator_backup=files.get("coordinator_backup.json"), state_json=files.get("state.json"))
     except ValueError as e:
         print(f"import error: {e}", file=sys.stderr)
         return 2

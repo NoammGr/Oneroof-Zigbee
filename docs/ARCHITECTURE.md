@@ -1,7 +1,7 @@
 # OneRoof Zigbee — architecture & conventions
 
 A from-scratch, security-first Zigbee ⇄ MQTT gateway with its own MQTT broker.
-No code is taken from zigbee2mqtt, zigbee-herdsman, mosquitto or any other project.
+Every layer is written from scratch; no code is taken from other projects.
 
 ## Layers
 

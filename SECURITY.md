@@ -115,6 +115,22 @@ built to add as little surface as possible:
 * One self-contained HTML file: no CDN, no framework, no build step; device
   names from the radio are rendered as text nodes, never as HTML.
 
+## Legacy layout (after importing a previous setup)
+
+While the legacy layout is on, the gateway uses *your existing* broker and the
+previous topic layout so the migration is invisible to Home Assistant and
+other consumers. Two consequences, stated
+plainly:
+
+* Transport security is whatever that broker provides (usually plaintext on the
+  Docker network). The Zigbee radio, keystore, join policy and audit log are
+  unaffected.
+* An external broker cannot tell us which user published a request, so **all
+  MQTT control requests (permit join, remove, rotate) are refused** in this
+  mode; pairing is done from the UI, which acts as a named control user.
+
+Switch to the built-in TLS broker from Settings whenever you are ready.
+
 ## Host side (add-on)
 
 * Runs as uid 1000, not root. No `hassio_api`, no `host_network`, no

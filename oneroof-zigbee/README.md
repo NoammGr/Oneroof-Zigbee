@@ -8,6 +8,6 @@ Zigbee gateway **and** MQTT broker in one add-on, designed around security.
 * Add the **MQTT** integration: host = your HA host, port 8883, TLS on, user `homeassistant`,
   upload `ca.crt` as *Broker certificate*.
 * Open the UI from the sidebar (Ingress) → Pair. Everything else (users, TLS, backups,
-  zigbee2mqtt import, firmware) is in Settings.
+  import of a previous setup, firmware) is in Settings.
 
 Requires a TI CC2652/CC1352 coordinator (Sonoff ZBDongle-P, SMLIGHT, ZigStar, …).

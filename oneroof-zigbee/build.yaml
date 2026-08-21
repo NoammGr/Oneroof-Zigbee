@@ -1,0 +1,5 @@
+build_from:
+  aarch64: python:3.12-alpine
+  amd64: python:3.12-alpine
+args:
+  SOURCE_REPO: https://github.com/NoammGr/Oneroof-Zigbee

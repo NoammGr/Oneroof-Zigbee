@@ -64,7 +64,44 @@ def build_config(opts: dict) -> dict:
     # Ingress terminates HTTPS at Home Assistant and talks to us over the internal docker network.
     cfg["ui"]["tls"] = "off"
     cfg["ui"]["ingress"] = True
+    # Migration from a previous setup: keep its broker + topics + HA entities until the user switches.
+    if opts.get("base_topic"):
+        cfg["mqtt"]["base_topic"] = str(opts["base_topic"])
+    if opts.get("legacy_layout"):
+        cfg["compat"] = {"legacy_layout": True}
+        cfg["mqtt"].setdefault("base_topic", "zigbee2mqtt")
+        if not opts.get("base_topic"):
+            cfg["mqtt"]["base_topic"] = "zigbee2mqtt"
+    if opts.get("external_broker"):
+        cfg["mqtt"]["external"] = {"server": str(opts["external_broker"]), "user": str(opts.get("external_broker_user") or ""),
+                                   "password": str(opts.get("external_broker_password") or ""), "client_id": "oneroof-zigbee"}
+    elif opts.get("legacy_layout"):
+        # zero-config migration: ask the Supervisor for the existing broker add-on's service
+        svc = supervisor_mqtt_service()
+        if svc:
+            cfg["mqtt"]["external"] = {"server": f"{'mqtts' if svc.get('ssl') else 'mqtt'}://{svc['host']}:{svc['port']}",
+                                       "user": svc.get("username", ""), "password": svc.get("password", ""), "client_id": "oneroof-zigbee"}
+        else:
+            print("legacy_layout is on but the Supervisor offered no MQTT service; "
+                  "set external_broker/external_broker_user/external_broker_password.", flush=True)
     return cfg
+
+
+def supervisor_mqtt_service() -> dict | None:
+    """GET /services/mqtt from the Supervisor (token provided because of `services: mqtt:want`)."""
+    import json as _json
+    import urllib.request
+    token = os.environ.get("SUPERVISOR_TOKEN")
+    if not token:
+        return None
+    try:
+        req = urllib.request.Request("http://supervisor/services/mqtt", headers={"Authorization": f"Bearer {token}"})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            data = _json.load(r).get("data") or {}
+        return data if data.get("host") else None
+    except Exception as e:  # noqa: BLE001 — best effort; the user can still type the login
+        print(f"Supervisor MQTT service lookup failed: {e}", flush=True)
+        return None
 
 
 def ensure_password(cfg: Config, user: str, purpose: str, role: str, control: bool) -> None:

@@ -450,7 +450,7 @@ async def test_12_import_z2m_keeps_devices_and_names(stack):
     s = stack
     st, r = await api(s, "POST", "/api/import/preview", {"configuration.yaml": Z2M_CONFIG, "database.db": Z2M_DB, "coordinator_backup.json": Z2M_BACKUP})
     assert st == 200 and r["network"]["found"] and r["network"]["frame_counter"] == 123456 and len(r["devices"]) == 2
-    assert r["network"]["key_is_z2m_default"] is True
+    assert r["network"]["key_is_well_known_default"] is True
     st, r = await api(s, "POST", "/api/import/apply", {"configuration.yaml": Z2M_CONFIG, "database.db": Z2M_DB, "coordinator_backup.json": Z2M_BACKUP})
     assert st == 200 and r["network_adopted"] and "import: network parameters" in r["restart_required"]
     # the plug we already had keeps its identity but gets the imported name/description
@@ -504,3 +504,137 @@ def _find_gateway(server):
         if self_ is not None and hasattr(self_, "gw"):
             return self_.gw
     raise RuntimeError("gateway not found")
+
+
+# --------------------------------------------- 9. zigbee2mqtt compatibility --
+
+
+async def test_15_legacy_layout_keeps_existing_broker_topics_and_ha_entities(tmp_path_factory):
+    """Migration promise: with compat on and an external broker, Home Assistant and any other
+    MQTT consumer see exactly what zigbee2mqtt published — same broker, same topics,
+    same discovery unique_ids/device identifiers — so nothing has to be reconfigured."""
+    from oneroof_zigbee.mqtt import Acl, Broker
+    tmp = tmp_path_factory.mktemp("compat")
+    os.environ["ONEROOF_ZIGBEE_KEYSTORE_PASSPHRASE"] = "e2e-passphrase"
+    # "Mosquitto": an independent broker with zigbee2mqtt's classic login
+    mpw = PasswordFile(tmp / "mosq.passwd")
+    mpw.set_password("mqtt-user", "mqtt-password-123")
+    macl = Acl()
+    macl.allow("mqtt-user", publish=["#"], subscribe=["#"])
+    macl.allow("ha", publish=["#"], subscribe=["#"])
+    mpw.set_password("ha", "ha-password-e2e!")
+    mosq = Broker(auth=mpw, acl=macl, host="127.0.0.1", port=0, tls=None)
+    await mosq.start()
+    # Home Assistant already subscribed (as it is today)
+    ha = Client("127.0.0.1", mosq.port, username="ha", password="ha-password-e2e!", client_id="ha-compat")
+    await ha.connect()
+    got: dict[str, bytes] = {}
+
+    async def on(t, p):
+        got[t] = p
+
+    await ha.subscribe("zigbee2mqtt/#", on)
+    await ha.subscribe("homeassistant/#", on)
+
+    fake = FakeZnp()
+    world = World(fake)
+
+    async def fake_open_serial(port, baudrate=115200, *, rtscts=False):
+        return fake.reader, fake.writer
+
+    main_mod.open_serial = fake_open_serial
+    # the config the importer writes: external broker + compat + base topic from configuration.yaml
+    cfg_path = tmp / "config.yaml"
+    cfg_path.write_text(
+        f"serial:\n  port: /dev/ttyUSB-e2e\ndata_dir: {tmp}\nzigbee:\n  permit_join_cooldown_seconds: 0\n"
+        f"mqtt:\n  base_topic: zigbee2mqtt\n  control_users: [admin]\n  external:\n    server: mqtt://127.0.0.1:{mosq.port}\n    user: mqtt-user\n    password: mqtt-password-123\n"
+        "compat:\n  legacy_layout: true\nui:\n  listen: 127.0.0.1\n  port: 0\n  acts_as: admin\n"
+    )
+    cfg = Config.load(cfg_path)
+    assert cfg.mqtt.external and cfg.compat.legacy_layout
+    main_mod._last_broker = None
+    main_mod._last_ui = None
+    task = asyncio.create_task(main_mod.run(cfg, cfg_path))
+    await wait_for(lambda: main_mod._last_ui and main_mod._last_ui.port, 10)
+    ui = main_mod._last_ui
+    assert getattr(main_mod._last_broker, "external", False), "built-in broker must not be running"
+    await wait_for(lambda: got.get("zigbee2mqtt/bridge/state") == b'{"state": "online"}' or got.get("zigbee2mqtt/bridge/state") == b'{"state":"online"}', 5)
+
+    # pair the plug; give it the friendly name it had in zigbee2mqtt
+    st, _, body = await _http(ui.port, "POST", "/api/permit_join", {"seconds": 30})
+    assert st == 200, body
+    d = world.add(plug(PLUG_IEEE, PLUG_NWK))
+    world.announce(d)
+    gw = _find_gateway(ui)
+    await wait_for(lambda: (lambda x: x and x.interviewed)(gw.registry.get(PLUG_IEEE)), 8)
+    await _http(ui.port, "POST", f"/api/devices/0x{PLUG_IEEE:016x}/rename", {"friendly_name": "3D Printer - Smart Plug"})
+    await asyncio.sleep(0.5)
+
+    # 1. zigbee2mqtt topic layout on the external broker
+    assert "zigbee2mqtt/3D Printer - Smart Plug" in got, sorted(t for t in got if t.startswith("zigbee2mqtt/3D"))
+    state = json.loads(got["zigbee2mqtt/3D Printer - Smart Plug"])
+    assert state["state"] == "ON" and state["power"] == 71.0 and state["linkquality"] == 200
+    assert json.loads(got["zigbee2mqtt/3D Printer - Smart Plug/availability"]) == {"state": "online"}
+    assert got.get(f"zigbee2mqtt/0x{PLUG_IEEE:016x}/state") is None, "no native-layout duplicates"
+    # 2. Home Assistant identities identical to zigbee2mqtt's
+    ieee = f"0x{PLUG_IEEE:016x}"
+    sw = json.loads(got[f"homeassistant/switch/{ieee}/switch/config"])
+    assert sw["unique_id"] == f"{ieee}_switch_zigbee2mqtt"
+    assert sw["device"]["identifiers"] == [f"zigbee2mqtt_{ieee}"]
+    assert sw["state_topic"] == "zigbee2mqtt/3D Printer - Smart Plug" and sw["command_topic"] == "zigbee2mqtt/3D Printer - Smart Plug/set"
+    assert sw["availability"][1]["value_template"] == "{{ value_json.state }}"
+    power = json.loads(got[f"homeassistant/sensor/{ieee}/power/config"])
+    assert power["unique_id"] == f"{ieee}_power_zigbee2mqtt"
+    volt = json.loads(got[f"homeassistant/sensor/{ieee}/voltage/config"])
+    assert volt["unique_id"] == f"{ieee}_voltage_zigbee2mqtt", "z2m object id for mains voltage is 'voltage'"
+    # 3. HA controls it exactly as before: publish to the friendly-name set topic on Mosquitto
+    d.received_commands.clear()
+    await ha.publish("zigbee2mqtt/3D Printer - Smart Plug/set", b'{"state": "OFF"}', qos=1)
+    await wait_for(lambda: (0x0006, 0x00, b"") in d.received_commands, 5)
+    await wait_for(lambda: json.loads(got["zigbee2mqtt/3D Printer - Smart Plug"])["state"] == "OFF", 5)
+    # zigbee2mqtt-style state refresh request
+    await ha.publish("zigbee2mqtt/3D Printer - Smart Plug/get", b'{"state": ""}', qos=1)
+    await asyncio.sleep(0.3)
+    # 4. security still holds: nobody can open the network through the external broker
+    got.pop("zigbee2mqtt/bridge/response/permit_join", None)
+    await ha.publish("zigbee2mqtt/bridge/request/permit_join", b'{"seconds": 60}', qos=1)
+    await wait_for(lambda: "zigbee2mqtt/bridge/response/permit_join" in got, 5)
+    assert json.loads(got["zigbee2mqtt/bridge/response/permit_join"]) == {"ok": False, "error": "not authorized"}
+    # 5. rename clears the old friendly-name topics (retained) like zigbee2mqtt does
+    await _http(ui.port, "POST", f"/api/devices/{ieee}/rename", {"friendly_name": "Garage plug"})
+    await wait_for(lambda: got.get("zigbee2mqtt/3D Printer - Smart Plug") == b"" and "zigbee2mqtt/Garage plug" in got, 5)
+
+    await ha.disconnect()
+    task.cancel()
+    try:
+        await task
+    except (asyncio.CancelledError, Exception):
+        pass
+    await mosq.stop()
+
+
+async def test_16_importer_reads_mqtt_section_and_admin_writes_legacy_layout(tmp_path_factory):
+    from oneroof_zigbee.admin import Admin
+    from oneroof_zigbee.devices import Registry
+    from oneroof_zigbee.importer import build_plan
+    from oneroof_zigbee.mqtt import Acl
+    from oneroof_zigbee.security import NetworkSecrets
+    import yaml
+    z2m = Z2M_CONFIG.replace("mqtt:\n  base_topic: zigbee2mqtt\n",
+                             "mqtt:\n  base_topic: zigbee2mqtt\n  server: mqtt://core-mosquitto:1883\n  user: mqtt-user\n  password: s3cret-pass\n")
+    plan = build_plan(configuration_yaml=z2m, database_db=Z2M_DB, coordinator_backup=None)
+    assert plan.mqtt.server == "mqtt://core-mosquitto:1883" and plan.mqtt.user == "mqtt-user" and plan.mqtt.base_topic == "zigbee2mqtt"
+    assert plan.summary()["mqtt"]["has_password"] is True and "s3cret" not in json.dumps(plan.summary())
+    tmp = tmp_path_factory.mktemp("imp")
+    cfg_path = tmp / "config.yaml"
+    cfg_path.write_text(f"serial:\n  port: /dev/null\ndata_dir: {tmp}\nmqtt:\n  tls: off\n  port: 0\n")
+    cfg = Config.load(cfg_path)
+    admin = Admin(cfg, cfg_path, PasswordFile(tmp / "p"), Acl(), set())
+    os.environ["ONEROOF_ZIGBEE_KEYSTORE_PASSPHRASE"] = "e2e-passphrase"
+    r = admin.import_apply({"configuration.yaml": z2m, "database.db": Z2M_DB}, Registry(tmp / "devices.json"), NetworkSecrets.generate(15), set())
+    assert "mqtt.external" in r["compat"] and "compat.legacy_layout" in r["compat"]
+    saved = yaml.safe_load(cfg_path.read_text())
+    assert saved["compat"]["legacy_layout"] is True and saved["mqtt"]["base_topic"] == "zigbee2mqtt"
+    assert saved["mqtt"]["external"] == {"server": "mqtt://core-mosquitto:1883", "client_id": "oneroof-zigbee", "user": "mqtt-user", "password": "s3cret-pass"}
+    Config.load(cfg_path)  # and it is a valid config
+    assert oct(os.stat(cfg_path).st_mode & 0o777) in ("0o600", "0o644")

@@ -191,6 +191,7 @@ def decode_af_incoming_msg(data: bytes) -> AfIncomingMsg:
 
 
 class ZdoCmd(IntEnum):
+    IEEE_ADDR_REQ = 0x01
     NODE_DESC_REQ = 0x02
     SIMPLE_DESC_REQ = 0x04
     ACTIVE_EP_REQ = 0x05
@@ -202,6 +203,7 @@ class ZdoCmd(IntEnum):
     STARTUP_FROM_APP = 0x40
     EXT_NWK_INFO = 0x50
     # indications
+    IEEE_ADDR_RSP = 0x81
     NODE_DESC_RSP = 0x82
     SIMPLE_DESC_RSP = 0x84
     ACTIVE_EP_RSP = 0x85
@@ -247,6 +249,27 @@ def zdo_permit_join(seconds: int, dst: int = BROADCAST_ROUTERS_AND_COORD) -> Fra
     mode = ADDR_MODE_BROADCAST if dst == BROADCAST_ROUTERS_AND_COORD else ADDR_MODE_SHORT
     w = Writer().u8(mode).u16(dst).u8(seconds).u8(0)  # tc significance 0
     return Frame(FrameType.SREQ, Subsystem.ZDO, ZdoCmd.MGMT_PERMIT_JOIN_REQ, w.bytes())
+
+
+def zdo_ieee_addr_req(nwk: int) -> Frame:
+    """Ask the network for the IEEE address behind a short address (single device response)."""
+    return Frame(FrameType.SREQ, Subsystem.ZDO, ZdoCmd.IEEE_ADDR_REQ, Writer().u16(nwk).u8(0).u8(0).bytes())
+
+
+@dataclass(frozen=True)
+class IeeeAddrRsp:
+    status: int
+    ieee: int
+    nwk: int
+
+
+def decode_ieee_addr_rsp(data: bytes) -> IeeeAddrRsp:
+    r = Reader(data)
+    status = r.u8()
+    if r.remaining < 10:
+        return IeeeAddrRsp(status, 0, 0)
+    ieee, nwk = r.ieee(), r.u16()
+    return IeeeAddrRsp(status, ieee if status == 0 else 0, nwk)
 
 
 def zdo_node_desc_req(nwk: int) -> Frame:

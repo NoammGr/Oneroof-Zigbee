@@ -189,6 +189,9 @@ class Admin:
                              "client_ca": str(c.mqtt.tls.client_ca) if c.mqtt.tls.client_ca else None,
                              "hostnames": c.mqtt.tls.hostnames}},
             "homeassistant": {"discovery": c.homeassistant.discovery, "discovery_prefix": c.homeassistant.discovery_prefix},
+            "compat": {"legacy_layout": c.compat.legacy_layout},
+            "external": ({"server": c.mqtt.external.server, "user": c.mqtt.external.user, "has_password": bool(c.mqtt.external.password),
+                          "ca": str(c.mqtt.external.ca) if c.mqtt.external.ca else None} if c.mqtt.external else None),
             "ui": {"enabled": c.ui.enabled, "listen": c.ui.listen, "port": c.ui.port, "acts_as": c.ui.acts_as},
             "log_level": c.log_level,
         }
@@ -202,7 +205,8 @@ class Admin:
         raw = yaml.safe_load(self.config_path.read_text()) or {}
         allowed = {"serial": {"port", "baudrate", "rtscts"},
                    "zigbee": {"channel", "strict_install_codes", "permit_join_max_seconds", "permit_join_require_install_code", "permit_join_cooldown_seconds"},
-                   "mqtt": {"listen", "port", "plaintext_port", "base_topic", "tls"},
+                   "mqtt": {"listen", "port", "plaintext_port", "base_topic", "tls", "external"},
+                   "compat": {"legacy_layout"},
                    "homeassistant": {"discovery", "discovery_prefix"},
                    "ui": {"enabled", "listen", "port", "acts_as"}}
         changed: list[str] = []
@@ -291,20 +295,54 @@ class Admin:
     def import_preview(self, files: dict[str, str]) -> dict[str, Any]:
         from .importer import build_plan
         plan = build_plan(configuration_yaml=files.get("configuration.yaml"), database_db=files.get("database.db"),
-                          coordinator_backup=files.get("coordinator_backup.json"))
+                          coordinator_backup=files.get("coordinator_backup.json"), state_json=files.get("state.json"))
         return plan.summary()
 
-    def import_apply(self, files: dict[str, str], registry: Any, current_secrets: NetworkSecrets, known_ieee: set[int]) -> dict[str, Any]:
+    def import_apply(self, files: dict[str, str], registry: Any, current_secrets: NetworkSecrets, known_ieee: set[int],
+                     *, keep_broker: bool = True, broker_user: str | None = None, broker_password: str | None = None,
+                     keep_entities: bool = True) -> dict[str, Any]:
+        """Import devices + network from a previous setup and (optionally) keep its broker, base
+        topic and Home Assistant identities, so nothing that consumes it today has to change."""
         from .importer import apply_plan, build_plan
         from .security import Keystore
         plan = build_plan(configuration_yaml=files.get("configuration.yaml"), database_db=files.get("database.db"),
-                          coordinator_backup=files.get("coordinator_backup.json"))
+                          coordinator_backup=files.get("coordinator_backup.json"), state_json=files.get("state.json"))
         secrets = apply_plan(plan, registry, current_secrets)
         if secrets is not current_secrets:
             Keystore(self.cfg.data_dir / "network.keystore").save(secrets)
             self.restart_required.append("import: network parameters")
         known_ieee.update(d.ieee for d in plan.devices)
-        return {"devices": len(plan.devices), "network_adopted": secrets is not current_secrets, "summary": plan.summary()}
+        compat_changes: list[str] = []
+        if (keep_broker or keep_entities) and self.config_path and not self.managed:
+            raw = yaml.safe_load(self.config_path.read_text()) or {}
+            raw.setdefault("mqtt", {})
+            if keep_entities:
+                raw.setdefault("compat", {})["legacy_layout"] = True
+                raw["mqtt"]["base_topic"] = plan.mqtt.base_topic
+                raw.setdefault("homeassistant", {})["discovery_prefix"] = plan.mqtt.homeassistant_prefix
+                compat_changes += ["compat.legacy_layout", "mqtt.base_topic"]
+            if keep_broker and plan.mqtt.server:
+                ext = {"server": plan.mqtt.server, "client_id": "oneroof-zigbee"}
+                user = broker_user or plan.mqtt.user
+                pw = broker_password or plan.mqtt.password
+                if user:
+                    ext["user"] = user
+                if pw:
+                    ext["password"] = pw
+                if plan.mqtt.ca:
+                    ext["ca"] = plan.mqtt.ca
+                raw["mqtt"]["external"] = ext
+                compat_changes.append("mqtt.external")
+            Config.from_dict(raw, base=self.config_path.parent)
+            self.config_path.with_suffix(".yaml.bak").write_text(self.config_path.read_text())
+            tmp = self.config_path.with_suffix(".yaml.tmp")
+            tmp.write_text(yaml.safe_dump(raw, sort_keys=False))
+            os.replace(tmp, self.config_path)
+            self.restart_required.extend(c for c in compat_changes if c not in self.restart_required)
+        elif (keep_broker or keep_entities) and self.managed:
+            compat_changes.append("managed: set legacy_layout / external_broker in the add-on options")
+        return {"devices": len(plan.devices), "network_adopted": secrets is not current_secrets, "summary": plan.summary(),
+                "compat": compat_changes}
 
     # --------------------------------------------------------------- restart --
 

@@ -23,7 +23,7 @@ from typing import Any
 from . import zcl
 from .config import Config
 from .devices import Device, Registry
-from .ha import bridge_discovery, discovery_messages, removal_messages
+from .ha import Topics, bridge_discovery, discovery_messages, removal_messages
 from .mqtt import Broker
 from .security import Audit, InstallCodeError, JoinPolicyError, parse_install_code
 from .zcl import global_commands as gc
@@ -67,10 +67,13 @@ class Gateway:
         self.audit = audit
         self.registry = registry
         self.base = cfg.mqtt.base_topic
+        self.legacy = cfg.compat.legacy_layout
+        self.topics = Topics(self.base, cfg.homeassistant.discovery_prefix, self.legacy)
         self.control_users = control_users if control_users is not None else {cfg.mqtt.gateway_user}
         self._seq = 0
         self._pending_rsp: dict[tuple[int, int, int], asyncio.Future[zcl.ZclFrame]] = {}
         self._interview_tasks: dict[int, asyncio.Task[None]] = {}
+        self._lookup_times: dict[int, float] = {}
         self._started = False
         # optional observers (the UI attaches here); called synchronously, must not raise
         self.on_state_change: Callable[[int, dict[str, Any]], None] | None = None
@@ -94,14 +97,16 @@ class Gateway:
 
         b = self.base
         self.broker.subscribe(f"{b}/+/set", self._on_set)
+        if self.legacy:
+            self.broker.subscribe(f"{b}/+/get", self._on_get)  # legacy-layout clients may ask for a state refresh
         self.broker.subscribe(f"{b}/bridge/request/+", self._on_request)
         self.broker.subscribe("homeassistant/status", self._on_ha_status)
 
         self._load_activity()
-        await self.broker.publish(f"{b}/bridge/state", b"online", retain=True)
+        await self.broker.publish(f"{b}/bridge/state", self.topics.bridge_state_payload(True), retain=True)
         await self._publish_bridge_info()
         if self.cfg.homeassistant.discovery:
-            for topic, payload in bridge_discovery(b, self.cfg.homeassistant.discovery_prefix):
+            for topic, payload in bridge_discovery(b, self.cfg.homeassistant.discovery_prefix, legacy=self.legacy):
                 await self.broker.publish(topic, payload, retain=True)
             for dev in self.registry.all():
                 await self._announce(dev)
@@ -141,7 +146,7 @@ class Gateway:
     async def stop(self) -> None:
         for t in self._interview_tasks.values():
             t.cancel()
-        await self.broker.publish(f"{self.base}/bridge/state", b"offline", retain=True)
+        await self.broker.publish(f"{self.base}/bridge/state", self.topics.bridge_state_payload(False), retain=True)
 
     # ------------------------------------------------------------ events --
 
@@ -353,6 +358,8 @@ class Gateway:
     async def _on_aps(self, m: IncomingAps) -> None:
         dev = self.registry.by_nwk(m.src_addr)
         if dev is None:
+            dev = await self._resolve_unknown_short(m.src_addr)
+        if dev is None:
             # Traffic from a short address we do not know: the firmware
             # authenticated it (it is on our network), but we have no record.
             self.audit.security("traffic_from_unknown_device", nwk=f"{m.src_addr:#06x}", cluster=f"{m.cluster:#06x}")
@@ -361,7 +368,10 @@ class Gateway:
         dev.lqi = m.lqi
         if dev.context.get("imported_from") and not dev.context.get("reporting_done") and dev.ieee not in self._interview_tasks:
             dev.context["reporting_done"] = True  # set first so a burst of frames schedules it once
-            self._interview_tasks[dev.ieee] = asyncio.create_task(self._post_import_setup(dev), name=f"post-import-{dev.ieee_str}")
+            if dev.endpoints:
+                self._interview_tasks[dev.ieee] = asyncio.create_task(self._post_import_setup(dev), name=f"post-import-{dev.ieee_str}")
+            else:
+                self._start_interview(dev)  # imported without database.db: learn endpoints/clusters now
         # m.secure is the *APS-layer* flag; ordinary ZCL traffic is NWK-encrypted only,
         # so it is informational, not an alert. NWK security is enforced by the firmware.
         try:
@@ -423,6 +433,28 @@ class Gateway:
                 except Exception:
                     log.exception("on_activity observer failed")
 
+    async def _resolve_unknown_short(self, nwk: int) -> Device | None:
+        """A known device (e.g. imported without its short address, or re-addressed after a
+        rejoin we missed) may talk from a short address we have not seen. Ask the network once
+        per minute per address; adopt it only if the IEEE is already registered."""
+        now = time.monotonic()
+        last = self._lookup_times.get(nwk, 0.0)
+        if now - last < 60:
+            return None
+        self._lookup_times[nwk] = now
+        try:
+            ieee = await self.coord.ieee_lookup(nwk)
+        except Exception:
+            return None
+        if ieee is None:
+            return None
+        dev = self.registry.get(ieee)
+        if dev is None:
+            return None
+        self.registry.add_or_update(ieee, nwk)
+        self.audit.event("short_address_learned", ieee=dev.ieee_str, nwk=f"{nwk:#06x}")
+        return dev
+
     async def _default_response(self, dev: Device, m: IncomingAps, frame: zcl.ZclFrame) -> None:
         try:
             payload = gc.build_default_response(frame.seq, frame.command, gc.STATUS_SUCCESS, zcl.DIRECTION_CLIENT_TO_SERVER, frame.manufacturer)
@@ -434,7 +466,7 @@ class Gateway:
 
     async def _publish_state(self, dev: Device) -> None:
         payload = {**dev.state, "linkquality": dev.lqi, "last_seen": dev.last_seen}
-        await self.broker.publish(f"{self.base}/{dev.ieee_str}/state", json.dumps(payload).encode(), retain=True)
+        await self.broker.publish(self.topics.state(dev), json.dumps(payload).encode(), retain=True)
         self._emit_device_state(dev, payload)
 
     def _emit_device_state(self, dev: Device, payload: dict[str, Any]) -> None:
@@ -452,7 +484,7 @@ class Gateway:
                 log.exception("on_device_event observer failed")
 
     async def _publish_availability(self, dev: Device, online: bool) -> None:
-        await self.broker.publish(f"{self.base}/{dev.ieee_str}/availability", b"online" if online else b"offline", retain=True)
+        await self.broker.publish(self.topics.availability(dev), self.topics.availability_payload(online), retain=True)
 
     async def _publish_permit_join(self) -> None:
         w = self.coord.guard.window
@@ -476,16 +508,16 @@ class Gateway:
     async def _announce(self, dev: Device) -> None:
         if not self.cfg.homeassistant.discovery:
             return
-        for topic, payload in discovery_messages(dev, self.base, self.cfg.homeassistant.discovery_prefix):
+        for topic, payload in discovery_messages(dev, self.base, self.cfg.homeassistant.discovery_prefix, legacy=self.legacy):
             await self.broker.publish(topic, payload, retain=True)
         await self._publish_availability(dev, dev.available)
 
     async def _forget(self, dev: Device) -> None:
         if self.cfg.homeassistant.discovery:
-            for topic, payload in removal_messages(dev, self.cfg.homeassistant.discovery_prefix):
+            for topic, payload in removal_messages(dev, self.cfg.homeassistant.discovery_prefix, legacy=self.legacy):
                 await self.broker.publish(topic, payload, retain=True)
-        for sub in ("state", "availability"):
-            await self.broker.publish(f"{self.base}/{dev.ieee_str}/{sub}", b"", retain=True)
+        for topic in (self.topics.state(dev), self.topics.availability(dev)):
+            await self.broker.publish(topic, b"", retain=True)
         self.registry.remove(dev.ieee)
         self.coord.known_ieee.discard(dev.ieee)
         await self._publish_bridge_info()
@@ -518,6 +550,24 @@ class Gateway:
             await self.apply_command(dev, cmd)
         except Exception as e:
             log.warning("command to %s failed: %s", dev.ieee_str, e)
+
+    async def _on_get(self, topic: str, payload: bytes, user: str | None = None) -> None:
+        """Legacy layout: `<base>/<name>/get` → re-publish current state (and refresh on_off if asked)."""
+        name = topic.split("/")[-2]
+        dev = self.registry.by_name(name)
+        if dev is None:
+            return
+        try:
+            body = json.loads(payload or b"{}")
+        except ValueError:
+            body = {}
+        if isinstance(body, dict) and "state" in body and dev.primary_endpoint() and 0x0006 in dev.primary_endpoint().in_clusters:
+            try:
+                state = await self.read_attributes(dev, dev.primary_endpoint().id, 0x0006, [0x0000])
+                self._apply_changes(dev, state)
+            except (ZnpError, asyncio.TimeoutError):
+                pass
+        await self._publish_state(dev)
 
     async def apply_command(self, dev: Device, cmd: dict[str, Any]) -> None:
         ep_obj = dev.primary_endpoint()
@@ -740,7 +790,13 @@ class Gateway:
         name = str(body.get("friendly_name") or body.get("to", "")).strip()
         if dev is None or not name or any(ch in name for ch in "/+#"):
             raise ValueError("need ieee and a friendly_name without / + #")
+        old_state, old_avail = self.topics.state(dev), self.topics.availability(dev)
         self.registry.rename(dev.ieee, name)
+        if self.legacy and old_state != self.topics.state(dev):
+            for topic in (old_state, old_avail):
+                await self.broker.publish(topic, b"", retain=True)
+            await self._publish_state(dev)
+            await self._publish_availability(dev, dev.available)
         await self._announce(dev)
         self._emit_device_event("renamed", dev)
         return {"ieee": dev.ieee_str, "friendly_name": name}
