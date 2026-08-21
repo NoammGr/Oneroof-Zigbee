@@ -192,12 +192,15 @@ async def heartbeat() -> None:
         await asyncio.sleep(30)
 
 
-def drop_privileges(serial_port: str) -> None:
-    """The Supervisor hands us root-owned /data and /config and a serial device owned by
-    root:<host gid>. Fix ownership of what we write, then give up root — but only after proving,
-    in a throwaway child process, that uid 1000 can actually open the serial device. If it cannot,
-    stay root (as every Home Assistant add-on does) and say so."""
+def drop_privileges(serial_port: str, enabled: bool) -> None:
+    """Home Assistant add-ons run as root inside their (unprivileged) container; the Supervisor's
+    device and volume handling assumes it. By default we do the same. With the `drop_privileges`
+    option on, we give up root after proving in a child process that uid 1000 can open the serial
+    device; if it cannot, we stay root and say so."""
     if os.geteuid() != 0:
+        return
+    if not enabled:
+        print("Running as root inside the add-on container (set drop_privileges: true to try an unprivileged user).", flush=True)
         return
     import grp
     import pwd
@@ -247,7 +250,7 @@ def drop_privileges(serial_port: str) -> None:
 async def main_async() -> int:
     DATA.mkdir(parents=True, exist_ok=True)
     opts = json.loads(OPTIONS.read_text())
-    drop_privileges(str(opts.get("serial_port") or ""))
+    drop_privileges(str(opts.get("serial_port") or ""), bool(opts.get("drop_privileges", False)))
     if not opts.get("serial_port") and not opts.get("network_coordinator"):
         print("No coordinator configured. Open the add-on Configuration tab and pick your USB adapter under "
               "'serial_port' (or enter host:port under 'network_coordinator'), then start the add-on again.", flush=True)

@@ -3,6 +3,14 @@
 All notable changes to One Roof Zigbee. Version numbers are MAJOR.MINOR.PATCH:
 MAJOR = breaking (re-pairing or config migration needed), MINOR = features, PATCH = fixes.
 
+## [1.2.2] — 2026-08-21
+
+### Changed — run as root inside the container by default (like all add-ons)
+- The Supervisor's device handling kept denying the unprivileged user access to the Sonoff dongle on a
+  real Home Assistant host even after the empirical check. The add-on now runs as root inside its
+  unprivileged container, as every Home Assistant add-on does; `drop_privileges: true` is an opt-in for
+  hosts where uid 1000 can use the device. Container-level hardening is unchanged.
+
 ## [1.2.1] — 2026-08-21
 
 ### Fixed — "Permission denied" opening the coordinator after dropping root

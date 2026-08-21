@@ -141,7 +141,7 @@ Switch to the built-in TLS broker from Settings whenever you are ready.
 
 ## Host side (add-on)
 
-* Starts as root only to read the Supervisor's root-owned options and own its config folder, then drops to uid 1000 when the serial device is reachable that way (the log says which). No `hassio_api`, no `host_network`, no
+* Runs as root *inside its unprivileged container*, like every Home Assistant add-on — the Supervisor's device and volume handling assumes it. The container itself requests no host network, no Supervisor/Home Assistant API, no privileged mode. Opt-in `drop_privileges: true` switches to uid 1000 after proving the serial device is usable that way. No `hassio_api`, no `host_network`, no
   `privileged`, no `/share` or `/config` mounts, web UI only via Ingress.
 * One process, three third-party Python packages (`pyserial-asyncio`,
   `cryptography`, `pyyaml`). `pip audit` takes seconds.

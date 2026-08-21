@@ -1,5 +1,5 @@
 name: One Roof Zigbee
-version: "1.2.1"
+version: "1.2.2"
 slug: oneroof_zigbee
 description: Zigbee gateway with a built-in MQTT broker, designed around security - pair devices, import a previous setup, everything under one roof.
 url: https://github.com/NoammGr/Oneroof-Zigbee
@@ -63,6 +63,7 @@ options:
   tls_cert: ""
   tls_key: ""
   log_level: info
+  drop_privileges: false
 schema:
   serial_port: device(subsystem=tty)?
   network_coordinator: str?
@@ -85,4 +86,5 @@ schema:
   tls_cert: str?
   tls_key: str?
   log_level: list(debug|info|warning|error)
+  drop_privileges: bool?
 # image: ghcr.io/noammgr/oneroof-zigbee-{arch}   # enable once the release workflow has published images; until then HA builds locally
