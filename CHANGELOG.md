@@ -3,6 +3,13 @@
 All notable changes to OneRoof Zigbee. Versions follow [Semantic Versioning](https://semver.org):
 MAJOR = breaking (re-pairing or config migration needed), MINOR = features, PATCH = fixes.
 
+## [1.1.2] — 2026-08-21
+
+### Fixed — add-on still not appearing in the store
+- The add-on's `config.yaml` had never reached the repository: the `.gitignore` rule for the standalone
+  `config.yaml` also matched `oneroof-zigbee/config.yaml`. The rule is now anchored to the repository root
+  and the add-on config is committed. Without it the Supervisor cannot see an add-on at all.
+
 ## [1.1.1] — 2026-08-21
 
 ### Fixed — add-on not appearing in the Home Assistant store

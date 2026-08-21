@@ -1,6 +1,6 @@
 [project]
 name = "oneroof_zigbee"
-version = "1.1.1"
+version = "1.1.2"
 description = "From-scratch, security-first Zigbee to MQTT gateway with its own MQTT 3.1.1 broker"
 requires-python = ">=3.11"
 dependencies = [
