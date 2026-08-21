@@ -1,0 +1,129 @@
+# OneRoof Zigbee security model
+
+This document is the honest version: what is protected, by what, and what
+is *not* protected.
+
+## Where encryption applies
+
+| Hop | Encryption | Key |
+|---|---|---|
+| Device ⇄ coordinator (2.4 GHz) | AES-128-CCM* (Zigbee) | random network key, per install |
+| Coordinator ⇄ gateway (USB serial) | none — it is a wire inside your box | — |
+| Gateway ⇄ broker | in-process, no network hop at all | — |
+| Broker ⇄ Home Assistant / clients (MQTT) | **TLS 1.2+, on by default** | local CA, `data/tls/ca.crt` |
+| UI ⇄ browser | HTTPS via HA Ingress (add-on) / HTTPS with local CA if bound off loopback | HA's cert / local CA |
+| Secrets on disk | AES-256-GCM keystore, 0600 files | scrypt-derived from passphrase |
+| Audit log | not encrypted, but SHA-256 hash-chained (tamper-evident) | — |
+
+## Threat you asked about: someone on the 2.4 GHz band joins the network or injects data
+
+### What stops joining
+
+| Control | Where | Default |
+|---|---|---|
+| Join window closed at every start and after every window | `Coordinator.start`, `_auto_close` | always |
+| Join window hard-capped (never "forever"; ZNP 255 is unreachable) | `commands.zdo_permit_join`, `JoinGuard` | 120 s max |
+| Cooldown between windows | `JoinGuard` | 5 s |
+| Join window may be pinned to one IEEE address — **detection only** in normal mode: the firmware still hands the key to any device with the public link key; the wrong device is then told to leave and you get an alert. It becomes *prevention* only in strict mode. | `JoinGuard.allowed_ieee` | when `ieee` given |
+| Unknown device that joins outside a window or with the wrong IEEE is sent MGMT_LEAVE + alerted (a rogue can ignore the leave — rotate the key if this ever fires) | `Coordinator._on_announce` | always |
+| Already-paired devices re-announcing (power cycle, parent change) are recognised as rejoins, never evicted | `Coordinator.known_ieee` | always |
+| Firmware opens join without us → immediately closed + alerted | `Coordinator._on_permit_ind` | always |
+| **Install codes** (per-device link key, AES-MMO derived) | `security.installcode`, `permit_join(install_code=…)` | optional per join; `permit_join_require_install_code` makes it mandatory |
+| **Strict mode**: the public `ZigBeeAlliance09` link key is replaced by a random one → only install-code joins are possible at all | `strict_install_codes: true` | off (breaks devices without install codes) |
+| Devices must complete Trust Center link-key update after joining or are kicked | `BDB_SET_TC_REQUIRE_KEY_EXCHANGE=1` | always |
+| Rejoin with the public key disabled | `SET_ALLOWREJOIN_TC_POLICY=0` | always |
+| Network key, PAN id, ext PAN id random per install | `NetworkSecrets.generate` | always |
+
+### What stops injection / reading
+
+All Zigbee 3.0 frames on the network are AES-128-CCM* encrypted and
+authenticated with the network key. Without the key an attacker can see
+*that* traffic exists (addresses, lengths, timing) but cannot read payloads or
+forge frames — the coordinator firmware drops frames whose MIC fails before
+we ever see them.
+
+The network key is exposed **only** at join time, encrypted under the link
+key. With the public link key a sniffer present at that moment learns it.
+With an install code it does not. That is why install codes matter and why
+strict mode exists.
+
+Additionally the gateway raises `security_alert` on:
+* `traffic_from_unknown_device` — a short address we have no record of,
+
+* `permit_join_unexpected_open`, `unexpected_join`, `request_denied`.
+
+These go to `oneroof/zigbee/bridge/security` (retained) and are a Home Assistant sensor
+out of the box, so you can automate a notification.
+
+### What does NOT protect you (be honest with yourself)
+
+* **Jamming / DoS** of 2.4 GHz. No Zigbee stack can stop it. Mitigation: none
+  beyond physical; choose a channel away from your Wi-Fi for reliability.
+* **Replay within the same frame counter window** is handled by the firmware's
+  frame counters, not by us. We persist nothing about it.
+* **A compromised host.** If someone has root on the machine running this,
+  they have the network key. The keystore encryption protects against leaked
+  backups and support bundles, not against root.
+* **Physical access to the dongle.** The key is in the dongle's flash.
+* **Devices with bad firmware.** A router that leaks the key is a router that
+  leaks the key. Buy from vendors with a track record.
+* **Touchlink.** We never enable touchlink commissioning; some bulbs still
+  answer touchlink scans from a nearby attacker regardless of coordinator.
+
+## MQTT side
+
+Note: install codes travel in the `permit_join` request payload, so any user
+subscribed to `oneroof/zigbee/#` (e.g. Home Assistant) sees them. They are single-use per
+device, but if that bothers you, give HA `oneroof/zigbee/+/state` + `oneroof/zigbee/bridge/event`
+instead of `oneroof/zigbee/#`.
+
+* Anonymous connections are rejected — there is no setting to allow them.
+* Passwords: scrypt (n=2^15), constant-time compare, 0600 file.
+* 5 login attempts from an IP within 60 s → 30 s lockout; attempts are counted *before* the (expensive) password check, at most 2 checks run concurrently, at most 256 connections total — so parallel guessing cannot bypass the lockout or exhaust memory.
+* Retained messages from TCP clients capped at 5000 topics / 16 MiB.
+* Per-user ACLs, default deny. The HA user can read state and publish `set`
+  commands, but **only users listed as `control_users` can open the join
+  window, remove devices or rotate keys**. A leaked HA long-lived token
+  therefore cannot admit a device to your Zigbee network.
+* **TLS is on by default.** On first start a private CA and a server
+  certificate are generated (`data/tls/`, ECDSA P-256, TLS 1.2+, AEAD ciphers
+  only). Plaintext MQTT requires an explicit `tls: off`. Give `ca.crt` to Home
+  Assistant (MQTT integration → Advanced → "Broker certificate"), or pin the
+  fingerprint printed in the log. `tls.mode: custom` for your own cert,
+  `client_ca` to require client certificates (mTLS).
+* Maximum packet 256 KiB; idle clients dropped at 1.5× keepalive.
+
+## Web UI
+
+The UI exists because pairing from a CLI is not family-friendly, and it is
+built to add as little surface as possible:
+
+* Our own ~300-line HTTP server, not a framework. 8 KiB header / 64 KiB body
+  limits, one request per connection, 10 s header timeout.
+* **Reachable only via Home Assistant Ingress** (HA's login is the login,
+  HA's HTTPS is the transport) in the add-on, or loopback when standalone —
+  the server refuses any other source address, and the config refuses a
+  non-loopback `ui.listen` without an explicit override flag. If you do
+  override it, HTTPS with the local CA is forced (`ui.tls` cannot be off off
+  loopback).
+* All mutating calls need `POST` + JSON + the `X-OneRoof: 1` header, so a
+  malicious page in another tab cannot drive it. CSP, `nosniff`, `no-store`
+  on every response.
+* The UI acts as one named MQTT user (`ui.acts_as`); control actions go
+  through the **same** `handle_request` path and `control_users` check as
+  MQTT, and are audit-logged as `by: "ui:<user>"`.
+* One self-contained HTML file: no CDN, no framework, no build step; device
+  names from the radio are rendered as text nodes, never as HTML.
+
+## Host side (add-on)
+
+* Runs as uid 1000, not root. No `hassio_api`, no `host_network`, no
+  `privileged`, no `/share` or `/config` mounts, web UI only via Ingress.
+* One process, three third-party Python packages (`pyserial-asyncio`,
+  `cryptography`, `pyyaml`). `pip audit` takes seconds.
+* Secrets at rest: AES-256-GCM keystore + 0600 passphrase file.
+* Tamper-evident audit log (SHA-256 hash chain): `python -m oneroof_zigbee verify-audit`.
+
+## Reporting
+
+This is a personal project; review it yourself, it is small enough.
