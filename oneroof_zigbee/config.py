@@ -173,6 +173,8 @@ class Config:
     ui: UiConfig = field(default_factory=UiConfig)
     compat: CompatConfig = field(default_factory=CompatConfig)
     log_level: str = "INFO"
+    # Folders the importer may read previous-setup files from (server-side import, no upload).
+    import_roots: list[Path] = field(default_factory=list)
 
     @staticmethod
     def load(path: Path) -> Config:
@@ -249,5 +251,6 @@ class Config:
             raise ConfigError("ui.tls cannot be 'off' on a non-loopback address (the UI would be plaintext on the network)")
         comp = raw.get("compat", {}) or {}
         compat = CompatConfig(legacy_layout=bool(comp.get("legacy_layout", False)))
+        import_roots = [Path(str(x)) for x in (raw.get("import_roots") or [])]
         return Config(serial=serial, data_dir=data_dir, zigbee=zig, mqtt=mqtt, homeassistant=ha, ui=ui, compat=compat,
-                      log_level=str(raw.get("log_level", "INFO")).upper())
+                      log_level=str(raw.get("log_level", "INFO")).upper(), import_roots=import_roots)

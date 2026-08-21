@@ -3,6 +3,15 @@
 All notable changes to One Roof Zigbee. Version numbers are MAJOR.MINOR.PATCH:
 MAJOR = breaking (re-pairing or config migration needed), MINOR = features, PATCH = fixes.
 
+## [1.2.6] — 2026-08-21
+
+### Added — import without uploading anything
+- The add-on reads a previous setup's files straight from Home Assistant's config share (read-only): the
+  import card shows "Found on this Home Assistant" with the detected folder and which files it holds; one
+  click imports it. Uploads stay as a fallback, now with a fourth slot for `state.json`.
+- When the browser cannot read a chosen file (not downloaded locally, on a share), the real reason is shown
+  and nothing is sent half-empty.
+
 ## [1.2.5] — 2026-08-21
 
 ### Fixed — "UI not built" in the add-on

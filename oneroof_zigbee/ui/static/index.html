@@ -214,6 +214,7 @@ details summary{cursor:pointer;font-weight:700;padding:4px 0}
 .notice.restart{position:sticky;top:68px;z-index:4;display:flex;gap:12px;align-items:center;flex-wrap:wrap;box-shadow:var(--shadow)}
 .notice.restart .grow{flex:1;min-width:200px}
 .sub-panel{margin-top:18px;padding:14px 16px;background:var(--card-2);border-radius:var(--rb)}
+.imp-found{margin:0 0 14px}.imp-found h3{margin:0 0 4px}.imp-row{display:flex;align-items:center;gap:10px 14px;flex-wrap:wrap;padding:10px 12px;border:1px solid transparent;border-radius:var(--rb);background:var(--card);margin-top:8px}.imp-row.sel{border-color:var(--accent);background:var(--accent-soft)}.imp-row .path{flex:1 1 200px;min-width:0;overflow-wrap:anywhere;font-size:13px}.imp-row .chips{flex:1 1 auto}.imp-row .chip.miss{color:var(--mute);opacity:.7}.imp-row .chip.have{background:var(--ok-soft);color:var(--ok)}.imp-or{display:flex;align-items:center;gap:10px;margin:14px 0 10px;color:var(--mute);font-size:12px}.imp-or::before,.imp-or::after{content:'';flex:1;border-top:1px solid var(--line,var(--card-2))}
 .steps{margin:6px 0 0;padding-left:20px}.steps li{margin:3px 0}
 .twrap.flat{box-shadow:none;margin-bottom:8px}
 .utab td{vertical-align:top}.utab .acts{gap:4px;justify-content:flex-end}
@@ -387,7 +388,7 @@ function fmtVal(v){if(v===null||v===undefined)return '—';if(typeof v==='number
 function download(name,rows){const a=el('a',{href:'data:application/json;charset=utf-8,'+encodeURIComponent(JSON.stringify(rows,null,1)),download:name});document.body.append(a);a.click();a.remove();}
 function debounce(f,ms){let t;return(...a)=>{clearTimeout(t);t=setTimeout(()=>f(...a),ms);};}
 function copyText(t){if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(t).then(()=>toast('Copied'),()=>toast('Copy failed',true));else toast('Clipboard unavailable',true);}
-function readFile(fl,b64){return new Promise((res,rej)=>{const fr=new FileReader();fr.onload=()=>res(b64?String(fr.result).split(',')[1]||'':String(fr.result));fr.onerror=()=>rej(new Error('Could not read '+fl.name));if(b64)fr.readAsDataURL(fl);else fr.readAsText(fl);});}
+function readFile(fl,b64){return new Promise((res,rej)=>{const fr=new FileReader();fr.onload=()=>res(b64?String(fr.result).split(',')[1]||'':String(fr.result));fr.onerror=()=>{const er=fr.error||{};const nm=er.name||'Error';rej(new Error('Could not read '+fl.name+': '+nm+(nm==='NotReadableError'||nm==='NotFoundError'?' — the file is not available locally (still syncing or on a share). Download it to this computer, or use "Found on this Home Assistant".':er.message?' — '+er.message:'')));};if(b64)fr.readAsDataURL(fl);else fr.readAsText(fl);});}
 function fmtSize(n){if(typeof n!=='number')return '—';return n>=1048576?(n/1048576).toFixed(1)+' MB':n>=1024?Math.round(n/1024)+' KB':n+' B';}
 const NOCTL='UI user is not in control_users';
 /* ============ help texts (edit here) ============ */
@@ -436,6 +437,8 @@ const HELP={
   'firmware.upload':'A Zigbee OTA file (.ota or .zigbee) as published by the manufacturer. The header must parse and the size must match; compare the SHA-256 shown afterwards with the hash the vendor publishes.',
   'import.config':'The previous setup\'s configuration.yaml. It gives the device names and, unless it says GENERATE, the network key, PAN id and channel.',
   'import.db':'The previous setup\'s database.db. It holds models, manufacturers and endpoints, so imported devices need no interview.',
+  'import.folder':'Server-side import: the add-on reads the previous setup\'s files straight from Home Assistant\'s config share (read-only) — the folders listed here were found there. Nothing is uploaded through the browser, so it works even when the files are still syncing or the share is not mounted on this computer.',
+  'import.state':'The previous setup\'s state.json with the last known state of every device. Optional: it fills the Dashboard right away instead of waiting for each device to report.',
   'import.backup':'coordinator_backup.json written by the previous setup. Needed only when the dongle was wiped or replaced: it carries the network key and frame counter into a fresh coordinator.',
   'import.keep_broker':'Keeps publishing to the broker the previous setup used instead of starting the built-in one, so Home Assistant and other MQTT clients stay connected as they are. Trade-off: transport security is that broker\'s (plaintext on 1883 unless you set up TLS there), and since that broker cannot enforce per-user control rights, MQTT control requests (permit_join, remove, key rotation) are refused — control works from this UI only.',
   'import.keep_entities':'Keeps the previous base topic, discovery prefix and exact discovery identities (unique ids, device identifiers, topics). Home Assistant sees the same entities with the same entity ids, so dashboards, automations, history and other MQTT clients keep working unchanged. Off = fresh start: HA creates new entities and the old ones become unavailable.',
@@ -1225,26 +1228,32 @@ views.settings={
       el('h3',null,'Upload image',help('firmware.upload',null,'Upload image')),el('div',{class:'bar',style:'margin:6px 0 0'},file,up),out);
   },
   cardImport(ok){
-    const tip=ok?'':NOCTL;const fy=el('input',{type:'file',accept:'.yaml,.yml'}),fd=el('input',{type:'file',accept:'.db,.json'}),fb=el('input',{type:'file',accept:'.json'});const out=el('div');let body=null,prev=null;
-    const gather=async()=>{const b={};for(const[i,k]of[[fy,'configuration.yaml'],[fd,'database.db'],[fb,'coordinator_backup.json']]){const f=i.files&&i.files[0];if(f)b[k]=await readFile(f);}if(!Object.keys(b).length)throw new Error('Choose at least configuration.yaml');return b;};
+    const tip=ok?'':NOCTL;const fy=el('input',{type:'file',accept:'.yaml,.yml'}),fd=el('input',{type:'file',accept:'.db,.json'}),fb=el('input',{type:'file',accept:'.json'}),fs=el('input',{type:'file',accept:'.json'});const out=el('div');let body=null,prev=null;S.importFolder=null;
+    const FILES=['configuration.yaml','database.db','coordinator_backup.json','state.json'];const found=el('div',{class:'imp-found hidden'});
+    const gather=async()=>{if(S.importFolder)return{folder:S.importFolder};const b={};for(const[i,k]of[[fy,'configuration.yaml'],[fd,'database.db'],[fb,'coordinator_backup.json'],[fs,'state.json']]){const f=i.files&&i.files[0];if(f)b[k]=await readFile(f);}if(!Object.keys(b).length)throw new Error('Choose at least configuration.yaml, or pick a folder found on this Home Assistant');return b;};
+    const rows=[];const pick=(path)=>{S.importFolder=path;for(const r of rows)r.classList.toggle('sel',r.dataset.path===path);clear(out);apply.classList.add('hidden');prev=null;};
+    api('api/import/scan').then(r=>{const fl=(r&&r.folders)||[];if(!fl.length)return;clear(found).append(el('h3',null,'Found on this Home Assistant',help('import.folder',null,'Found on this Home Assistant')),el('p',{class:'sub',style:'margin:0',text:'Previous setups in the Home Assistant config share. Pick one and the add-on reads the files itself — nothing to upload.'}));
+      for(const f of fl){const have=f.files||{};const row=el('div',{class:'imp-row'},el('span',{class:'mono path',text:f.path}),el('div',{class:'chips'},...FILES.map(n=>el('span',{class:'chip '+(have[n]?'have':'miss'),text:n}))),el('button',{class:'btn',text:'Use this folder',disabled:!ok,title:tip,onclick:()=>pick(f.path)}));row.dataset.path=f.path;rows.push(row);found.append(row);}
+      found.append(el('div',{class:'imp-or',text:'or upload the files below'}));found.classList.remove('hidden');}).catch(()=>{});
+    for(const i of[fy,fd,fb,fs])i.addEventListener('change',()=>{if(S.importFolder&&i.files&&i.files.length)pick(null);});
     const apply=el('button',{class:'btn danger primary hidden',disabled:!ok,title:tip});let opts=null;
-    const pv=el('button',{class:'btn primary',text:'Preview',disabled:!ok,title:tip,onclick:async()=>{pv.disabled=true;try{body=await gather();prev=await api('api/import/preview',body);this.importPreview(out,prev);opts=this.importCompat(prev);out.append(opts.node);apply.textContent='Import '+(prev.devices||[]).length+' devices';apply.disabled=!ok;apply.classList.remove('hidden');}catch(e){toast(e.message,true);}pv.disabled=!ok;}});
+    const pv=el('button',{class:'btn primary',text:'Preview',disabled:!ok,title:tip,onclick:async()=>{pv.disabled=true;try{body=await gather();prev=await api('api/import/preview',body);this.importPreview(out,prev,!!(body.folder||body['configuration.yaml']));opts=this.importCompat(prev);out.append(opts.node);apply.textContent='Import '+(prev.devices||[]).length+' devices';apply.disabled=!ok;apply.classList.remove('hidden');}catch(e){toast(e.message,true);}pv.disabled=!ok;}});
     apply.addEventListener('click',async()=>{if(!prev)return;const extra=opts?opts.get():{};if(extra===null){toast('Enter the broker login or untick "Keep using my current MQTT broker"',true);return;}
       if(!(await confirmDlg('Import this setup?',[el('p',{text:'This replaces the current network parameters. Existing pairings to THIS gateway (if any) will stop working. Continue?'})],'Import now',true)))return;apply.disabled=true;
       try{const r=await api('api/import/apply',Object.assign({},body,extra));const rr=r.restart_required;const need=Array.isArray(rr)?rr.length>0:!!rr;const cp=Array.isArray(r.compat)?r.compat:[];
         clear(out).append(el('div',{class:'notice'},el('b',{text:'Imported. '}),r.summary||((r.devices||[]).length+' devices'),r.network_adopted?' Network parameters adopted.':'',cp.length?el('div',{class:'sub',style:'margin-top:4px'},'Compatibility applied: ',el('span',{class:'mono',text:cp.join(', ')})):null));if(need)out.append(el('div',{class:'bar'},el('span',{class:'sub',text:'A restart is needed to bring the adopted network up.'}),el('button',{class:'btn primary',text:'Restart now',onclick:()=>this.restart()})));
         toast('Import applied');apply.classList.add('hidden');this.afterSave(r,'import');views.devices.refresh();}
       catch(e){toast(e.message,true);apply.disabled=!ok;}});
-    return el('div',{class:'card'},el('p',{class:'sub',style:'margin:0 0 12px',text:'Bring your existing Zigbee network over without re-pairing. Keep the same coordinator dongle: the network already lives in it — we adopt its key, PAN and channel and import your device names and models.'}),
-      el('div',{class:'fgrid'},fld('configuration.yaml',fy,'Required for names; contains the network key.','import.config'),fld('database.db',fd,'Models and endpoints — skips interviews.','import.db'),fld('coordinator_backup.json',fb,'Optional; needed if the dongle was wiped or replaced.','import.backup')),
+    return el('div',{class:'card'},el('p',{class:'sub',style:'margin:0 0 12px',text:'Bring your existing Zigbee network over without re-pairing. Keep the same coordinator dongle: the network already lives in it — we adopt its key, PAN and channel and import your device names and models.'}),found,
+      el('div',{class:'fgrid'},fld('configuration.yaml',fy,'Required for names; contains the network key.','import.config'),fld('database.db',fd,'Models and endpoints — skips interviews.','import.db'),fld('coordinator_backup.json',fb,'Optional; needed if the dongle was wiped or replaced.','import.backup'),fld('state.json',fs,'Last known states — fills the Dashboard before devices report','import.state')),
       el('div',{class:'bar'},pv,apply),out);
   },
-  importPreview(out,p){
+  importPreview(out,p,hadCfg){
     const n=p.network||{};clear(out);
     const kv=el('dl',{class:'kv'});const add=(k,v,m)=>kv.append(el('dt',{text:k}),el('dd',{class:m?'mono':'',text:v==null||v===''?'—':String(v)}));
     add('Network found',n.found?'yes':'no');add('Source',n.source);add('Channel',n.channel);add('PAN id',typeof n.pan_id==='number'?hex(n.pan_id):n.pan_id,1);add('Extended PAN id',n.ext_pan_id,1);add('Frame counter',n.frame_counter);add('Coordinator',n.coordinator_ieee,1);
     out.append(el('div',{class:'sub-panel',id:'imp-net'},el('h3',{text:'Network'}),kv,
-      n.found?null:el('p',{class:'sub',style:'margin:8px 0 0',text:'No network parameters found: devices are imported by name but must be paired again.'}),
+      n.found?null:el('p',{class:'sub',style:'margin:8px 0 0',text:hadCfg===false?'configuration.yaml was not provided, so no network parameters could be read: devices are imported by name but must be paired again.':'No network parameters found: devices are imported by name but must be paired again.'}),
       n.key_is_well_known_default?el('div',{class:'notice danger',style:'margin:10px 0 0'},el('b',{text:'Default network key. '}),'This network uses a well-known default key, which is public: anyone in radio range can decrypt your traffic. Once the import works, rotate the key under Maintenance and re-pair the devices.'):null));
     const ds=p.devices||[];out.append(el('h3',{text:'Devices ('+ds.length+')'}));
     const eps=x=>{const e=x.endpoints;return Array.isArray(e)?e.join(', '):e&&typeof e==='object'?Object.keys(e).join(', '):String(e??'—');};

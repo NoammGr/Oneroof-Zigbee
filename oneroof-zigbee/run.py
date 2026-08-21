@@ -68,6 +68,8 @@ def build_config(opts: dict) -> dict:
             "users": {},
         },
         "homeassistant": {"discovery": True, "discovery_prefix": ov.get("discovery_prefix") or "homeassistant"},
+        # read-only view of the Home Assistant config share: the importer can read a previous setup's files directly
+        "import_roots": ["/homeassistant"],
         # Ingress proxies from 172.30.32.2 to the container; we must listen on the container interface,
         # but the server only accepts connections from loopback and that proxy address.
         "ui": {"enabled": True, "listen": "0.0.0.0", "i_know_this_exposes_the_ui_to_the_lan": True, "port": 8099, "acts_as": "admin"},
