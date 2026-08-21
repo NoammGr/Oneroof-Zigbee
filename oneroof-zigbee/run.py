@@ -21,12 +21,30 @@ from oneroof_zigbee.__main__ import run
 from oneroof_zigbee.config import Config
 from oneroof_zigbee.mqtt import PasswordFile
 
-OPTIONS = Path("/data/options.json")   # written by the Supervisor into the add-on's private /data
-DATA = Path("/config")                 # add-on config folder (addon_config): keystore, users, tls/ca.crt, backups, firmware
+OPTIONS = Path(os.environ.get("ONEROOF_OPTIONS", "/data/options.json"))   # written by the Supervisor into the add-on's private /data
+DATA = Path(os.environ.get("ONEROOF_DATA", "/config"))                      # add-on config folder: keystore, users, tls/ca.crt, backups, firmware
 CONFIG = DATA / "config.yaml"
 
 
+OVERRIDES = None  # set in main_async: /config/overrides.yaml written by the import (legacy layout, base topic, ...)
+
+
+def load_overrides() -> dict:
+    """Settings the import decided (legacy layout, base topic, discovery prefix). In the add-on the
+    Supervisor owns options.json, so the import writes these here and we merge them over the options."""
+    p = DATA / "overrides.yaml"
+    if not p.exists():
+        return {}
+    try:
+        return yaml.safe_load(p.read_text()) or {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 def build_config(opts: dict) -> dict:
+    ov = load_overrides()
+    if ov.get("legacy_layout"):
+        opts = {**opts, "legacy_layout": True, "base_topic": ov.get("base_topic") or opts.get("base_topic") or "zigbee2mqtt"}
     cfg = {
         "serial": {"port": coordinator_port(opts)},
         "data_dir": str(DATA),
@@ -49,7 +67,7 @@ def build_config(opts: dict) -> dict:
             "control_users": [],
             "users": {},
         },
-        "homeassistant": {"discovery": True},
+        "homeassistant": {"discovery": True, "discovery_prefix": ov.get("discovery_prefix") or "homeassistant"},
         # Ingress proxies from 172.30.32.2 to the container; we must listen on the container interface,
         # but the server only accepts connections from loopback and that proxy address.
         "ui": {"enabled": True, "listen": "0.0.0.0", "i_know_this_exposes_the_ui_to_the_lan": True, "port": 8099, "acts_as": "admin"},
@@ -75,18 +93,6 @@ def build_config(opts: dict) -> dict:
     if opts.get("external_broker"):
         cfg["mqtt"]["external"] = {"server": str(opts["external_broker"]), "user": str(opts.get("external_broker_user") or ""),
                                    "password": str(opts.get("external_broker_password") or ""), "client_id": "oneroof-zigbee"}
-    elif opts.get("legacy_layout"):
-        # zero-config migration: ask the Supervisor for the existing broker add-on's service
-        svc = supervisor_mqtt_service()
-        if svc:
-            cfg["mqtt"]["external"] = {"server": f"{'mqtts' if svc.get('ssl') else 'mqtt'}://{svc['host']}:{svc['port']}",
-                                       "user": svc.get("username", ""), "password": svc.get("password", ""), "client_id": "oneroof-zigbee"}
-        else:
-            print("legacy_layout is on but the Supervisor did not provide the broker login. Set these add-on options:\n"
-                  "  external_broker:          mqtt://core-mosquitto:1883\n"
-                  "  external_broker_user:     <a login from the Mosquitto add-on's Configuration → Logins, or your HA MQTT integration user>\n"
-                  "  external_broker_password: <its password>\n"
-                  "Until then the built-in broker is used (legacy topics still apply, but Home Assistant is not connected to it).", flush=True)
     return cfg
 
 
@@ -109,29 +115,65 @@ def coordinator_port(opts: dict) -> str:
     return f"tcp://{host}:{port}"
 
 
-def supervisor_mqtt_service() -> dict | None:
-    """GET /services/mqtt from the Supervisor (token provided because of `services: mqtt:want`)."""
+def _supervisor(method: str, path: str, body: dict | None = None) -> tuple[int, dict]:
     import json as _json
+    import urllib.error
     import urllib.request
     token = os.environ.get("SUPERVISOR_TOKEN")
     if not token:
-        return None
+        return 0, {}
+    data = _json.dumps(body).encode() if body is not None else None
+    base = os.environ.get("SUPERVISOR_URL", "http://supervisor")
+    req = urllib.request.Request(f"{base}{path}", data=data, method=method,
+                                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
     try:
-        req = urllib.request.Request("http://supervisor/services/mqtt", headers={"Authorization": f"Bearer {token}"})
         with urllib.request.urlopen(req, timeout=5) as r:
-            data = _json.load(r).get("data") or {}
-        return data if data.get("host") else None
-    except Exception as e:  # noqa: BLE001 — best effort; the user can still type the login
-        print(f"Supervisor MQTT service lookup failed: {e}", flush=True)
-        return None
+            return r.status, _json.load(r)
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, _json.load(e)
+        except Exception:  # noqa: BLE001
+            return e.code, {}
+    except Exception as e:  # noqa: BLE001
+        print(f"Supervisor API unreachable: {e}", flush=True)
+        return 0, {}
 
 
-def ensure_password(cfg: Config, user: str, purpose: str, role: str, control: bool) -> None:
+def register_mqtt_service(ha_user: str, ha_password: str, plaintext_port: int | None) -> None:
+    """Become Home Assistant's MQTT service (what the Mosquitto add-on used to be). The MQTT
+    integration set up through the Supervisor re-points itself to us, and add-ons that auto-detect
+    the broker (One Roof Bridge) follow. Inside Home Assistant's private network we offer plain MQTT
+    on the internal hostname; TLS 8883 stays for everything else."""
+    host = os.environ.get("HOSTNAME", "")
+    if not plaintext_port:
+        print("MQTT service registration skipped: mqtt_plaintext_port is 0 (Home Assistant's Supervisor discovery needs the plain port).", flush=True)
+        return
+    status, resp = _supervisor("POST", "/services/mqtt", {"host": host, "port": plaintext_port, "ssl": False,
+                                                            "username": ha_user, "password": ha_password, "protocol": "3.1.1"})
+    if status == 200:
+        print(f"Registered as Home Assistant's MQTT service ({host}:{plaintext_port}). The MQTT integration and "
+              "add-ons that auto-detect the broker now use One Roof Zigbee.", flush=True)
+    elif status == 400 and "provide" in str(resp).lower():
+        print("Another add-on (the old broker) is still registered as Home Assistant's MQTT service. "
+              "Stop the Mosquitto add-on and restart One Roof Zigbee; no other action is needed.", flush=True)
+    elif status:
+        print(f"MQTT service registration failed ({status}): {resp}", flush=True)
+
+
+def unregister_mqtt_service() -> None:
+    _supervisor("DELETE", "/services/mqtt")
+
+
+SERVICE_SECRET = None  # /config/.service-login: the HA user's password, kept so we can re-register as the MQTT service on every start
+
+
+def ensure_password(cfg: Config, user: str, purpose: str, role: str, control: bool) -> str | None:
+    """Create the user on first start. Returns the password only when newly generated."""
     from oneroof_zigbee.admin import Admin
     from oneroof_zigbee.mqtt import Acl
     pf = PasswordFile(cfg.mqtt.password_file)
     if pf.has_user(user):
-        return
+        return None
     pw = secrets.token_urlsafe(24)
     Admin(cfg, CONFIG, pf, Acl(), set(), managed=True).upsert_user(user, role=role, password=pw, control=control, subscribe=None, publish=None)
     # Shown ONCE in the add-on log.  Never written anywhere else in plaintext.
@@ -140,6 +182,7 @@ def ensure_password(cfg: Config, user: str, purpose: str, role: str, control: bo
     print(f"password: {pw}")
     print("This is the only time it is shown. Change it any time in the web UI → Settings → Users & access.")
     print("=" * 72, flush=True)
+    return pw
 
 
 async def heartbeat() -> None:
@@ -200,8 +243,19 @@ async def main_async() -> int:
     logging.basicConfig(level=getattr(logging, cfg.log_level, logging.INFO),
                         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s")
     ha_user = str(opts.get("homeassistant_mqtt_user", "homeassistant"))
-    ensure_password(cfg, ha_user, "for the Home Assistant MQTT integration", "homeassistant", bool(opts.get("homeassistant_can_permit_join")))
+    secret_file = DATA / ".service-login"
+    new_pw = ensure_password(cfg, ha_user, "for the Home Assistant MQTT integration (handed to Home Assistant automatically)", "homeassistant",
+                             bool(opts.get("homeassistant_can_permit_join")))
+    if new_pw:
+        fd = os.open(secret_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(new_pw)
     ensure_password(cfg, "admin", "for pairing devices and the web UI", "admin", True)
+    ha_pw = secret_file.read_text().strip() if secret_file.exists() else ""
+
+    def announce_service() -> None:  # called by run() once the broker is listening
+        if ha_pw and cfg.mqtt.external is None:
+            register_mqtt_service(ha_user, ha_pw, cfg.mqtt.plaintext_port)
     ca = DATA / "tls" / "ca.crt"
     if ca.exists():
         from oneroof_zigbee.security.tls import fingerprint
@@ -213,7 +267,7 @@ async def main_async() -> int:
     hb = asyncio.create_task(heartbeat())
     try:
         try:
-            rc = await run(cfg, CONFIG, managed=True)
+            rc = await run(cfg, CONFIG, managed=True, on_broker_ready=announce_service)
         except (FileNotFoundError, PermissionError, ValueError, OSError) as e:
             print(f"Cannot open the coordinator at {cfg.serial.port!r}: {e}. "
                   "Check the add-on Configuration → serial_port (pick it from the list) and that no other add-on is using the adapter.", flush=True)
@@ -222,6 +276,7 @@ async def main_async() -> int:
         return 0 if rc == 4 else rc
     finally:
         hb.cancel()
+        unregister_mqtt_service()
 
 
 if __name__ == "__main__":

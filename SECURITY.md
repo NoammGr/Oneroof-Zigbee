@@ -115,6 +115,14 @@ built to add as little surface as possible:
 * One self-contained HTML file: no CDN, no framework, no build step; device
   names from the radio are rendered as text nodes, never as HTML.
 
+## Inside Home Assistant (add-on)
+
+The add-on registers itself as Home Assistant's MQTT service. Home Assistant's own discovery expects
+plain MQTT on the add-on's internal hostname, so the plain listener (1883) is on by default **inside the
+add-on network only** — it is not published on a host port unless you enable it in the add-on's Network
+section. Traffic between Home Assistant and the add-on never leaves the Docker network. Everything
+reachable from your LAN stays TLS (8883).
+
 ## Legacy layout (after importing a previous setup)
 
 While the legacy layout is on, the gateway uses *your existing* broker and the

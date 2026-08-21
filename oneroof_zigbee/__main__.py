@@ -36,7 +36,7 @@ def _tls_context(cfg: Config, tls: "TlsConfig") -> ssl.SSLContext | None:
     return server_context(cert, key, tls.client_ca)
 
 
-async def run(cfg: Config, config_path: Path | None = None, *, managed: bool = False) -> int:
+async def run(cfg: Config, config_path: Path | None = None, *, managed: bool = False, on_broker_ready=None) -> int:
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
     audit = Audit(cfg.data_dir / "audit.log")
     secrets = Keystore(cfg.data_dir / "network.keystore").load_or_create(cfg.zigbee.channel)
@@ -73,6 +73,11 @@ async def run(cfg: Config, config_path: Path | None = None, *, managed: bool = F
             await broker.add_listener(cfg.mqtt.listen, cfg.mqtt.plaintext_port, tls=None)
             log.warning("additional PLAINTEXT MQTT listener on %s:%d (mqtt.plaintext_port) — for legacy devices only", cfg.mqtt.listen, cfg.mqtt.plaintext_port)
     _last_broker = broker
+    if on_broker_ready is not None:
+        try:
+            on_broker_ready()
+        except Exception:
+            log.exception("on_broker_ready hook failed")
     if cfg.compat.legacy_layout:
         log.info("legacy layout: topics %s/<friendly name> and legacy discovery identities", cfg.mqtt.base_topic)
 

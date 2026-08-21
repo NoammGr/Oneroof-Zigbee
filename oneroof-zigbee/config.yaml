@@ -1,5 +1,5 @@
 name: One Roof Zigbee
-version: "1.1.13"
+version: "1.2.0"
 slug: oneroof_zigbee
 description: Zigbee gateway with a built-in MQTT broker, designed around security - pair devices, import a previous setup, everything under one roof.
 url: https://github.com/NoammGr/Oneroof-Zigbee
@@ -12,11 +12,11 @@ init: false
 # no docker_api, no full_access, no "share" or "homeassistant_config" mounts.
 uart: true          # the only privilege: the USB dongle
 udev: true
-# `services: mqtt:want` lets the Supervisor hand us the existing broker add-on's login (host/port/user/password);
-# used ONLY when legacy_layout/external_broker is enabled.
-# It grants no other API access.
+# `mqtt:provide` registers this add-on as Home Assistant's MQTT service (the role the Mosquitto add-on
+# had): the MQTT integration and add-ons that auto-detect the broker (e.g. One Roof Bridge) connect to
+# it automatically. It grants no other API access.
 services:
-  - mqtt:want
+  - mqtt:provide
 ingress: true       # UI is reachable ONLY through HA's authenticated Ingress proxy
 ingress_port: 8099
 panel_icon: mdi:zigbee
@@ -40,7 +40,7 @@ ports:
   8883/tcp: null
   1883/tcp: null
 ports_description:
-  1883/tcp: Optional plaintext MQTT for legacy devices (enable with mqtt_plaintext_port)
+  1883/tcp: Plain MQTT for clients outside Home Assistant that cannot do TLS (inside Home Assistant it is always available by hostname)
   8883/tcp: MQTT over TLS for clients outside Home Assistant (CA certificate in the add-on config folder, tls/ca.crt)
 options:
   network_coordinator: ""
@@ -49,12 +49,12 @@ options:
   permit_join_max_seconds: 120
   permit_join_require_install_code: false
   mqtt_port: 8883
-  mqtt_plaintext_port: 0
+  mqtt_plaintext_port: 1883
   tls_require_client_cert: false
   tls_client_ca: ""
   homeassistant_mqtt_user: homeassistant
   homeassistant_can_permit_join: false
-  legacy_layout: false
+  legacy_layout: false        # turned on automatically when you import a previous setup
   external_broker: ""
   external_broker_user: ""
   external_broker_password: ""

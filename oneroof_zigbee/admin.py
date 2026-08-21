@@ -41,6 +41,8 @@ ROLE_TEMPLATES: dict[str, dict[str, Any]] = {
               "description": "Admin: everything incl. pairing, removing, key rotation"},
     "readonly": {"subscribe": ["{base}/+/state", "{base}/bridge/state", "{base}/bridge/info", "{base}/bridge/devices"], "publish": [], "control": False,
                  "description": "Read-only: dashboards, loggers"},
+    "client": {"subscribe": ["#"], "publish": ["#"], "control": False,
+               "description": "Client: full publish/subscribe (other apps, bridges), cannot open the network"},
     "custom": {"subscribe": [], "publish": [], "control": False, "description": "Custom ACL"},
 }
 _BACKUP_MAGIC = b"OZBK1"
@@ -339,8 +341,23 @@ class Admin:
             tmp.write_text(yaml.safe_dump(raw, sort_keys=False))
             os.replace(tmp, self.config_path)
             self.restart_required.extend(c for c in compat_changes if c not in self.restart_required)
-        elif (keep_broker or keep_entities) and self.managed:
-            compat_changes.append("managed: set legacy_layout / external_broker in the add-on options")
+        elif keep_entities and self.managed:
+            # Add-on: options.json is the Supervisor's; the add-on merges overrides.yaml over it at start.
+            ov = {"legacy_layout": True, "base_topic": plan.mqtt.base_topic, "discovery_prefix": plan.mqtt.homeassistant_prefix}
+            tmp = self.cfg.data_dir / "overrides.yaml.tmp"
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as f:
+                yaml.safe_dump(ov, f)
+            os.replace(tmp, self.cfg.data_dir / "overrides.yaml")
+            compat_changes += ["legacy_layout", "mqtt.base_topic"]
+            self.restart_required.extend(c for c in compat_changes if c not in self.restart_required)
+        # Recreate the previous broker login so clients outside Home Assistant keep connecting unchanged.
+        if plan.mqtt.user and plan.mqtt.password and plan.mqtt.user not in (self.cfg.mqtt.gateway_user, *self.cfg.mqtt.users):
+            try:
+                self.upsert_user(plan.mqtt.user, role="client", password=plan.mqtt.password, control=False, subscribe=None, publish=None)
+                compat_changes.append(f"user:{plan.mqtt.user}")
+            except ValueError as e:
+                log.warning("could not recreate previous broker login %r: %s", plan.mqtt.user, e)
         return {"devices": len(plan.devices), "network_adopted": secrets is not current_secrets, "summary": plan.summary(),
                 "compat": compat_changes}
 

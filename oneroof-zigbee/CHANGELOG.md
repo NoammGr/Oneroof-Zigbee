@@ -3,6 +3,27 @@
 All notable changes to One Roof Zigbee. Version numbers are MAJOR.MINOR.PATCH:
 MAJOR = breaking (re-pairing or config migration needed), MINOR = features, PATCH = fixes.
 
+## [1.2.0] — 2026-08-21
+
+### Added — the add-on takes the broker's place in Home Assistant, automatically
+- The add-on registers itself as Home Assistant's MQTT service (`services: mqtt:provide`): the MQTT
+  integration set up through the Supervisor repoints itself to One Roof Zigbee, and add-ons that
+  auto-detect the broker (e.g. One Roof Bridge) follow. Registration happens once the broker is listening
+  and is removed on shutdown. If the old broker is still registered, the log says to stop it.
+- Importing a previous setup in the add-on now switches the legacy layout on by itself (through an
+  overrides file, since the Supervisor owns the options) and recreates the previous broker login as a
+  `client` user so anything outside Home Assistant keeps connecting unchanged.
+- New `client` role (full publish/subscribe, no control).
+
+### Changed
+- Plain MQTT listener (1883) on by default inside the add-on network (required by Home Assistant's
+  discovery); still no host port unless enabled. External-broker options remain for standalone use.
+- README rewritten around the three-step add-on journey.
+
+### Tests
+- Add-on entrypoint tests against a fake Supervisor (service registration, "old broker still registered",
+  overrides merge, option parsing); container verified end-to-end locally. 290 tests.
+
 ## [1.1.13] — 2026-08-21
 
 ### Fixed — add-on start-up robustness
