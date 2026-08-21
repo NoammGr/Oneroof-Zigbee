@@ -3,6 +3,15 @@
 All notable changes to One Roof Zigbee. Version numbers are MAJOR.MINOR.PATCH:
 MAJOR = breaking (re-pairing or config migration needed), MINOR = features, PATCH = fixes.
 
+## [1.2.4] — 2026-08-21
+
+### Fixed — first run on real hardware (Sonoff ZBDongle-P, Z-Stack 3.x.0)
+- `APP_CNF_BDB_SET_ACTIVE_DEFAULT_CENTRALIZED_KEY` was encoded with a boolean first byte; the firmware
+  reads it as a mode (0 = default global key, 1 = install code, …), so "use default" was sent as "install
+  code with an all-zero code" and rejected with INVALID_PARAMETER, aborting network formation. The mode
+  is now encoded correctly, and the simulated coordinator in the tests rejects the wrong encoding the way
+  the real firmware does.
+
 ## [1.2.3] — 2026-08-21
 
 ### Fixed — automatic least privilege, done right

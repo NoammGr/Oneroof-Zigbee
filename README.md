@@ -141,8 +141,8 @@ eviction, lockout, users, config, backup/restore, OTA transfer, import, shutdown
 
 ## Status
 
-Everything above is implemented and tested against simulated hardware; it has
-**not yet been run against a physical dongle**. Expect to iterate on the first real pairing.
+Tested against simulated hardware and, since 1.2.4, against a real Sonoff ZBDongle-P (Z-Stack 3.x.0)
+during its first bring-up; expect to iterate on the first real pairings.
 
 ## License
 

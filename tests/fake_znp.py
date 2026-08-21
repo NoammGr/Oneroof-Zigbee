@@ -103,6 +103,17 @@ class FakeZnp:
                 else:
                     self._srsp(f, b"\x09")
         elif ss is Subsystem.APP_CNF:
+            if cmd == c.AppCnfCmd.BDB_SET_ACTIVE_DEFAULT_CENTRALIZED_KEY:
+                mode = f.data[0]
+                if mode == 1:
+                    from oneroof_zigbee.security.installcode import crc16
+                    code = f.data[1:19]
+                    if len(code) != 18 or crc16(code[:16]) != int.from_bytes(code[16:18], "little"):
+                        self._srsp(f, b"\x02")  # INVALID_PARAMETER, like the real firmware
+                        return
+                elif mode != 0:
+                    self._srsp(f, b"\x02")
+                    return
             if cmd == c.AppCnfCmd.SET_NWK_FRAME_COUNTER:
                 self.frame_counter = int.from_bytes(f.data[0:4], "little")
             if cmd == c.AppCnfCmd.BDB_ADD_INSTALLCODE:

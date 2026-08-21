@@ -580,13 +580,27 @@ def appcnf_set_tc_require_key_exchange(enabled: bool) -> Frame:
     return Frame(FrameType.SREQ, Subsystem.APP_CNF, AppCnfCmd.BDB_SET_TC_REQUIRE_KEY_EXCHANGE, bytes([1 if enabled else 0]))
 
 
+class CentralizedKeyMode(IntEnum):
+    """First byte of APP_CNF_BDB_SET_ACTIVE_DEFAULT_CENTRALIZED_KEY (Z-Stack bdb.h):
+    0 = use the default global Trust Center link key (ZigBeeAlliance09),
+    1 = use an install code (+ CRC) from which the firmware derives the key,
+    2 = install code with fallback, 3 = APS key, 4 = APS key with fallback."""
+    DEFAULT_GLOBAL = 0
+    INSTALL_CODE = 1
+    INSTALL_CODE_FALLBACK = 2
+    APS_KEY = 3
+    APS_KEY_FALLBACK = 4
+
+
 def appcnf_set_default_centralized_key(use_default: bool, install_code_with_crc: bytes = bytes(18)) -> Frame:
-    """useGlobal=1 → firmware uses the public ZigBeeAlliance09 key.
-    useGlobal=0 → firmware derives the centralized TCLK (AES-MMO) from the given
-    18-byte install code + CRC. The firmware validates the CRC itself."""
+    """use_default → mode 0 (public ZigBeeAlliance09 key; the key buffer is ignored by the firmware).
+    Otherwise mode 1: the firmware derives the centralized TCLK (AES-MMO) from the given
+    18-byte install code + CRC and validates the CRC itself (INVALID_PARAMETER if wrong).
+    Verified against a Sonoff ZBDongle-P (Z-Stack 3.x.0): sending 1 as a boolean is rejected."""
     if len(install_code_with_crc) != 18:
         raise ValueError("install code must be 16 bytes + 2 byte CRC")
-    w = Writer().u8(1 if use_default else 0).raw(install_code_with_crc)
+    mode = CentralizedKeyMode.DEFAULT_GLOBAL if use_default else CentralizedKeyMode.INSTALL_CODE
+    w = Writer().u8(int(mode)).raw(install_code_with_crc)
     return Frame(FrameType.SREQ, Subsystem.APP_CNF, AppCnfCmd.BDB_SET_ACTIVE_DEFAULT_CENTRALIZED_KEY, w.bytes())
 
 
