@@ -127,9 +127,47 @@ async def heartbeat() -> None:
         await asyncio.sleep(30)
 
 
+def drop_privileges(serial_port: str) -> None:
+    """The Supervisor hands us root-owned /data and /config and a serial device owned by
+    root:<host dialout gid>. Fix ownership of what we write, then give up root if the
+    serial device is still usable as the unprivileged user; otherwise stay root and say so."""
+    if os.geteuid() != 0:
+        return
+    import grp
+    import pwd
+    import stat
+    uid, gid = pwd.getpwnam("oneroof").pw_uid, grp.getgrnam("oneroof").gr_gid
+    for root, dirs, files in os.walk(DATA):
+        for name in dirs + files:
+            try:
+                os.chown(os.path.join(root, name), uid, gid)
+            except OSError:
+                pass
+    os.chown(DATA, uid, gid)
+    groups = [gid]
+    if serial_port and os.path.exists(serial_port):
+        try:
+            st = os.stat(serial_port)
+            if stat.S_ISCHR(st.st_mode):
+                groups.append(st.st_gid)  # the device's group on THIS host (dialout, uucp, ...)
+                if not (st.st_mode & stat.S_IWGRP):
+                    print("Serial device is not group-writable; running as root to reach it.", flush=True)
+                    return
+        except OSError:
+            return
+    try:
+        os.setgroups(groups)
+        os.setgid(gid)
+        os.setuid(uid)
+        print(f"Running as uid {uid} (dropped root).", flush=True)
+    except OSError as e:
+        print(f"Could not drop privileges ({e}); running as root.", flush=True)
+
+
 async def main_async() -> int:
     DATA.mkdir(parents=True, exist_ok=True)
     opts = json.loads(OPTIONS.read_text())
+    drop_privileges(str(opts.get("serial_port") or ""))
     if not opts.get("serial_port") and not opts.get("network_coordinator"):
         print("No coordinator configured. Open the add-on Configuration tab and pick your USB adapter under "
               "'serial_port' (or enter host:port under 'network_coordinator'), then start the add-on again.", flush=True)

@@ -28,7 +28,8 @@ RUN apk add --no-cache python3 py3-pip py3-setuptools py3-wheel py3-cryptography
 COPY run.py /run.py
 
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PYTHONHASHSEED=random
-USER oneroof
+# Starts as root only to read the Supervisor's root-owned options.json and to own /config,
+# then run.py drops to uid 1000 when the serial device is accessible that way.
 WORKDIR /config
 # HEALTHCHECK without curl: the gateway touches /config/.healthy every 30 s.
 HEALTHCHECK --interval=60s --timeout=5s --start-period=60s \

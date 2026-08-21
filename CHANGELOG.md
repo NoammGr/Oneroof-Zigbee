@@ -3,6 +3,15 @@
 All notable changes to OneRoof Zigbee. Versions follow [Semantic Versioning](https://semver.org):
 MAJOR = breaking (re-pairing or config migration needed), MINOR = features, PATCH = fixes.
 
+## [1.1.11] — 2026-08-21
+
+### Fixed — "Permission denied: /data/options.json"
+- The Supervisor creates `options.json`, `/data` and the add-on config folder root-owned, and serial devices
+  belong to a host-specific group; a container that starts as an unprivileged user cannot read them. The
+  add-on now starts as root only to read the options and take ownership of its config folder, then drops to
+  uid 1000 (adding the serial device's group) whenever the device remains accessible that way — and says in
+  the log whether it dropped or had to stay root. All other hardening is unchanged.
+
 ## [1.1.10] — 2026-08-21
 
 ### Fixed — add-on failed to start with "Duplicate mount point: /data"
