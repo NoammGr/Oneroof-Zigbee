@@ -4,7 +4,7 @@
 A replacement for *Mosquitto + zigbee2mqtt* for Home Assistant — no vendor code, no
 third-party broker, no cloud, no surprises.
 
-[![CI](https://github.com/YOUR_USER/oneroof-zigbee/actions/workflows/ci.yml/badge.svg)](https://github.com/YOUR_USER/oneroof-zigbee/actions/workflows/ci.yml)
+[![CI](https://github.com/NoammGr/Oneroof-Zigbee/actions/workflows/ci.yml/badge.svg)](https://github.com/NoammGr/Oneroof-Zigbee/actions/workflows/ci.yml)
 
 > Part of the OneRoof family, alongside OneRoof Bridge and OneRoof NVR.
 
