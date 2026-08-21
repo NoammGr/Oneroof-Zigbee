@@ -28,7 +28,7 @@ CONFIG = DATA / "config.yaml"
 
 def build_config(opts: dict) -> dict:
     cfg = {
-        "serial": {"port": (f"tcp://{opts['network_coordinator']}" if opts.get("network_coordinator") else opts["serial_port"])},
+        "serial": {"port": (f"tcp://{opts['network_coordinator']}" if opts.get("network_coordinator") else str(opts.get("serial_port") or ""))},
         "data_dir": str(DATA),
         "log_level": str(opts.get("log_level", "info")).upper(),
         "zigbee": {
@@ -129,6 +129,10 @@ async def heartbeat() -> None:
 
 async def main_async() -> int:
     opts = json.loads(OPTIONS.read_text())
+    if not opts.get("serial_port") and not opts.get("network_coordinator"):
+        print("No coordinator configured. Open the add-on Configuration tab and pick your USB adapter under "
+              "'serial_port' (or enter host:port under 'network_coordinator'), then start the add-on again.", flush=True)
+        return 1
     CONFIG.write_text(yaml.safe_dump(build_config(opts), sort_keys=False))
     os.chmod(CONFIG, 0o600)
     cfg = Config.load(CONFIG)

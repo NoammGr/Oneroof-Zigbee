@@ -3,6 +3,19 @@
 All notable changes to OneRoof Zigbee. Versions follow [Semantic Versioning](https://semver.org):
 MAJOR = breaking (re-pairing or config migration needed), MINOR = features, PATCH = fixes.
 
+## [1.1.1] — 2026-08-21
+
+### Fixed — add-on not appearing in the Home Assistant store
+- `serial_port` no longer has a default value. The Supervisor's `device()` validator rejects a default
+  path that does not exist on the host (e.g. `/dev/ttyUSB0` when the adapter is under `/dev/serial/by-id/`),
+  which could keep the add-on from loading at all. The port is picked from the dropdown; if neither a
+  serial port nor a network coordinator is set, the add-on stops with a clear message instead of crashing.
+
+### Changed — store presentation
+- Repository name "One Roof Zigbee Add-ons" and add-on name "One Roof Zigbee", the family icon and logo,
+  and a `DOCS.md` for the add-on's Documentation tab — so it sits next to "One Roof Bridge Add-ons" in
+  the store as a sibling.
+
 ## [1.1.0] — 2026-08-21
 
 ### Added — seamless migration from a previous setup
