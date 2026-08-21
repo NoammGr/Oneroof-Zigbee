@@ -1,5 +1,5 @@
 name: One Roof Zigbee
-version: "1.1.9"
+version: "1.1.10"
 slug: oneroof_zigbee
 description: Zigbee gateway with a built-in MQTT broker, designed around security - pair devices, import a previous setup, everything under one roof.
 url: https://github.com/NoammGr/Oneroof-Zigbee
@@ -22,10 +22,13 @@ ingress_port: 8099
 panel_icon: mdi:zigbee
 panel_title: OneRoof Zigbee
 # -----------------------------------------------------------------------
+# /data is mounted by the Supervisor itself (options.json lives there). Our files — keystore, users,
+# CA certificate, backups, firmware — go to the add-on config folder, visible to you under
+# /addon_configs/<slug>/ via Samba or the File editor, and included in Home Assistant backups.
 map:
   - type: addon_config
     read_only: false
-    path: /data
+    path: /config
   # read-only view of the HA config share so the UI can import a previous setup's files
   - type: homeassistant_config
     read_only: true

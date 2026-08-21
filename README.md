@@ -43,7 +43,8 @@ Not yet: Tuya/Aqara private clusters (child lock, indicator mode …), groups & 
 1. Settings → Add-ons → Add-on store → ⋮ → Repositories → add `https://github.com/NoammGr/Oneroof-Zigbee`.
 2. Install **OneRoof Zigbee** (the first install builds the image on your HA host, a few minutes),
    set the serial port, start it.
-3. The log shows the MQTT passwords **once** and the CA certificate path.
+3. The log shows the MQTT passwords **once**; the CA certificate is in the add-on config folder
+   (`/addon_configs/…oneroof_zigbee/tls/ca.crt`, reachable via Samba or the File editor).
 4. Settings → Devices & services → Add integration → **MQTT**: broker = the HA host,
    port **8883**, TLS on, user `homeassistant`, upload the CA as *Broker certificate*.
 5. Open OneRoof Zigbee in the sidebar → Pair.

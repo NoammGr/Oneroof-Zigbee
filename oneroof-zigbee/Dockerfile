@@ -23,14 +23,14 @@ RUN apk add --no-cache python3 py3-pip py3-setuptools py3-wheel py3-cryptography
     && apk del --no-cache py3-pip curl \
     && addgroup -S -g 1000 oneroof \
     && adduser  -S -u 1000 -G oneroof -G dialout -h /nonexistent -s /sbin/nologin oneroof \
-    && mkdir -p /data && chown oneroof:oneroof /data
+    && mkdir -p /config && chown oneroof:oneroof /config
 
 COPY run.py /run.py
 
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PYTHONHASHSEED=random
 USER oneroof
-WORKDIR /data
-# HEALTHCHECK without curl: the gateway touches /data/.healthy every 30 s.
+WORKDIR /config
+# HEALTHCHECK without curl: the gateway touches /config/.healthy every 30 s.
 HEALTHCHECK --interval=60s --timeout=5s --start-period=60s \
-  CMD python3 -c "import os,sys,time; sys.exit(0 if time.time()-os.stat('/data/.healthy').st_mtime < 120 else 1)"
+  CMD python3 -c "import os,sys,time; sys.exit(0 if time.time()-os.stat('/config/.healthy').st_mtime < 120 else 1)"
 ENTRYPOINT ["python3", "/run.py"]

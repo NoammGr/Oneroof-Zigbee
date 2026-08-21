@@ -21,8 +21,8 @@ from oneroof_zigbee.__main__ import run
 from oneroof_zigbee.config import Config
 from oneroof_zigbee.mqtt import PasswordFile
 
-DATA = Path("/data")
-OPTIONS = DATA / "options.json"
+OPTIONS = Path("/data/options.json")   # written by the Supervisor into the add-on's private /data
+DATA = Path("/config")                 # add-on config folder (addon_config): keystore, users, tls/ca.crt, backups, firmware
 CONFIG = DATA / "config.yaml"
 
 
@@ -128,6 +128,7 @@ async def heartbeat() -> None:
 
 
 async def main_async() -> int:
+    DATA.mkdir(parents=True, exist_ok=True)
     opts = json.loads(OPTIONS.read_text())
     if not opts.get("serial_port") and not opts.get("network_coordinator"):
         print("No coordinator configured. Open the add-on Configuration tab and pick your USB adapter under "

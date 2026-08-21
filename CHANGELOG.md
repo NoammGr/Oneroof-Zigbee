@@ -3,6 +3,15 @@
 All notable changes to OneRoof Zigbee. Versions follow [Semantic Versioning](https://semver.org):
 MAJOR = breaking (re-pairing or config migration needed), MINOR = features, PATCH = fixes.
 
+## [1.1.10] — 2026-08-21
+
+### Fixed — add-on failed to start with "Duplicate mount point: /data"
+- The Supervisor always mounts the add-on's private storage at `/data`; the add-on additionally mapped its
+  config folder there. The config folder is now mounted at `/config` and holds everything you may want to
+  reach (keystore, users, `tls/ca.crt`, backups, firmware) — visible under `/addon_configs/<slug>/` via
+  Samba or the File editor and included in Home Assistant backups. `/data` stays the Supervisor's
+  (`options.json`). Verified locally with both mounts.
+
 ## [1.1.9] — 2026-08-21
 
 ### Fixed — add-on would not start next to an existing broker add-on
