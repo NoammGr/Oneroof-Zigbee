@@ -3,6 +3,14 @@
 All notable changes to One Roof Zigbee. Version numbers are MAJOR.MINOR.PATCH:
 MAJOR = breaking (re-pairing or config migration needed), MINOR = features, PATCH = fixes.
 
+## [1.2.1] — 2026-08-21
+
+### Fixed — "Permission denied" opening the coordinator after dropping root
+- The decision to drop to uid 1000 is now made empirically: a throwaway child process tries to open the
+  serial device as the unprivileged user first. If that works the add-on drops root; if not (device node
+  not accessible to non-root on that host), it stays root like other add-ons and says so in the log.
+  Previously the check looked at file modes only and could drop root when the device was in fact unusable.
+
 ## [1.2.0] — 2026-08-21
 
 ### Added — the add-on takes the broker's place in Home Assistant, automatically

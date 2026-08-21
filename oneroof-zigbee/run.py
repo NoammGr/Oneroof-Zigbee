@@ -194,13 +194,13 @@ async def heartbeat() -> None:
 
 def drop_privileges(serial_port: str) -> None:
     """The Supervisor hands us root-owned /data and /config and a serial device owned by
-    root:<host dialout gid>. Fix ownership of what we write, then give up root if the
-    serial device is still usable as the unprivileged user; otherwise stay root and say so."""
+    root:<host gid>. Fix ownership of what we write, then give up root — but only after proving,
+    in a throwaway child process, that uid 1000 can actually open the serial device. If it cannot,
+    stay root (as every Home Assistant add-on does) and say so."""
     if os.geteuid() != 0:
         return
     import grp
     import pwd
-    import stat
     uid, gid = pwd.getpwnam("oneroof").pw_uid, grp.getgrnam("oneroof").gr_gid
     for root, dirs, files in os.walk(DATA):
         for name in dirs + files:
@@ -210,20 +210,35 @@ def drop_privileges(serial_port: str) -> None:
                 pass
     os.chown(DATA, uid, gid)
     groups = [gid]
-    if serial_port and os.path.exists(serial_port):
+    real = os.path.realpath(serial_port) if serial_port else ""
+    if real and os.path.exists(real):
         try:
-            st = os.stat(serial_port)
-            if stat.S_ISCHR(st.st_mode):
-                groups.append(st.st_gid)  # the device's group on THIS host (dialout, uucp, ...)
-                if not (st.st_mode & stat.S_IWGRP):
-                    print("Serial device is not group-writable; running as root to reach it.", flush=True)
-                    return
+            groups.append(os.stat(real).st_gid)  # the device's group on THIS host (dialout, uucp, ...)
         except OSError:
-            return
-    try:
+            pass
+
+    def _become() -> None:
         os.setgroups(groups)
         os.setgid(gid)
         os.setuid(uid)
+
+    if real:
+        pid = os.fork()
+        if pid == 0:  # child: can the unprivileged identity open the device?
+            try:
+                _become()
+                fd = os.open(real, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+                os.close(fd)
+                os._exit(0)
+            except Exception:  # noqa: BLE001
+                os._exit(1)
+        _, status = os.waitpid(pid, 0)
+        if os.waitstatus_to_exitcode(status) != 0:
+            print(f"Serial device {serial_port} is not accessible to an unprivileged user on this host; "
+                  "running as root (like other add-ons).", flush=True)
+            return
+    try:
+        _become()
         print(f"Running as uid {uid} (dropped root).", flush=True)
     except OSError as e:
         print(f"Could not drop privileges ({e}); running as root.", flush=True)
