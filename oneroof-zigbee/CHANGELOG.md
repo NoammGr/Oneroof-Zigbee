@@ -3,6 +3,13 @@
 All notable changes to OneRoof Zigbee. Versions follow [Semantic Versioning](https://semver.org):
 MAJOR = breaking (re-pairing or config migration needed), MINOR = features, PATCH = fixes.
 
+## [1.1.6] — 2026-08-21
+
+### Fixed
+- Browser end-to-end tests on CI: Chrome is launched with container-safe flags (own profile directory,
+  `--disable-dev-shm-usage`, no first-run), waits up to 30 s for DevTools, and if a browser still cannot
+  start the suite is *skipped* with Chrome's log instead of erroring. No product change.
+
 ## [1.1.5] — 2026-08-21
 
 ### Fixed

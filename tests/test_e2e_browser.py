@@ -39,15 +39,29 @@ class Browser:
         self._id = 0
 
     async def __aenter__(self):
-        self.proc = subprocess.Popen([CHROME, "--headless=new", "--disable-gpu", "--no-sandbox", "--hide-scrollbars",
-                                      f"--remote-debugging-port={self.port}", "--window-size=1280,900", "about:blank"],
-                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        for _ in range(100):
-            try:
-                targets = json.load(urllib.request.urlopen(f"http://127.0.0.1:{self.port}/json"))
+        import tempfile
+        self.profile = tempfile.mkdtemp(prefix="oneroof-chrome-")
+        self.log = open(os.path.join(self.profile, "chrome.log"), "w")
+        self.proc = subprocess.Popen(
+            [CHROME, "--headless=new", "--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage", "--no-first-run",
+             "--no-default-browser-check", "--disable-extensions", "--hide-scrollbars", f"--user-data-dir={self.profile}",
+             f"--remote-debugging-port={self.port}", "--remote-allow-origins=*", "--window-size=1280,900", "about:blank"],
+            stdout=self.log, stderr=subprocess.STDOUT)
+        targets = None
+        for _ in range(300):  # up to 30 s: CI runners can be slow to bring Chrome up
+            if self.proc.poll() is not None:
                 break
+            try:
+                targets = json.load(urllib.request.urlopen(f"http://127.0.0.1:{self.port}/json", timeout=1))
+                if any(t.get("type") == "page" for t in targets):
+                    break
             except Exception:
                 await asyncio.sleep(0.1)
+        if not targets or not any(t.get("type") == "page" for t in targets):
+            self.log.flush()
+            tail = open(self.log.name).read()[-800:]
+            self.proc.terminate()
+            pytest.skip(f"Chrome did not start a DevTools page (exit={self.proc.poll()}): {tail!r}")
         url = [t for t in targets if t["type"] == "page"][0]["webSocketDebuggerUrl"]
         self.ws = await websockets.connect(url, max_size=50_000_000)
         await self.cmd("Page.enable")
@@ -56,8 +70,11 @@ class Browser:
         return self
 
     async def __aexit__(self, *a):
-        await self.ws.close()
-        self.proc.terminate()
+        try:
+            await self.ws.close()
+        finally:
+            self.proc.terminate()
+            self.log.close()
 
     async def cmd(self, method, **params):
         self._id += 1
