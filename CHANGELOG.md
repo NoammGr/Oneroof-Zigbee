@@ -3,6 +3,15 @@
 All notable changes to One Roof Zigbee. Version numbers are MAJOR.MINOR.PATCH:
 MAJOR = breaking (re-pairing or config migration needed), MINOR = features, PATCH = fixes.
 
+## [1.1.13] — 2026-08-21
+
+### Fixed — add-on start-up robustness
+- `network_coordinator` accepts `host:port`, `tcp://host:port`, or a `/dev/...` path entered by mistake; an
+  invalid value prints a plain instruction instead of a traceback. `serial_port` always takes precedence.
+- When the Supervisor does not provide the broker login for the legacy layout, the log lists the exact add-on
+  options to fill in (`external_broker`, `external_broker_user`, `external_broker_password`).
+- A coordinator that cannot be opened is reported as one clear line with the path and the likely causes.
+
 ## [1.1.12] — 2026-08-21
 
 ### Changed

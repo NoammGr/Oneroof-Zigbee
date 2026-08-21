@@ -28,7 +28,7 @@ CONFIG = DATA / "config.yaml"
 
 def build_config(opts: dict) -> dict:
     cfg = {
-        "serial": {"port": (f"tcp://{opts['network_coordinator']}" if opts.get("network_coordinator") else str(opts.get("serial_port") or ""))},
+        "serial": {"port": coordinator_port(opts)},
         "data_dir": str(DATA),
         "log_level": str(opts.get("log_level", "info")).upper(),
         "zigbee": {
@@ -82,9 +82,31 @@ def build_config(opts: dict) -> dict:
             cfg["mqtt"]["external"] = {"server": f"{'mqtts' if svc.get('ssl') else 'mqtt'}://{svc['host']}:{svc['port']}",
                                        "user": svc.get("username", ""), "password": svc.get("password", ""), "client_id": "oneroof-zigbee"}
         else:
-            print("legacy_layout is on but the Supervisor offered no MQTT service; "
-                  "set external_broker/external_broker_user/external_broker_password.", flush=True)
+            print("legacy_layout is on but the Supervisor did not provide the broker login. Set these add-on options:\n"
+                  "  external_broker:          mqtt://core-mosquitto:1883\n"
+                  "  external_broker_user:     <a login from the Mosquitto add-on's Configuration → Logins, or your HA MQTT integration user>\n"
+                  "  external_broker_password: <its password>\n"
+                  "Until then the built-in broker is used (legacy topics still apply, but Home Assistant is not connected to it).", flush=True)
     return cfg
+
+
+def coordinator_port(opts: dict) -> str:
+    """serial_port wins; network_coordinator accepts 'host:port', 'tcp://host:port' or (by mistake) a /dev path."""
+    serial = str(opts.get("serial_port") or "").strip()
+    net = str(opts.get("network_coordinator") or "").strip()
+    if serial:
+        return serial
+    if not net:
+        return ""
+    if net.startswith("/dev/"):
+        return net
+    net = net.removeprefix("tcp://").removeprefix("socket://")
+    host, _, port = net.rpartition(":")
+    if not host or not port.isdigit():
+        print(f"network_coordinator must be host:port (e.g. 192.168.1.50:6638), got {net!r}. "
+              "For a USB adapter leave it empty and set serial_port.", flush=True)
+        return ""
+    return f"tcp://{host}:{port}"
 
 
 def supervisor_mqtt_service() -> dict | None:
@@ -190,7 +212,12 @@ async def main_async() -> int:
               "(No host port is needed inside Home Assistant.)", flush=True)
     hb = asyncio.create_task(heartbeat())
     try:
-        rc = await run(cfg, CONFIG, managed=True)
+        try:
+            rc = await run(cfg, CONFIG, managed=True)
+        except (FileNotFoundError, PermissionError, ValueError, OSError) as e:
+            print(f"Cannot open the coordinator at {cfg.serial.port!r}: {e}. "
+                  "Check the add-on Configuration → serial_port (pick it from the list) and that no other add-on is using the adapter.", flush=True)
+            return 1
         # exit code 4 = restart requested: the supervisor restarts us (boot: auto)
         return 0 if rc == 4 else rc
     finally:
