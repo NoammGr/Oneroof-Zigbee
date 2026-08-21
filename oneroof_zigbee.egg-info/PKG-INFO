@@ -1,0 +1,16 @@
+Metadata-Version: 2.4
+Name: oneroof_zigbee
+Version: 1.2.4
+Summary: From-scratch, security-first Zigbee to MQTT gateway with its own MQTT 3.1.1 broker
+Requires-Python: >=3.11
+License-File: LICENSE
+Requires-Dist: pyserial-asyncio
+Requires-Dist: cryptography
+Requires-Dist: pyyaml
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
+Requires-Dist: pytest-asyncio; extra == "dev"
+Requires-Dist: pytest-timeout; extra == "dev"
+Requires-Dist: websockets; extra == "dev"
+Requires-Dist: ruff; extra == "dev"
+Dynamic: license-file

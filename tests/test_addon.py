@@ -114,3 +114,13 @@ def test_no_plaintext_port_skips_registration(tmp_path, monkeypatch, supervisor,
     run = load_run(tmp_path, monkeypatch)
     run.register_mqtt_service("homeassistant", "pw-123", None)
     assert FakeSupervisor.calls == [] and "skipped" in capsys.readouterr().out
+
+
+def test_package_ships_the_ui():
+    """The add-on installs the package from a tarball; the UI must be package data, not a repo-only file."""
+    import importlib.resources
+    from oneroof_zigbee import ui
+    assert (importlib.resources.files(ui) / "static" / "index.html").is_file()
+    import tomllib
+    pyproject = tomllib.loads((Path(__file__).resolve().parent.parent / "pyproject.toml").read_text())
+    assert "ui/static/*" in pyproject["tool"]["setuptools"]["package-data"]["oneroof_zigbee"]

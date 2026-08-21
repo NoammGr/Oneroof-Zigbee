@@ -1,0 +1,10 @@
+pyserial-asyncio
+cryptography
+pyyaml
+
+[dev]
+pytest
+pytest-asyncio
+pytest-timeout
+websockets
+ruff

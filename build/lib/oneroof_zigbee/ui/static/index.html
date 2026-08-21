@@ -1,0 +1,1290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<title>OneRoof Zigbee</title>
+<style>
+:root{
+  --bg:#faf7f2;--card:#ffffff;--card-2:#f4efe7;--line:#eae3d8;--ink:#33302b;--ink-2:#8a8175;
+  --accent:#e2603c;--accent-soft:#fdeee8;--accent-ink:#fff;
+  --ok:#2f9e6e;--ok-soft:#e6f5ee;--warn:#b98a2f;--warn-soft:#faf3e2;
+  --danger:#c0392b;--danger-soft:#fbe7e8;
+  --surface:var(--card);--mute:var(--ink-2);--faint:#b3aa9c;--line2:#f2ede5;--off:#d6cec2;
+  --shadow:0 1px 2px rgba(51,48,43,.06),0 8px 24px rgba(51,48,43,.06);
+  --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+  --sans:"Plus Jakarta Sans",-apple-system,"Segoe UI",sans-serif;
+  --head:"Bricolage Grotesque",Georgia,serif;
+  --r:18px;--rb:12px;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#191713;--card:#232019;--card-2:#2c2820;--line:#332f26;--ink:#f1ece3;--ink-2:#9d9485;
+  --accent:#f0703f;--accent-soft:#3a281f;--ok:#4cc38a;--ok-soft:#1f3329;--warn:#d9aa4e;--warn-soft:#38301c;
+  --danger:#e5695a;--danger-soft:#3b2321;--faint:#6f675c;--line2:#2a261f;--off:#4a443a;
+  --shadow:0 1px 2px rgba(0,0,0,.25),0 8px 24px rgba(0,0,0,.25);
+}}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--ink);font:14px/1.5 var(--sans);-webkit-font-smoothing:antialiased;font-variant-numeric:tabular-nums}
+button,input,select{font:inherit;color:inherit}
+button{cursor:pointer}
+button:disabled{cursor:not-allowed;opacity:.5}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+a{color:var(--accent)}
+.mono{font-family:var(--mono);font-size:.92em;letter-spacing:.01em}
+.mute{color:var(--mute)}
+.hidden{display:none!important}
+svg.i{width:1em;height:1em;flex:none;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;vertical-align:-.15em}
+/* ---------- layout ---------- */
+#app{display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:auto 1fr;min-height:100vh}
+header{display:flex;align-items:center;gap:18px;padding:0 24px;height:60px;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:5}
+.brand{font-family:var(--head);font-weight:800;letter-spacing:-.02em;font-size:19px;display:flex;align-items:center;gap:8px;white-space:nowrap}
+.brand i{width:26px;height:26px;border-radius:9px;background:var(--accent);display:inline-grid;place-items:center;color:var(--accent-ink)}
+.brand span{color:var(--ink-2);font-weight:600}
+.rail{display:flex;align-items:center;gap:14px;margin-left:auto;font-size:12.5px;color:var(--mute);white-space:nowrap}
+.rail .item{display:flex;align-items:center;gap:6px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--off);display:inline-block;flex:none}
+.dot.on{background:var(--ok)}.dot.warn{background:var(--warn)}.dot.pulse{animation:pulse 1.4s ease-in-out infinite}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--ok) 50%,transparent)}60%{box-shadow:0 0 0 6px transparent}}
+.badge{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:99px;border:1px solid var(--line);font-size:12px;color:var(--mute);background:var(--card)}
+.badge.open,.badge.ok{border-color:transparent;background:var(--ok-soft);color:var(--ok)}
+.badge.sec,.badge.danger{border-color:transparent;background:var(--danger-soft);color:var(--danger)}
+.badge.sec{cursor:pointer;max-width:260px;overflow:hidden;text-overflow:ellipsis}
+.badge.warn{border-color:transparent;background:var(--warn-soft);color:var(--warn)}
+.badge.acc{border-color:transparent;background:var(--accent-soft);color:var(--accent)}
+.shell{display:grid;grid-template-columns:212px minmax(0,1fr);min-width:0}
+nav.side{padding:22px 14px;border-right:1px solid var(--line)}
+nav.side a,.tabs a{display:flex;align-items:center;gap:10px;padding:10px 16px;border-radius:99px;color:var(--mute);text-decoration:none;font-weight:600;margin-bottom:4px}
+nav.side a:hover{background:var(--card-2);color:var(--ink)}
+nav.side a.active{color:var(--accent);background:var(--accent-soft)}
+nav.side a svg.i,.tabs a svg.i{font-size:20px;stroke-width:1.6;opacity:.85}
+nav a.active svg.i{opacity:1}
+main{padding:32px 36px 100px;max-width:1180px;width:100%;min-width:0}
+.tabs{display:none}
+h1{font-family:var(--head);font-size:30px;font-weight:800;letter-spacing:-.02em;margin:0 0 6px;line-height:1.15}
+.lead{color:var(--mute);margin:0 0 22px;max-width:64ch}
+h2{font-family:var(--head);font-size:17px;font-weight:800;letter-spacing:-.02em;margin:30px 0 12px}
+h2:first-child{margin-top:0}
+.bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:16px}
+.bar .grow{flex:1}
+input[type=text],input[type=search],input[type=number],input[type=password],input[type=file],select,textarea{background:var(--card);border:1px solid var(--line);border-radius:var(--rb);padding:8px 12px;min-width:0;font:inherit;color:inherit}
+textarea{width:100%;resize:vertical}
+input:disabled,select:disabled,textarea:disabled{opacity:.6;background:var(--card-2)}
+input[type=search]{width:280px;max-width:100%}
+input.sm,select.sm{padding:4px 8px;font-size:12.5px;border-radius:9px}
+input[type=number].sm{width:78px}
+.btn{background:var(--card);border:1px solid var(--line);border-radius:var(--rb);padding:8px 14px;font-weight:600;line-height:1.2;display:inline-flex;align-items:center;gap:6px}
+.btn:hover:not(:disabled){border-color:var(--ink-2);background:var(--card-2)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.btn.primary:hover:not(:disabled){background:var(--accent);filter:brightness(.94)}
+.btn.danger{color:var(--danger);border-color:var(--danger-soft);background:var(--danger-soft)}
+.btn.danger.primary{background:var(--danger);border-color:var(--danger);color:#fff}
+.btn.sm{padding:5px 10px;font-size:12.5px;border-radius:9px}
+.btn.icon{padding:5px 7px}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:99px;overflow:hidden;background:var(--card)}
+.seg button{background:transparent;border:0;padding:6px 14px;color:var(--mute);font-weight:600}
+.seg button.active{background:var(--accent-soft);color:var(--accent)}
+.seg button.on.active{background:var(--ok-soft);color:var(--ok)}
+.seg.sm button{padding:4px 10px;font-size:12.5px}
+.pills{display:flex;gap:6px;flex-wrap:wrap;margin:18px 0}
+.pills button{background:transparent;border:1px solid transparent;border-radius:99px;padding:7px 14px;color:var(--mute);font-weight:600}
+.pills button:hover{background:var(--card-2);color:var(--ink)}
+.pills button.active{background:var(--ink);color:var(--bg)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:20px 22px;box-shadow:var(--shadow)}
+.notice{border-left:3px solid var(--accent);padding:12px 16px;background:var(--accent-soft);border-radius:0 var(--rb) var(--rb) 0;margin-bottom:16px}
+.notice.warn{border-color:var(--warn);background:var(--warn-soft)}
+/* ---------- tables ---------- */
+table{width:100%;border-collapse:separate;border-spacing:0;background:var(--card)}
+.twrap{overflow-x:auto;border-radius:var(--r);border:1px solid var(--line);background:var(--card);box-shadow:var(--shadow)}
+th{text-align:left;font-size:11.5px;text-transform:uppercase;letter-spacing:.07em;color:var(--faint);font-weight:700;padding:12px 14px;border-bottom:1px solid var(--line);background:var(--card-2)}
+td{padding:11px 14px;border-bottom:1px solid var(--line2);vertical-align:middle}
+tr:last-child td{border-bottom:0}
+tr.click{cursor:pointer}tr.click:hover td{background:var(--card-2)}
+.devtab td:nth-child(3),.devtab td:nth-child(5),.devtab .btn{white-space:nowrap}
+.devtab .name{white-space:nowrap}
+.name{font-weight:700;cursor:text}
+.name:hover{text-decoration:underline dotted var(--mute)}
+.name input{padding:2px 6px;width:160px}
+.sub{font-size:12px;color:var(--mute)}
+.empty{padding:40px;text-align:center;color:var(--mute);background:var(--card);border:1px dashed var(--line);border-radius:var(--r)}
+.lqi{display:inline-block;height:6px;width:60px;background:var(--line);border-radius:3px;position:relative;vertical-align:middle;margin-right:6px}
+.lqi i{position:absolute;left:0;top:0;bottom:0;background:var(--accent);border-radius:3px}
+.thumb{width:38px;height:38px;border-radius:50%;background:var(--card-2);color:var(--ink-2);display:grid;place-items:center;font-size:18px;flex:none}
+/* ---------- device controls ---------- */
+.ctl{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.ctl input[type=range]{width:110px;accent-color:var(--accent)}
+.menu{position:relative}
+.menu .pop{position:fixed;background:var(--card);border:1px solid var(--line);border-radius:var(--rb);box-shadow:var(--shadow);z-index:4;min-width:170px;padding:6px}
+.menu .pop button{display:block;width:100%;text-align:left;background:none;border:0;padding:8px 10px;border-radius:8px;font-weight:500}
+.menu .pop button:hover:not(:disabled){background:var(--card-2)}
+.menu .pop button.danger{color:var(--danger)}
+/* ---------- device detail ---------- */
+.back{display:inline-flex;align-items:center;gap:4px;color:var(--mute);text-decoration:none;font-weight:600;font-size:13px;margin-bottom:14px}
+.back:hover{color:var(--ink)}
+.dhead{display:flex;gap:18px;align-items:flex-start;flex-wrap:wrap}
+.dhead .grow{flex:1;min-width:240px}
+.dhead h1{cursor:text}.dhead h1:hover{text-decoration:underline dotted var(--mute)}
+.dhead h1 input{font:inherit;letter-spacing:inherit;width:100%;max-width:420px;padding:0 6px;border-radius:var(--rb);border:1px solid var(--line);background:var(--card)}
+.desc{color:var(--mute);cursor:text;margin:0 0 12px;min-height:1.4em}
+.desc.placeholder{color:var(--faint);font-style:italic}
+.desc input{width:100%;max-width:520px}
+.badges{display:flex;gap:6px;flex-wrap:wrap}
+.acts{display:flex;gap:8px;flex-wrap:wrap}
+.kvt{width:100%}
+.kvt td{padding:12px 16px}
+.kvt td:first-child{color:var(--mute);width:200px;font-weight:600;vertical-align:top}
+.kvt .sub{margin-top:2px}
+.chips{display:flex;gap:6px;flex-wrap:wrap}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:99px;background:var(--card-2);font-size:12px;color:var(--ink)}
+.chip .mono{color:var(--mute)}
+.epcard{margin-top:12px}
+.act{display:flex;gap:10px;font-size:12.5px;padding:3px 0}
+.act .t{color:var(--faint);flex:none;font-family:var(--mono)}
+.act b{font-weight:600}
+.topic{display:flex;align-items:center;gap:8px;padding:3px 0}
+.topic .mono{word-break:break-all}
+.feat{display:grid;grid-template-columns:40px minmax(0,1fr) minmax(220px,44%);gap:16px;align-items:center;padding:16px 0;border-bottom:1px solid var(--line2)}
+.feat:last-child{border-bottom:0}
+.feat .ico{width:40px;height:40px;border-radius:12px;background:var(--card-2);color:var(--accent);display:grid;place-items:center;font-size:20px}
+.feat .nm{font-weight:700}
+.feat .ds{font-size:12.5px;color:var(--mute)}
+.feat .ctrl{display:flex;justify-content:flex-end;align-items:center;gap:10px;flex-wrap:wrap}
+.bigval{font-family:var(--head);font-size:28px;font-weight:800;letter-spacing:-.02em;line-height:1}
+.bigval small{font-family:var(--sans);font-size:13px;font-weight:600;color:var(--mute);margin-left:4px;letter-spacing:0}
+.range{display:grid;grid-template-columns:1fr auto;gap:4px 10px;align-items:center;width:100%;max-width:360px}
+.range input[type=range]{width:100%;accent-color:var(--accent)}
+.range .lim{display:flex;justify-content:space-between;font-size:11px;color:var(--faint)}
+.range .num{display:flex;align-items:center;gap:4px}
+.range .num input{width:84px}
+.btng{display:inline-flex;gap:4px;flex-wrap:wrap;justify-content:flex-end}
+.btng button{background:var(--card);border:1px solid var(--line);border-radius:99px;padding:5px 12px;font-weight:600;color:var(--mute);font-size:12.5px}
+.btng button.active{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+pre{font-family:var(--mono);font-size:12.5px;background:var(--card-2);border-radius:var(--rb);padding:14px 16px;overflow:auto;margin:0;max-height:60vh}
+.readout{margin-top:12px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.inline td input,.inline td select{width:100%}
+/* ---------- pair ---------- */
+.pair{display:grid;grid-template-columns:320px 1fr;gap:24px;align-items:start}
+.ring{position:relative;width:200px;height:200px;margin:8px auto 14px}
+.ring svg{transform:rotate(-90deg)}
+.ring circle{fill:none;stroke-width:6}
+.ring .track{stroke:var(--line)}
+.ring .arc{stroke:var(--ok);stroke-linecap:round;transition:stroke-dashoffset .9s linear}
+.ring .val{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.ring .val b{font-family:var(--head);font-size:44px;font-weight:800;letter-spacing:-.03em;line-height:1}
+.ring .val span{font-size:12px;color:var(--mute);margin-top:4px}
+details summary{cursor:pointer;font-weight:700;padding:4px 0}
+.field{display:flex;flex-direction:column;gap:4px;margin:10px 0}
+.field label{font-size:12.5px;font-weight:700}
+.field .hint{font-size:12px;color:var(--mute)}
+.field input{font-family:var(--mono)}
+.field .err{font-size:12px;color:var(--danger)}
+.feed{font-family:var(--mono);font-size:12.5px;max-height:360px;overflow:auto;border:1px solid var(--line);border-radius:var(--r);background:var(--card);box-shadow:var(--shadow)}
+.feed div{padding:7px 12px;border-bottom:1px solid var(--line2);display:flex;gap:10px}
+.feed .t{color:var(--faint);flex:none}
+/* ---------- map ---------- */
+#mapc{width:100%;height:480px;background:var(--card);border:1px solid var(--line);border-radius:var(--r);display:block;touch-action:none;box-shadow:var(--shadow)}
+.legend{display:flex;gap:16px;font-size:12px;color:var(--mute);margin:10px 0 0}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px;vertical-align:-1px}
+/* ---------- logs ---------- */
+.log{font-family:var(--mono);font-size:12.5px;background:var(--card);border:1px solid var(--line);border-radius:var(--r);height:60vh;min-height:300px;overflow:auto;box-shadow:var(--shadow)}
+.log .row{display:grid;grid-template-columns:150px 64px 1fr;gap:10px;padding:6px 14px;border-bottom:1px solid var(--line2);white-space:pre-wrap;word-break:break-word}
+.log .row.sec{background:var(--danger-soft);border-left:3px solid var(--danger)}
+.log .row.ERROR{color:var(--danger)}.log .row.WARNING{color:var(--warn)}
+.log .row.DEBUG{color:var(--faint)}
+.log .t{color:var(--faint)}.log .l{color:var(--mute)}
+.log .row.sec .l{color:var(--danger);font-weight:700}
+/* ---------- settings ---------- */
+.kv{display:grid;grid-template-columns:max-content 1fr;gap:10px 28px;align-items:baseline;margin:0}
+.kv dt{color:var(--mute)}.kv dd{margin:0;word-break:break-all}
+.card h3{margin:18px 0 6px;font-size:14.5px;font-family:var(--head);font-weight:800;letter-spacing:-.01em}
+.card h3:first-child{margin-top:0}
+.fgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:0 20px}
+.field select,.field textarea{font-family:var(--mono)}
+.field select,.field input{max-width:100%}
+.field input[type=file]{font-family:var(--sans);padding:6px 10px}
+.chk{display:flex;gap:10px;align-items:flex-start;margin:12px 0;cursor:pointer}
+.chk input{margin:3px 0 0;accent-color:var(--accent);flex:none}
+.chk .hint{font-size:12px;color:var(--mute);font-weight:400}
+.cfoot{display:flex;justify-content:flex-end;align-items:center;gap:12px;margin-top:14px;padding-top:12px;border-top:1px solid var(--line2)}
+.cfoot .sub{margin-right:auto}
+.notice.danger{border-color:var(--danger);background:var(--danger-soft);color:var(--danger)}
+.notice.restart{position:sticky;top:68px;z-index:4;display:flex;gap:12px;align-items:center;flex-wrap:wrap;box-shadow:var(--shadow)}
+.notice.restart .grow{flex:1;min-width:200px}
+.sub-panel{margin-top:18px;padding:14px 16px;background:var(--card-2);border-radius:var(--rb)}
+.steps{margin:6px 0 0;padding-left:20px}.steps li{margin:3px 0}
+.twrap.flat{box-shadow:none;margin-bottom:8px}
+.utab td{vertical-align:top}.utab .acts{gap:4px;justify-content:flex-end}
+.utab details summary{font-weight:600;font-size:12px;color:var(--accent)}
+.utab .filt{white-space:pre-line;font-size:12px}
+.overlay{position:fixed;inset:0;background:rgba(25,23,19,.5);display:grid;place-items:center;z-index:60}
+.danger-zone{border:1px solid var(--danger-soft);border-radius:var(--rb);padding:14px 16px;margin-top:20px}
+.danger-zone h3{margin:0 0 6px;color:var(--danger);font-size:15px}
+/* ---------- misc ---------- */
+dialog{border:1px solid var(--line);border-radius:var(--r);background:var(--card);color:var(--ink);padding:22px 24px;max-width:440px;width:calc(100% - 32px);box-shadow:var(--shadow)}
+dialog::backdrop{background:rgba(25,23,19,.45)}
+dialog h3{margin:0 0 8px;font-size:18px;font-family:var(--head);font-weight:800;letter-spacing:-.02em}
+dialog .acts{display:flex;gap:8px;justify-content:flex-end;margin-top:16px}
+#toasts{position:fixed;right:16px;bottom:16px;display:flex;flex-direction:column;gap:8px;z-index:50;max-width:340px}
+.toast{background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:var(--rb);font-size:13px;box-shadow:var(--shadow);animation:in .2s ease-out}
+.toast.err{background:var(--danger);color:#fff}
+@keyframes in{from{opacity:0;transform:translateY(6px)}}
+.tip[title]{cursor:help}
+/* ---------- help popover ---------- */
+.help{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;margin-left:5px;padding:0;border:0;background:none;color:var(--ink-2);border-radius:50%;cursor:help;vertical-align:-4px;flex:none}
+.help:hover,.help:focus-visible,.help.open{color:var(--accent)}
+.help svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.field label,.card h3,.kv dt,.feat .nm{display:flex;align-items:center;gap:2px}
+.kv dt{align-self:center}
+.chk .help{margin-left:4px}
+#helppop{position:fixed;z-index:70;max-width:min(320px,calc(100vw - 16px));background:var(--card);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);padding:10px 14px;font-size:12.5px;line-height:1.5;font-weight:400;color:var(--ink);pointer-events:none}
+#helppop b{display:block;font-weight:700;margin-bottom:2px}
+.btn.text{background:none;border-color:transparent;padding:8px 6px}
+.btn.text.danger{background:none}
+.btn.text:hover:not(:disabled){background:var(--danger-soft);border-color:transparent}
+.plain-note{font-size:12px;color:var(--danger)}
+/* ---------- dashboard ---------- */
+.dgrid{columns:300px;column-gap:16px}
+.dcard{break-inside:avoid;margin-bottom:16px;padding:14px 16px;display:flow-root}
+.dcard.hl{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.dcard.dim{opacity:.4}
+.dh{display:flex;align-items:center;gap:10px;margin-bottom:6px}
+.dh .thumb{width:32px;height:32px;font-size:16px}
+.dh a{flex:1;min-width:0;font-weight:700;color:var(--ink);text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dh a:hover{text-decoration:underline}
+.frow{display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--line2);font-size:13px}
+.frow:last-child{border-bottom:0}
+.frow .fn{flex:1;min-width:0;color:var(--mute);display:flex;align-items:center;gap:7px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.frow .fn svg.i{opacity:.7}
+.ctrl.cmp{gap:6px}
+.ctrl.cmp input[type=range]{width:90px;accent-color:var(--accent)}
+.val{font-weight:700}.val small{color:var(--mute);font-weight:500;margin-left:3px;font-size:11.5px}
+.sw{position:relative;width:38px;height:22px;flex:none;display:inline-block}
+.sw input{position:absolute;opacity:0;inset:0;margin:0;cursor:pointer;width:100%;height:100%}
+.sw i{position:absolute;inset:0;border-radius:99px;background:var(--off);transition:background .15s;pointer-events:none}
+.sw i::after{content:'';position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:#fff;transition:transform .15s;box-shadow:0 1px 2px rgba(0,0,0,.25)}
+.sw input:checked+i{background:var(--ok)}.sw input:checked+i::after{transform:translateX(16px)}
+.sw input:focus-visible+i{outline:2px solid var(--accent);outline-offset:2px}
+.dfoot{display:flex;gap:6px;align-items:center;margin-top:10px;padding-top:8px;border-top:1px solid var(--line2)}
+.dfoot .grow{flex:1}.dfoot .back{margin:0}
+/* ---------- activity ---------- */
+.arow{display:grid;grid-template-columns:32px minmax(120px,200px) 150px minmax(0,1fr);gap:12px;align-items:center;padding:9px 14px;border-bottom:1px solid var(--line2)}
+.arow:last-child{border-bottom:0}
+.arow .thumb{width:32px;height:32px;font-size:16px}
+.arow .aname{font-weight:700;color:var(--ink);text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.arow .aname:hover{text-decoration:underline}
+.arow .chg{font-family:var(--mono);font-size:12.5px;word-break:break-word}
+.arow .chg b{font-weight:600;color:var(--mute)}
+.prog{height:8px;background:var(--line);border-radius:4px;overflow:hidden}.prog i{display:block;height:100%;background:var(--accent);transition:width .4s}
+@media (max-width:760px){
+  .dgrid{columns:1}
+  .arow{grid-template-columns:28px minmax(0,1fr);gap:6px 10px}.arow .chg{grid-column:1/-1}.arow .sub{font-size:11px}
+  .tabs{overflow-x:auto;padding-left:2px;padding-right:2px}.tabs a{padding:5px 4px;font-size:10px;letter-spacing:-.01em;flex:1;min-width:0;white-space:nowrap}
+  .shell{grid-template-columns:minmax(0,1fr)}
+  nav.side{display:none}
+  .tabs{display:flex;position:fixed;bottom:0;left:0;right:0;background:var(--card);border-top:1px solid var(--line);z-index:5;justify-content:space-around;padding:6px 4px calc(6px + env(safe-area-inset-bottom))}
+  .tabs a{flex-direction:column;gap:2px;font-size:11px;padding:5px 10px;margin:0;border-radius:14px}
+  .tabs a.active{color:var(--accent);background:var(--accent-soft)}
+  .tabs a svg.i{font-size:22px}
+  .notice.restart{top:60px}
+  header{padding:0 14px;gap:8px;overflow:hidden;height:54px}header .badge{max-width:38vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:inline-block;line-height:20px}header .mute{display:none}
+  .brand span{display:none}
+  .rail{gap:8px;min-width:0}.rail .item.devs{display:none}
+  #h-bridge span{display:none}
+  .badge.sec{max-width:130px;white-space:nowrap}
+  main{padding:20px 14px 96px}
+  h1{font-size:24px}
+  .pair{grid-template-columns:1fr}
+  .devtab th:nth-child(2),.devtab td:nth-child(2),.devtab th:nth-child(3),.devtab td:nth-child(3){display:none}
+  .log .row{grid-template-columns:84px 52px 1fr}
+  #mapc{height:360px}
+  #toasts{left:16px;max-width:none;bottom:80px}
+  .feat{grid-template-columns:40px minmax(0,1fr)}
+  .feat .ctrl{grid-column:1/-1;justify-content:flex-start}
+  .kvt td:first-child{width:120px}
+  .grid2{grid-template-columns:1fr}
+  .card{padding:16px}
+}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div id="app">
+<header>
+  <div class="brand"><i id="brand-i"></i><b>OneRoof</b><span>Zigbee</span></div>
+  <div class="rail">
+    <div class="item" id="h-bridge"><i class="dot"></i><span>connecting…</span></div>
+    <div class="item devs" id="h-devs">— devices</div>
+    <span class="badge" id="h-join">join closed</span>
+    <span class="badge sec hidden" id="h-sec" role="button" tabindex="0" title="Open security log"></span>
+  </div>
+</header>
+<div class="shell">
+  <nav class="side" id="nav"></nav>
+  <main id="main"></main>
+</div>
+<nav class="tabs" id="tabs"></nav>
+</div>
+<div id="toasts"></div>
+<dialog id="dlg"><h3 id="dlg-t"></h3><div id="dlg-b"></div><div class="acts"><button class="btn" id="dlg-no">Cancel</button><button class="btn primary" id="dlg-ok">Confirm</button></div></dialog>
+
+<script>
+'use strict';
+/* ============ helpers ============ */
+const $=(s,r=document)=>r.querySelector(s);
+function el(tag,attrs,...kids){const e=document.createElement(tag);if(attrs)for(const k in attrs){const v=attrs[k];if(k==='class')e.className=v;else if(k==='style')e.style.cssText=v;else if(k.startsWith('on'))e.addEventListener(k.slice(2),v);else if(k==='text')e.textContent=v;else if(v!==null&&v!==undefined&&v!==false)e.setAttribute(k,v===true?'':v);}for(const c of kids.flat()){if(c===null||c===undefined||c===false)continue;e.append(c.nodeType?c:document.createTextNode(String(c)));}return e;}
+function clear(n){while(n.firstChild)n.removeChild(n.firstChild);return n;}
+const ICONS={
+  power:'M12 3v9M6.3 6.3a8 8 0 1 0 11.4 0',
+  sliders:'M4 7h10M18 7h2M4 17h4M12 17h8M14 7a2 2 0 1 0 4 0a2 2 0 1 0-4 0M8 17a2 2 0 1 0 4 0a2 2 0 1 0-4 0',
+  thermometer:'M10 14.5V5a2 2 0 1 1 4 0v9.5a3.5 3.5 0 1 1-4 0z',
+  drop:'M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11z',
+  bolt:'M13 2L4 14h7l-1 8 9-12h-7l1-8z',
+  lock:'M6 11V8a6 6 0 0 1 12 0v3M5 11h14v10H5z',
+  clock:'M3 12a9 9 0 1 0 18 0a9 9 0 1 0-18 0M12 7v5l3 2',
+  hand:'M8 13V5.5a1.5 1.5 0 0 1 3 0V12M11 5a1.5 1.5 0 0 1 3 0v7M14 6.5a1.5 1.5 0 0 1 3 0V12M17 9.5a1.5 1.5 0 0 1 3 0V15a6 6 0 0 1-6 6h-2a6 6 0 0 1-5-2.7L4 13.5a1.6 1.6 0 0 1 2.7-1.7L8 13',
+  signal:'M2 20h.01M7 20v-4M12 20v-8M17 20V8M22 20V4',
+  sun:'M12 4V2M12 22v-2M4 12H2M22 12h-2M5 5l-1.4-1.4M19 19l1.4 1.4M5 19l-1.4 1.4M19 5l1.4-1.4M7 12a5 5 0 1 0 10 0a5 5 0 1 0-10 0',
+  palette:'M12 3a9 9 0 0 0 0 18c1.5 0 2-1 2-2s-1-1.5-1-2.5 1-1.5 2-1.5h2a4 4 0 0 0 4-4c0-4.5-4-8-9-8zM7 12h.01M10 8h.01M15 8h.01',
+  arrows:'M12 3v18M8 7l4-4 4 4M8 17l4 4 4-4',
+  battery:'M3 8h15v8H3zM18 10h2v4h-2M6 11v2',
+  plug:'M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4',
+  bulb:'M9 18h6M10 21h4M12 3a6 6 0 0 0-4 10.5c.6.6 1 1.5 1 2.5h6c0-1 .4-1.9 1-2.5A6 6 0 0 0 12 3z',
+  cover:'M4 4h16v4H4zM6 8v12M18 8v12M6 12h12M6 16h12',
+  remote:'M8 3h8v18H8zM12 7v.01M10 11h4M10 14h4',
+  chip:'M8 8h8v8H8zM5 5h14v14H5zM10 2v3M14 2v3M10 19v3M14 19v3M2 10h3M2 14h3M19 10h3M19 14h3',
+  copy:'M9 9h10v10H9zM5 15H4V4h11v1',
+  back:'M15 5l-7 7 7 7',
+  home:'M4 11l8-7 8 7v9H4z',
+  text:'M4 6h16M4 12h10M4 18h14',
+  open:'M5 12h14M13 6l6 6-6 6',
+  n_dash:'M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z',
+  n_activity:'M3 12h4l3-8 4 16 3-8h4',
+  n_devices:'M7 7h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2zM9 7V3.5M15 7V3.5M9 13h6M9 17h3',
+  n_pair:'M3.5 14.5a4.5 4.5 0 1 0 9 0a4.5 4.5 0 1 0-9 0M11.5 9.5a4.5 4.5 0 1 0 9 0a4.5 4.5 0 1 0-9 0',
+  n_map:'M10 5a2 2 0 1 0 4 0a2 2 0 1 0-4 0M3 18a2 2 0 1 0 4 0a2 2 0 1 0-4 0M17 18a2 2 0 1 0 4 0a2 2 0 1 0-4 0M11 6.8L6 16.2M13 6.8l5 9.4M7 18h10',
+  n_logs:'M6 3h9l4 4v14H6zM15 3v4h4M9 12h6M9 16h6',
+  n_settings:'M4 7h10M18 7h2M4 17h4M12 17h8M14 7a2 2 0 1 0 4 0a2 2 0 1 0-4 0M8 17a2 2 0 1 0 4 0a2 2 0 1 0-4 0'
+};
+function svg(name,size){const NS='http://www.w3.org/2000/svg';const s=document.createElementNS(NS,'svg');s.setAttribute('viewBox','0 0 24 24');s.setAttribute('class','i');s.setAttribute('aria-hidden','true');if(size)s.style.fontSize=size+'px';const p=document.createElementNS(NS,'path');p.setAttribute('d',ICONS[name]||ICONS.chip);s.append(p);return s;}
+async function api(path,body){
+  const opt=body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json','X-OneRoof':'1'},body:JSON.stringify(body)};
+  opt.cache='no-store';
+  let r;try{r=await fetch(path,opt);}catch(e){throw new Error('Bridge unreachable');}
+  let j=null;try{j=await r.json();}catch(e){}
+  if(!r.ok||(j&&j.ok===false))throw new Error((j&&j.error)||('HTTP '+r.status));
+  return j;
+}
+function toast(msg,err){const t=el('div',{class:'toast'+(err?' err':''),text:msg});$('#toasts').append(t);setTimeout(()=>t.remove(),err?6000:3200);}
+function confirmDlg(title,bodyNodes,okLabel,danger){return new Promise(res=>{const d=$('#dlg');$('#dlg-t').textContent=title;clear($('#dlg-b')).append(...bodyNodes);const ok=$('#dlg-ok');ok.textContent=okLabel||'Confirm';ok.className='btn primary'+(danger?' danger':'');const done=v=>{d.close();ok.onclick=null;$('#dlg-no').onclick=null;res(v);};ok.onclick=()=>done(true);$('#dlg-no').onclick=()=>done(false);d.onclose=()=>res(false);d.showModal();});}
+function tsMs(ts){return typeof ts==='number'?(ts<1e12?ts*1000:ts):Date.parse(ts);}
+function rel(ts){if(!ts)return 'never';const t=tsMs(ts);if(isNaN(t))return String(ts);const s=Math.max(0,(Date.now()-t)/1000);if(s<45)return 'just now';if(s<3600)return Math.round(s/60)+' min ago';if(s<86400)return Math.round(s/3600)+' h ago';return Math.round(s/86400)+' d ago';}
+function fmtTs(ts){const t=tsMs(ts);if(isNaN(t))return String(ts||'');const d=new Date(t),p=n=>String(n).padStart(2,'0');return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;}
+function hex(n,w){return typeof n==='number'?'0x'+n.toString(16).padStart(w||4,'0'):String(n??'—');}
+function fmtVal(v){if(v===null||v===undefined)return '—';if(typeof v==='number')return Number.isInteger(v)?String(v):String(+v.toFixed(2));if(typeof v==='object')return JSON.stringify(v);return String(v);}
+function download(name,rows){const a=el('a',{href:'data:application/json;charset=utf-8,'+encodeURIComponent(JSON.stringify(rows,null,1)),download:name});document.body.append(a);a.click();a.remove();}
+function debounce(f,ms){let t;return(...a)=>{clearTimeout(t);t=setTimeout(()=>f(...a),ms);};}
+function copyText(t){if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(t).then(()=>toast('Copied'),()=>toast('Copy failed',true));else toast('Clipboard unavailable',true);}
+function readFile(fl,b64){return new Promise((res,rej)=>{const fr=new FileReader();fr.onload=()=>res(b64?String(fr.result).split(',')[1]||'':String(fr.result));fr.onerror=()=>rej(new Error('Could not read '+fl.name));if(b64)fr.readAsDataURL(fl);else fr.readAsText(fl);});}
+function fmtSize(n){if(typeof n!=='number')return '—';return n>=1048576?(n/1048576).toFixed(1)+' MB':n>=1024?Math.round(n/1024)+' KB':n+' B';}
+const NOCTL='UI user is not in control_users';
+/* ============ help texts (edit here) ============ */
+const HELP={
+  'serial.port':'Device file of the USB coordinator (/dev/ttyUSB0 or, better, /dev/serial/by-id/… which survives re-plugging), or tcp://host:port for a network coordinator.',
+  'serial.baudrate':'Speed of the serial link. 115200 is right for almost every TI stick; change it only if the firmware documentation says so, otherwise the coordinator will not answer.',
+  'serial.rtscts':'Hardware flow control on the serial line. Leave it off unless the adapter documentation asks for it; a wrong value makes the coordinator look dead.',
+  'serial.adapter':'Coordinator firmware family. Only Texas Instruments Z-Stack 3 (CC2652, CC1352, CC2538) is supported, so this value cannot be changed.',
+  'serial.network':'Network coordinators expose the serial port over plain TCP: neither encrypted nor authenticated, so anyone on that network segment can drive the radio. Keep it on a trusted VLAN.',
+  'zigbee.channel':'IEEE 802.15.4 channel 11–26. Channels 15, 20 and 25 avoid the busiest Wi-Fi bands. Changing it re-forms the network: every device must be paired again.',
+  'zigbee.permit_join_max_seconds':'Upper bound for any join window opened from the UI or over MQTT (1–254 s). While the window is open, the network key is handed to any device that asks, so keep this short.',
+  'zigbee.permit_join_cooldown_seconds':'Minimum pause between two join windows. Stops a compromised MQTT client from keeping the network permanently open by re-requesting permit_join in a loop.',
+  'zigbee.permit_join_require_install_code':'Plain join windows are refused; every device must be paired with the install code printed on it. The network key then travels encrypted with a per-device key, so a sniffer present during pairing learns nothing.',
+  'zigbee.strict_install_codes':'Replaces the public ZigBeeAlliance09 link key with a random one, so a device can only join with its install code. Strongest setting, but devices that do not print an install code cannot be paired at all.',
+  'mqtt.listen':'Interface the broker binds to. 0.0.0.0 = all interfaces (needed when Home Assistant runs elsewhere); 127.0.0.1 keeps it local to this host.',
+  'mqtt.port':'TCP port of the MQTT broker. 8883 is the convention for MQTT over TLS, 1883 for plaintext. Home Assistant connects here — no separate broker is needed.',
+  'mqtt.plaintext_port':'A second, unencrypted listener for legacy devices that cannot do TLS. Passwords and device state cross the network readable; leave empty unless you really need it.',
+  'mqtt.base_topic':'Prefix of every device topic, e.g. zigbee/Kitchen plug. Change it only before connecting Home Assistant; discovery and automations reference the full topic.',
+  'mqtt.tls.mode':'auto (recommended): the gateway issues its own certificate authority and server certificate; give clients ca.crt once. custom: bring your own certificate and key. off: plaintext — anyone on the network can read credentials and device state; only for loopback testing.',
+  'mqtt.tls.cert':'Path to the server certificate (PEM, full chain if an intermediate is involved). Its names must match what clients connect to.',
+  'mqtt.tls.key':'Path to the unencrypted private key matching the certificate. Keep it readable by the gateway only; whoever has it can impersonate the broker.',
+  'mqtt.tls.client_ca':'Mutual TLS: clients must present a certificate signed by this CA in addition to a password ("require client certificate"). Strong, but every client then needs its own certificate.',
+  'mqtt.tls.hostnames':'Extra names or IP addresses written into the auto-issued certificate. Add every address clients use (homeassistant.local, 192.168.1.10), otherwise their TLS check fails.',
+  'users.name':'MQTT username. Give each client its own user so a leaked credential can be revoked without touching the others.',
+  'users.role':'Preset of topic permissions. homeassistant: read everything, set/get devices, no network control. admin: everything. readonly: subscribe only. custom: your own subscribe/publish filters.',
+  'users.control':'Control users may open the join window, remove devices and rotate the network key. Home Assistant normally should NOT have this, so a leaked HA token cannot add a device to your network.',
+  'users.password':'At least 12 characters; stored as a salted hash, never in clear. Leave blank while editing to keep the current one.',
+  'users.subscribe':'Topic filters this user may read, one per line (+ and # wildcards). Everything else is silently denied.',
+  'users.publish':'Topic filters this user may write, one per line. Limiting a client to zigbee/+/set means it can switch devices but never touch the bridge topics.',
+  'homeassistant.discovery':'Publishes entity descriptions under the discovery prefix so devices appear in Home Assistant automatically. Only the gateway should be allowed to publish there: whoever can write to that prefix can create fake entities.',
+  'homeassistant.discovery_prefix':'Topic prefix Home Assistant watches for discovery messages. Must match the MQTT integration setting; homeassistant is the default on both sides.',
+  'ui.acts_as':'MQTT user whose permissions this web UI uses. Control actions (pair, remove, rotate key) work only if that user has control.',
+  'ui.port':'Port of this web UI. It binds to loopback or the Home Assistant Ingress only and is never exposed to the network, because it has no login of its own.',
+  'ui.enabled':'Turns the web UI off completely. The MQTT API keeps working.',
+  'backup.password':'Encrypts the backup (network key, TLS keys, device database, config). Without this password the file is useless — store it with the file, not in it.',
+  'backup.file':'An .ozbk file created by this gateway. Restoring replaces the current keys and database, so devices paired after the backup need re-pairing.',
+  'maintenance.log_level':'Verbosity of the application log until the next restart. DEBUG logs every frame and can include device payloads; use it briefly.',
+  'maintenance.restart':'Restarts the whole process: broker, coordinator link and this UI. Devices keep their state and reconnect by themselves; expect a few seconds of downtime.',
+  'maintenance.rotate':'Writes a fresh random network key to the coordinator. Every device must be paired again. Use it when you suspect the key leaked (an unexpected join, a device you never paired).',
+  'pair.seconds':'How long the network accepts new devices. The network key is handed to anyone who joins in this window, so keep it just long enough to press the button on the device.',
+  'pair.ieee':'The 64-bit address printed on the device or its QR label (16 hex digits). The join window is then opened for this one device only.',
+  'pair.install_code':'Secret printed on the device or its box as a QR code/label. It derives a one-off link key, so the network key is never sent under the well-known default key.',
+  'firmware.policy':'The gateway has no update server and never fetches firmware on its own. You upload an OTA file published by the manufacturer; its header is parsed and checked, and it is offered only to devices whose own manufacturer code and image type match it.',
+  'firmware.check':'Asks the device to report its current firmware: manufacturer code, image type and version. Sleepy battery devices answer only when awake, so press a button on them first.',
+  'firmware.update':'Arms the chosen image for this device and notifies it. The device pulls the image block by block, verifies it and reboots into it; this can take from minutes to an hour. Downgrades are refused unless allowed in the configuration.',
+  'firmware.upload':'A Zigbee OTA file (.ota or .zigbee) as published by the manufacturer. The header must parse and the size must match; compare the SHA-256 shown afterwards with the hash the vendor publishes.',
+  'import.config':'The previous setup\'s configuration.yaml. It gives the device names and, unless it says GENERATE, the network key, PAN id and channel.',
+  'import.db':'The previous setup\'s database.db. It holds models, manufacturers and endpoints, so imported devices need no interview.',
+  'import.backup':'coordinator_backup.json written by the previous setup. Needed only when the dongle was wiped or replaced: it carries the network key and frame counter into a fresh coordinator.',
+  'import.keep_broker':'Keeps publishing to the broker the previous setup used instead of starting the built-in one, so Home Assistant and other MQTT clients stay connected as they are. Trade-off: transport security is that broker\'s (plaintext on 1883 unless you set up TLS there), and since that broker cannot enforce per-user control rights, MQTT control requests (permit_join, remove, key rotation) are refused — control works from this UI only.',
+  'import.keep_entities':'Keeps the previous base topic, discovery prefix and exact discovery identities (unique ids, device identifiers, topics). Home Assistant sees the same entities with the same entity ids, so dashboards, automations, history and other MQTT clients keep working unchanged. Off = fresh start: HA creates new entities and the old ones become unavailable.',
+  'compat.legacy_layout':'Topics are <base>/<friendly name> and discovery messages use the previous identities, so Home Assistant keeps the entities it already had. Enabled by the import; it can only be switched off here, which makes HA create new entities and leaves the old ones unavailable.',
+  state:'Switches the device on or off. toggle flips the current state.',
+  power_on_behavior:'What the device does after a power cut: stay off, turn on, toggle or restore the previous state. "previous" is usually what you want for lights.',
+  countdown:'Turns the device off automatically after the given number of seconds — handy for a kettle or heater plug.',
+  brightness:'Light level 0–254 (Zigbee scale). Many bulbs ignore values below ~5.',
+  color_temp:'White tone in mired: lower is cooler/bluer (153 ≈ 6500 K), higher is warmer (500 ≈ 2000 K).',
+  color:'Colour as CIE xy coordinates. Values are applied together with Apply.',
+  position:'Cover position in percent: 0 closed, 100 fully open.',
+  cover:'Open, close or stop the cover motor.',
+  heating_setpoint:'Target temperature of the thermostat in °C.',
+  system_mode:'Thermostat mode: off, heat, cool or auto.',
+  identify:'Makes the device blink for about 10 seconds so you can find it physically.',
+  linkquality:'Link quality of the last received frame, 0–255. Values under ~50 mean a weak link; a router nearby helps.',
+  battery:'Remaining battery as reported by the device. Sleepy devices report it rarely, so the value can be hours old.',
+  power:'Instantaneous power draw in watts.',
+  current:'Measured current in amperes.',
+  voltage:'Measured mains voltage in volts.',
+  energy:'Accumulated consumption in kWh since the meter was last reset.',
+  temperature:'Measured temperature in °C.',
+  humidity:'Relative humidity in percent.',
+  pressure:'Air pressure in hPa.',
+  illuminance_lux:'Ambient light in lux.',
+  occupancy:'Motion detected by the sensor. Clears after the device\'s own timeout.',
+  contact:'Magnet contact: true means closed.',
+  water_leak:'Water detected by the probe.',
+  smoke:'Smoke alarm triggered.',
+  tamper:'The device case was opened or removed from its mount.'
+};
+let helpPop=null,helpCur=null,helpPin=false;
+function helpText(id,fallback){return HELP[id]||fallback||'';}
+function showHelp(btn){
+  if(!helpPop){helpPop=el('div',{id:'helppop',role:'tooltip'});document.body.append(helpPop);}
+  if(helpCur&&helpCur!==btn)helpCur.classList.remove('open');helpCur=btn;btn.classList.add('open');
+  clear(helpPop).append(btn.dataset.title?el('b',{text:btn.dataset.title}):null,btn.dataset.help);
+  helpPop.classList.remove('hidden');helpPop.style.left='0px';helpPop.style.top='0px';btn.setAttribute('aria-describedby','helppop');
+  const r=btn.getBoundingClientRect(),w=helpPop.offsetWidth,h=helpPop.offsetHeight;
+  let left=Math.max(8,Math.min(r.left-8,innerWidth-w-8)),top=r.bottom+8;if(top+h>innerHeight-8)top=Math.max(8,r.top-h-8);
+  helpPop.style.left=left+'px';helpPop.style.top=top+'px';
+}
+function hideHelp(force){if(!helpPop||(helpPin&&!force))return;helpPin=false;helpPop.classList.add('hidden');if(helpCur){helpCur.classList.remove('open');helpCur.removeAttribute('aria-describedby');helpCur=null;}}
+function help(id,fallback,title){
+  const t=helpText(id,fallback);if(!t)return null;
+  const NS='http://www.w3.org/2000/svg';const s=document.createElementNS(NS,'svg');s.setAttribute('viewBox','0 0 24 24');s.setAttribute('aria-hidden','true');const p=document.createElementNS(NS,'path');p.setAttribute('d','M3.5 12a8.5 8.5 0 1 0 17 0a8.5 8.5 0 1 0-17 0M9.6 9.5a2.5 2.5 0 1 1 3.6 2.2c-.8.4-1.2 1-1.2 1.8v.3M12 17h.01');s.append(p);
+  const b=el('button',{type:'button',class:'help','aria-label':'Help: '+(title||id),'data-help':t,'data-title':title||''},s);
+  b.addEventListener('mouseenter',()=>{if(!helpPin)showHelp(b);});b.addEventListener('mouseleave',()=>{if(!helpPin)hideHelp();});
+  b.addEventListener('focus',()=>showHelp(b));b.addEventListener('blur',()=>hideHelp());
+  b.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();if(helpPin&&helpCur===b)hideHelp(true);else{helpPin=false;showHelp(b);helpPin=true;}});
+  b.addEventListener('keydown',e=>{if(e.key==='Escape'){hideHelp(true);e.stopPropagation();}});
+  return b;
+}
+document.addEventListener('keydown',e=>{if(e.key==='Escape')hideHelp(true);});
+document.addEventListener('click',e=>{if(helpCur&&!helpCur.contains(e.target))hideHelp(true);});
+document.addEventListener('scroll',()=>hideHelp(true),true);
+window.addEventListener('resize',()=>hideHelp(true));
+function stateSummary(st){
+  if(!st||typeof st!=='object')return '';const p=[];
+  if('state'in st)p.push(String(st.state));
+  if(typeof st.brightness==='number')p.push(Math.round(st.brightness/254*100)+'%');
+  if(typeof st.color_temp==='number')p.push(st.color_temp+' mired');
+  if(typeof st.position==='number')p.push('pos '+st.position+'%');
+  if(typeof st.temperature==='number')p.push(st.temperature.toFixed(1)+' °C');
+  if(typeof st.humidity==='number')p.push(Math.round(st.humidity)+' %');
+  if(typeof st.occupancy==='boolean')p.push(st.occupancy?'occupied':'clear');
+  if(typeof st.contact==='boolean')p.push(st.contact?'closed':'open');
+  if(typeof st.battery==='number')p.push('🔋'+st.battery+'%');
+  if(typeof st.power==='number')p.push(st.power+' W');
+  if(!p.length){const k=Object.keys(st).filter(k=>k!=='linkquality').slice(0,3);return k.map(k=>k+' '+JSON.stringify(st[k])).join(' · ');}
+  return p.join(' · ');
+}
+const cid=c=>(c&&typeof c==='object')?c.id:c;
+const CL_NAMES={0:'basic',1:'power_cfg',3:'identify',4:'groups',5:'scenes',6:'on_off',8:'level',0x19:'ota',0x20:'poll_ctrl',0x101:'door_lock',0x102:'window_covering',0x201:'thermostat',0x300:'color',0x400:'illuminance',0x402:'temperature',0x403:'pressure',0x405:'humidity',0x406:'occupancy',0x500:'ias_zone',0x702:'metering',0xb04:'electrical',0xb05:'diagnostics',0xfc11:'manuf_specific'};
+const clName=c=>(c&&typeof c==='object'&&c.name)?c.name:(CL_NAMES[cid(c)]||('cluster '+hex(cid(c))));
+function clusters(d){const s=new Set();for(const ep of Object.values(d.endpoints||{}))for(const c of (ep.in_clusters||[]))s.add(cid(c));return s;}
+function catGlyph(d){const cat=Object.values(d.endpoints||{}).map(e=>e.category||'').join(' ').toLowerCase();const cl=clusters(d);
+  if(/light|lamp|bulb/.test(cat)||cl.has(0x300)||cl.has(8))return 'bulb';if(/cover|blind|shade|curtain/.test(cat)||cl.has(0x102))return 'cover';if(/lock/.test(cat)||cl.has(0x101))return 'lock';if(/thermostat|climate|hvac/.test(cat)||cl.has(0x201))return 'thermometer';if(/plug|outlet|socket/.test(cat)||cl.has(0x702)||cl.has(0xb04))return 'plug';if(/switch/.test(cat)||cl.has(6))return 'power';if(/remote|button/.test(cat))return 'remote';if(cl.has(0x402))return 'thermometer';if(cl.has(0x405))return 'drop';if(cl.has(0x406)||cl.has(0x500))return 'hand';if(cl.has(0x400))return 'sun';return 'chip';}
+function powerLabel(p){if(!p)return '—';const s=String(p).toLowerCase();if(/mains|dc/.test(s))return 'Mains';if(/batt/.test(s))return 'Battery';return s[0].toUpperCase()+s.slice(1);}
+const dpath=(d,p)=>'api/devices/'+encodeURIComponent(d.ieee||d)+p;
+
+/* ============ state ============ */
+const S={bridge:null,devices:[],devMap:new Map(),exposes:{},online:false,page:null,lastSec:null,pj:{open:false,seconds_left:0},pairFeed:[],audit:[],logs:[],sseBackoff:1000,es:null};
+const PAGES=[['dashboard','Dashboard','n_dash'],['devices','Devices','n_devices'],['pair','Pair','n_pair'],['map','Map','n_map'],['logs','Logs','n_logs'],['activity','Activity','n_activity'],['settings','Settings','n_settings']];
+const views={};
+const can=()=>S.bridge?S.bridge.ui_can_control!==false:true;
+
+/* ============ SSE ============ */
+function connectSSE(){
+  if(S.es)S.es.close();
+  const es=new EventSource('api/events');S.es=es;
+  es.onopen=()=>{S.online=true;S.sseBackoff=1000;renderHeader();views.devices.refresh();};
+  es.onerror=()=>{S.online=false;renderHeader('reconnecting…');es.close();setTimeout(connectSSE,S.sseBackoff);S.sseBackoff=Math.min(S.sseBackoff*2,30000);};
+  const on=(n,f)=>es.addEventListener(n,e=>{let d;try{d=JSON.parse(e.data);}catch(x){return;}f(d);});
+  on('state',d=>{const dev=S.devMap.get(d.ieee);if(dev){dev.state=Object.assign({},dev.state,d.state);dev.last_seen=Date.now();if(d.state&&typeof d.state.linkquality==='number')dev.lqi=d.state.linkquality;}views.devices.onState(d.ieee);views.device.onState(d.ieee,d.state);views.dashboard.onState(d.ieee);});
+  on('device',d=>{const dev=d.device;if(dev){if(d.action==='left'){S.devMap.delete(dev.ieee);}else{S.devMap.set(dev.ieee,Object.assign(S.devMap.get(dev.ieee)||{},dev));}S.devices=[...S.devMap.values()];if(S.bridge)S.bridge.device_count=S.devices.length;}views.pair.feed(d.action,dev);renderHeader();if(S.page==='devices')views.devices.render();views.device.onDevice(d.action,dev);views.dashboard.onDevice(d.action,dev);});
+  on('activity',d=>{views.device.onActivity(d);views.activity.push(d);});
+  on('permit_join',d=>{S.pj=Object.assign(S.pj,d);renderHeader();views.pair.tick();});
+  on('audit',d=>{views.logs.pushAudit(d);if(d.type&&/join|interview|announce|leave|permit/i.test(d.type))views.pair.feed(d.type,d);});
+  on('security',d=>{d.level=d.level||'security';S.lastSec=d;views.logs.pushAudit(d);views.pair.feed('SECURITY '+(d.type||''),d);renderHeader();toast('Security: '+(d.type||'alert'),true);});
+  on('log',d=>views.logs.pushLog(d));
+}
+
+/* ============ header / nav ============ */
+function renderHeader(txt){
+  const b=$('#h-bridge');b.firstChild.className='dot'+(S.online?' on':' warn');b.lastChild.textContent=txt||(S.online?'bridge online':'bridge offline');
+  $('#h-devs').textContent=(S.bridge?S.bridge.device_count:S.devices.length)+' devices';
+  const j=$('#h-join');clear(j);
+  if(S.pj.open){j.className='badge open';j.append(el('i',{class:'dot on pulse'}),'join open · '+(S.pj.seconds_left|0)+' s');}else{j.className='badge';j.textContent='join closed';}
+  const s=$('#h-sec');if(S.lastSec){s.classList.remove('hidden');s.textContent='⚠ '+(S.lastSec.type||'security alert');}
+}
+function buildNav(){$('#brand-i').append(svg('home',15));for(const id of['#nav','#tabs']){const n=$(id);clear(n);for(const[p,label,ic]of PAGES)n.append(el('a',{href:'#'+p,'data-p':p},svg(ic),el('span',{text:label})));}}
+function route(){const h=(location.hash||'#dashboard').slice(1);const[p,...rest]=h.split('/');const page=views[p]?p:'dashboard';let arg=null;try{arg=rest.length?decodeURIComponent(rest.join('/')):null;}catch(e){arg=rest.join('/');}const navP=page==='device'?'devices':page;document.querySelectorAll('nav a').forEach(a=>a.classList.toggle('active',a.dataset.p===navP));if(S.page&&views[S.page].leave)views[S.page].leave();S.page=page;const m=clear($('#main'));views[page].enter(m,arg);}
+
+/* ============ DEVICES ============ */
+views.devices={
+  q:'',rows:new Map(),
+  enter(m){
+    m.append(el('h1',{text:'Devices'}),el('p',{class:'lead',text:'Everything paired to this coordinator. Open a device for its details, controls, clusters and bindings; click a name to rename it in place.'}));
+    const search=el('input',{type:'search',placeholder:'Search name, model, IEEE…',value:this.q,oninput:debounce(e=>{this.q=e.target.value.trim().toLowerCase();this.render();},120)});
+    this.count=el('span',{class:'mute'});
+    m.append(el('div',{class:'bar'},search,el('span',{class:'grow'}),this.count));
+    this.host=el('div');m.append(this.host);this.render();this.refresh();
+  },
+  async refresh(){try{const list=await api('api/devices');for(const d of list)S.devMap.set(d.ieee,Object.assign(S.devMap.get(d.ieee)||{},d));for(const k of[...S.devMap.keys()])if(!list.some(d=>d.ieee===k))S.devMap.delete(k);S.devices=[...S.devMap.values()];this.render();views.dashboard.render();renderHeader();}catch(e){if(S.page==='devices'||S.page==='dashboard')toast(e.message,true);}},
+  filtered(){const q=this.q;return S.devices.filter(d=>!q||[d.friendly_name,d.model,d.manufacturer,d.ieee,d.description].join(' ').toLowerCase().includes(q)).sort((a,b)=>String(a.friendly_name).localeCompare(String(b.friendly_name)));},
+  render(){
+    if(S.page!=='devices')return;const list=this.filtered();this.count.textContent=list.length+' of '+S.devices.length;
+    const h=clear(this.host);this.rows.clear();
+    if(!list.length){h.append(el('div',{class:'empty',text:S.devices.length?'No device matches that search.':'No devices yet. Open Pair to add one.'}));return;}
+    const tb=el('tbody');for(const d of list)tb.append(this.row(d));
+    h.append(el('div',{class:'twrap'},el('table',{class:'devtab'},el('thead',null,el('tr',null,...['Device','Model','Type','LQI','Last seen','State','',''].map(t=>el('th',{text:t})))),tb)));
+  },
+  row(d){
+    const ok=can();const cl=clusters(d);
+    const name=el('span',{class:'name',text:d.friendly_name||d.ieee,title:'Rename'});
+    name.addEventListener('click',e=>{e.stopPropagation();const inp=el('input',{type:'text',value:d.friendly_name||'',onclick:x=>x.stopPropagation()});const fin=async(save)=>{if(!inp.parentNode)return;const v=inp.value.trim();inp.replaceWith(name);if(save&&v&&v!==d.friendly_name){try{await api(dpath(d,'/rename'),{friendly_name:v});d.friendly_name=v;name.textContent=v;toast('Renamed to '+v);}catch(e){toast(e.message,true);}}};inp.addEventListener('keydown',e=>{if(e.key==='Enter')fin(true);if(e.key==='Escape')fin(false);});inp.addEventListener('blur',()=>fin(true));name.replaceWith(inp);inp.focus();inp.select();});
+    const avail=el('i',{class:'dot'+(d.available?' on':''),title:d.available?'Available':'Unavailable'});
+    const lqi=el('td');const stateTd=el('td',{class:'sub'});const seenTd=el('td',{class:'sub'});
+    const stop=e=>e.stopPropagation();
+    const ctl=el('td',{onclick:stop},this.controls(d,cl));
+    const thumb=el('div',{class:'thumb'},svg(catGlyph(d)));
+    const tr=el('tr',{class:'click',title:'Open device'},
+      el('td',null,el('div',{style:'display:flex;gap:12px;align-items:center'},thumb,el('div',null,el('div',{style:'display:flex;gap:8px;align-items:center'},avail,name),el('div',{class:'sub mono',text:d.ieee})))),
+      el('td',{class:'sub'},el('div',{text:d.model||'—'}),el('div',{text:d.manufacturer||''}),d.description?el('div',{class:'mute',style:'font-style:italic',text:d.description}):null),
+      el('td',{class:'sub',text:d.is_router?'Router':'End device'}),lqi,seenTd,stateTd,ctl,
+      el('td',{onclick:stop},this.menu(d,ok)));
+    tr.addEventListener('click',()=>{location.hash='#device/'+encodeURIComponent(d.ieee);});
+    const upd=()=>{clear(lqi).append(el('span',{class:'lqi'},el('i',{style:'width:'+Math.min(100,(d.lqi||0)/255*100)+'%'})),String(d.lqi??'—'));seenTd.textContent=rel(d.last_seen);stateTd.textContent=d.interviewed===false?'interviewing…':stateSummary(d.state);avail.className='dot'+(d.available?' on':'');};
+    upd();this.rows.set(d.ieee,{tr,upd,ctl,d});return tr;
+  },
+  controls(d,cl){
+    const set=p=>api(dpath(d,'/set'),p).catch(e=>toast(e.message,true));const st=d.state||{};const w=el('div',{class:'ctl'});
+    if(cl.has(6)){w.append(el('button',{class:'btn sm',text:st.state==='ON'?'Turn off':'Turn on',onclick:()=>set({state:st.state==='ON'?'OFF':'ON'})}));}
+    if(cl.has(8)){w.append(el('input',{type:'range',min:0,max:254,value:st.brightness??127,title:'Brightness',onchange:e=>set({brightness:+e.target.value})}));}
+    if(cl.has(0x300)){w.append(el('input',{type:'range',min:153,max:500,value:st.color_temp??300,title:'Colour temperature (mired)',onchange:e=>set({color_temp:+e.target.value})}));}
+    if(cl.has(0x102)){w.append(...['open','close','stop'].map(s=>el('button',{class:'btn sm',text:s[0].toUpperCase()+s.slice(1),onclick:()=>set({state:s.toUpperCase()})})),el('input',{type:'range',min:0,max:100,value:st.position??50,title:'Position %',onchange:e=>set({position:+e.target.value})}));}
+    return w;
+  },
+  menu(d,ok){
+    const pop=el('div',{class:'pop hidden'});const m=el('div',{class:'menu'},el('button',{class:'btn sm',text:'⋯','aria-label':'More actions',onclick:e=>{e.stopPropagation();document.querySelectorAll('.pop').forEach(p=>p!==pop&&p.classList.add('hidden'));pop.classList.toggle('hidden');if(!pop.classList.contains('hidden')){const r=e.currentTarget.getBoundingClientRect();pop.style.top=(r.bottom+4)+'px';pop.style.left='auto';pop.style.right=(window.innerWidth-r.right)+'px';}}}),pop);
+    const act=(label,path,msg)=>el('button',{text:label,onclick:async()=>{pop.classList.add('hidden');try{await api(dpath(d,path),{});toast(msg);}catch(e){toast(e.message,true);}}});
+    pop.append(el('button',{text:'Open details',onclick:()=>{location.hash='#device/'+encodeURIComponent(d.ieee);}}),act('Identify (10 s)','/identify','Identify sent'),act('Re-interview','/interview','Interview started'));
+    pop.append(removeBtn(d,ok,'btn-like'));return m;
+  },
+  onState(ieee){const r=this.rows.get(ieee);if(!r)return;r.upd();clear(r.ctl).append(this.controls(r.d,clusters(r.d)));}
+};
+function removeBtn(d,ok,cls){
+  const rm=el('button',{class:cls==='btn-like'?'danger':'btn danger',text:cls==='btn-like'?'Remove…':'Remove',disabled:!ok,title:ok?'':'UI user is not in control_users',onclick:async()=>{document.querySelectorAll('.pop').forEach(p=>p.classList.add('hidden'));if(await confirmDlg('Remove '+(d.friendly_name||d.ieee)+'?',[el('p',{text:'The device is told to leave the network and its entry is deleted. To use it again you must pair it from scratch.'})],'Remove device',true)){try{await api(dpath(d,'/remove'),{});toast('Removed '+(d.friendly_name||d.ieee));if(S.page==='device')location.hash='#devices';}catch(e){toast(e.message,true);}}}});
+  return ok?rm:el('span',{class:'tip',title:'UI user is not in control_users',style:cls==='btn-like'?'display:block':'display:inline-block'},rm);
+}
+document.addEventListener('click',()=>document.querySelectorAll('.pop').forEach(p=>p.classList.add('hidden')));document.addEventListener('scroll',()=>document.querySelectorAll('.pop').forEach(p=>p.classList.add('hidden')),true);
+
+/* ============ FEATURE CONTROLS (shared by device page and dashboard) ============ */
+function featIcon(f){if(f.icon&&ICONS[f.icon])return f.icon;const k=f.key||'';if(/temp/.test(k)&&!/color/.test(k))return 'thermometer';if(/humid|water|leak/.test(k))return 'drop';if(/power|energy|current|voltage/.test(k))return 'bolt';if(/battery/.test(k))return 'battery';if(/lock/.test(k))return 'lock';if(/countdown|timer/.test(k))return 'clock';if(/occup|contact|vibr|action/.test(k))return 'hand';if(/link|quality|rssi/.test(k))return 'signal';if(/bright|identify|illum/.test(k))return 'sun';if(/color/.test(k))return 'palette';if(/position|cover/.test(k))return 'arrows';if(f.type==='binary')return 'power';if(f.type==='enum')return 'sliders';if(f.type==='text')return 'text';return 'sliders';}
+/* opts: {compact: bool, set(patch)} → {ctrl, update()}; update() refreshes values in place and never touches a focused input */
+function featureControl(d,f,o){
+  const cmp=!!o.compact,lbl=f.name||f.key;const cur=()=>(d.state||{})[f.key];const ctrl=el('div',{class:'ctrl'+(cmp?' cmp':'')});const set=v=>o.set({[f.key]:v});
+  const ups=[];const reg=u=>{u();ups.push(u);};const act=i=>document.activeElement===i;
+  const unit=f.unit?' '+f.unit:'';const rw=f.access==='rw'||f.access==='w';
+  const ro=cls=>{const t=el('span',{class:cmp?'val':cls||'bigval'});reg(()=>{clear(t).append(fmtVal(cur()));if(f.unit)t.append(el('small',{text:f.unit}));});ctrl.append(t);};
+  if(f.type==='binary'){
+    const on=f.value_on??'ON',off=f.value_off??'OFF';
+    if(!rw)ro();
+    else if(cmp){const c=el('input',{type:'checkbox','aria-label':lbl});c.addEventListener('change',()=>set(c.checked?on:off));reg(()=>{if(!act(c))c.checked=cur()===on;});ctrl.append(el('label',{class:'sw'},c,el('i')));}
+    else{const bOff=el('button',{text:String(off),onclick:()=>set(off)}),bT=el('button',{text:'toggle',onclick:()=>set(cur()===on?off:on)}),bOn=el('button',{class:'on',text:String(on),onclick:()=>set(on)});reg(()=>{bOff.classList.toggle('active',cur()===off);bOn.classList.toggle('active',cur()===on);});ctrl.append(el('div',{class:'seg'},bOff,bT,bOn));}
+  }else if(f.type==='numeric'){
+    if(rw){const min=f.min??0,max=f.max??(f.key==='brightness'?254:100),step=f.step??1;const v0=typeof cur()==='number'?cur():min;
+      const r=el('input',{type:'range',min,max,step,value:v0,'aria-label':lbl});const n=cmp?el('span',{class:'val sub',text:v0+unit}):el('input',{type:'number',class:'sm',min,max,step,value:v0,'aria-label':lbl});
+      const show=v=>{if(cmp)n.textContent=v+unit;else n.value=v;};
+      r.addEventListener('input',()=>show(r.value));r.addEventListener('change',()=>set(+r.value));if(!cmp)n.addEventListener('change',()=>{r.value=n.value;set(+n.value);});
+      reg(()=>{const v=cur();if(typeof v==='number'&&!act(n)&&!act(r)){r.value=v;show(v);}});
+      if(cmp)ctrl.append(r,n);else ctrl.append(el('div',{class:'range'},r,el('div',{class:'num'},n,el('span',{class:'sub',text:f.unit||''})),el('div',{class:'lim'},el('span',{text:min+unit}),el('span',{text:max+unit}))));
+    }else ro();
+  }else if(f.type==='enum'){
+    if(!rw)ro('val');
+    else if(cmp){const s=el('select',{class:'sm','aria-label':lbl});for(const v of f.values||[])s.append(el('option',{value:v,text:String(v)}));s.addEventListener('change',()=>set(s.value));reg(()=>{if(!act(s))s.value=String(cur()??'');});ctrl.append(s);}
+    else{const bs=(f.values||[]).map(v=>el('button',{text:String(v),onclick:()=>set(v)}));reg(()=>bs.forEach((b,i)=>b.classList.toggle('active',f.values[i]===cur())));ctrl.append(el('div',{class:'btng'},...bs));}
+  }else if(f.type==='action'){
+    if(f.key==='countdown'){const n=el('input',{type:'number',class:'sm',min:f.min??1,max:f.max??65535,step:1,value:30,style:'width:'+(cmp?66:90)+'px','aria-label':'seconds',title:'seconds'});ctrl.append(n);if(!cmp)ctrl.append(el('span',{class:'sub',text:'seconds'}));ctrl.append(el('button',{class:'btn primary'+(cmp?' sm':''),text:'Start',onclick:()=>o.set({countdown:+n.value})}));}
+    else if(f.key==='identify')ctrl.append(el('button',{class:'btn'+(cmp?' sm':''),onclick:async()=>{try{await api(dpath(d,'/identify'),{});toast('Identify sent');}catch(e){toast(e.message,true);}}},svg('sun'),cmp?'Identify':'Identify (10 s)'));
+    else ctrl.append(el('button',{class:'btn'+(cmp?' sm':''),text:lbl,onclick:()=>set(true)}));
+  }else if(f.type==='composite'&&/color_xy|^color$/.test(f.key)){
+    const v=cur()||(d.state||{}).color||{};const x=el('input',{type:'number',class:'sm',min:0,max:1,step:.001,value:v.x??0.3,'aria-label':'x'}),y=el('input',{type:'number',class:'sm',min:0,max:1,step:.001,value:v.y??0.3,'aria-label':'y'});
+    reg(()=>{const c=cur()||(d.state||{}).color;if(c&&typeof c==='object'&&!act(x)&&!act(y)){if(typeof c.x==='number')x.value=c.x;if(typeof c.y==='number')y.value=c.y;}});
+    ctrl.append(el('span',{class:'sub',text:'x'}),x,el('span',{class:'sub',text:'y'}),y,el('button',{class:'btn primary'+(cmp?' sm':''),text:'Apply',onclick:()=>set({x:+x.value,y:+y.value})}));
+  }else if(f.type==='composite'){
+    const t=el('span',{class:'mono sub'});reg(()=>{t.textContent=fmtVal(cur());});ctrl.append(t);
+  }else{
+    if(rw){const i=el('input',{type:'text',class:'sm',value:cur()??'','aria-label':lbl});ctrl.append(i,el('button',{class:'btn sm',text:'Set',onclick:()=>set(i.value)}));}
+    else{const t=el('span');reg(()=>{t.textContent=fmtVal(cur());});ctrl.append(t);}
+  }
+  return{ctrl,update:()=>ups.forEach(u=>u())};
+}
+
+/* ============ DASHBOARD ============ */
+const DCATS=[['all','All'],['light','Lights'],['plug','Plugs'],['sensor','Sensors'],['cover','Covers'],['climate','Climate']];
+function devCat(d){const cat=Object.values(d.endpoints||{}).map(e=>e.category||'').join(' ').toLowerCase();const cl=clusters(d);if(/light|lamp|bulb/.test(cat)||cl.has(0x300)||cl.has(8))return 'light';if(/cover|blind|shade|curtain/.test(cat)||cl.has(0x102))return 'cover';if(/thermostat|climate|hvac/.test(cat)||cl.has(0x201))return 'climate';if(/plug|outlet|socket|switch/.test(cat)||cl.has(0x702)||cl.has(0xb04)||cl.has(6))return 'plug';return 'sensor';}
+const dlink=d=>'#device/'+encodeURIComponent(d.ieee);
+views.dashboard={
+  q:'',hl:'',cat:'all',cards:new Map(),
+  enter(m){
+    m.append(el('h1',{text:'Dashboard'}),el('p',{class:'lead',text:'Every device at a glance: switch, dim and read values right here. Open a card for the full detail page.'}));
+    const search=el('input',{type:'search',placeholder:'Search…',value:this.q,oninput:debounce(e=>{this.q=e.target.value.trim().toLowerCase();this.render();},120)});
+    const hl=el('input',{type:'search',placeholder:'Highlight…',value:this.hl,title:'Highlight matching cards without hiding the others',oninput:debounce(e=>{this.hl=e.target.value.trim().toLowerCase();this.applyHl();},120)});
+    this.chips=el('div',{class:'pills',style:'margin:0'});for(const[v,l]of DCATS)this.chips.append(el('button',{text:l,class:v===this.cat?'active':'','data-c':v,onclick:()=>{this.cat=v;this.chips.querySelectorAll('button').forEach(b=>b.classList.toggle('active',b.dataset.c===v));this.render();}}));
+    this.count=el('span',{class:'mute'});
+    m.append(el('div',{class:'bar'},search,hl,this.chips,el('span',{class:'grow'}),this.count));
+    this.host=el('div',{class:'dgrid'});m.append(this.host);this.render();views.devices.refresh();
+  },
+  filtered(){const q=this.q;return S.devices.filter(d=>(this.cat==='all'||devCat(d)===this.cat)&&(!q||[d.friendly_name,d.model,d.manufacturer,d.ieee,d.description].join(' ').toLowerCase().includes(q))).sort((a,b)=>String(a.friendly_name).localeCompare(String(b.friendly_name)));},
+  render(){
+    if(S.page!=='dashboard'||!this.host)return;const list=this.filtered();this.count.textContent=list.length+' of '+S.devices.length;const h=clear(this.host);this.cards.clear();
+    if(!list.length){h.className='';h.append(el('div',{class:'empty'},S.devices.length?'No device matches.':['No devices yet. ',el('a',{href:'#pair',text:'Pair one'}),' to get started.']));return;}
+    h.className='dgrid';for(const d of list)h.append(this.card(d));this.applyHl();
+  },
+  applyHl(){const q=this.hl;this.cards.forEach(c=>{const m=!!q&&[c.d.friendly_name,c.d.model,c.d.manufacturer,c.d.ieee].join(' ').toLowerCase().includes(q);c.card.classList.toggle('hl',m);c.card.classList.toggle('dim',!!q&&!m);});},
+  card(d){
+    const body=el('div');const lqi=el('span',{class:'badge',title:'Link quality'}),bat=el('span',{class:'badge hidden',title:'Battery'}),avail=el('i',{class:'dot'});
+    const card=el('div',{class:'card dcard','data-ieee':d.ieee},el('div',{class:'dh'},el('div',{class:'thumb'},svg(catGlyph(d))),el('a',{href:dlink(d),text:d.friendly_name||d.ieee,title:(d.model||'')+' · open device'}),avail),body,
+      el('div',{class:'dfoot'},lqi,bat,el('span',{class:'grow'}),el('a',{class:'back',href:dlink(d)},'Open ',svg('open'))));
+    const c={d,card,body,ups:[],foot(){const st=d.state||{};clear(lqi).append(svg('signal'),String(d.lqi??'—'));avail.className='dot'+(d.available?' on':'');avail.title=d.available?'online':'offline';if(typeof st.battery==='number'){bat.classList.remove('hidden');clear(bat).append(svg('battery'),st.battery+'%');}}};
+    c.foot();this.cards.set(d.ieee,c);this.fill(c);return card;
+  },
+  exposes(d){return S.exposes[d.ieee]||(S.exposes[d.ieee]=api(dpath(d,'')).then(full=>{const m=S.devMap.get(d.ieee);if(m)Object.assign(m,full);return full.exposes||[];}).catch(e=>{delete S.exposes[d.ieee];throw e;}));},
+  async fill(c){
+    const d=c.d;let ex;c.body.append(el('div',{class:'sub',text:'Loading…'}));
+    try{ex=await this.exposes(d);}catch(e){clear(c.body).append(el('div',{class:'sub',text:e.message}));return;}
+    if(this.cards.get(d.ieee)!==c)return;clear(c.body);c.ups=[];
+    const list=ex.filter(f=>f.category!=='diagnostic'&&f.key!=='identify');
+    if(!list.length){c.body.append(el('div',{class:'sub',text:d.interviewed===false?'Interviewing…':(stateSummary(d.state)||'No features exposed.')}));return;}
+    for(const f of list){const r=featureControl(d,f,{compact:true,set:p=>api(dpath(d,'/set'),p).catch(e=>toast(e.message,true))});c.ups.push(r.update);c.body.append(el('div',{class:'frow','data-key':f.key},el('div',{class:'fn',title:f.description||''},svg(featIcon(f)),el('span',{text:f.name||f.key})),r.ctrl));}
+  },
+  onState(ieee){const c=this.cards.get(ieee);if(!c||S.page!=='dashboard')return;c.ups.forEach(u=>u());c.foot();},
+  onDevice(action,dev){if(!dev)return;if(action==='interviewed'||action==='renamed')delete S.exposes[dev.ieee];this.render();}
+};
+
+/* ============ DEVICE DETAIL ============ */
+const TABS=[['about','About'],['controls','Controls'],['state','State'],['clusters','Clusters'],['reporting','Reporting'],['bind','Bind'],['firmware','Firmware']];
+const CATS=[['control','Controls'],['sensor','Sensors'],['config','Configuration'],['diagnostic','Diagnostics']];
+views.device={
+  tab:'about',d:null,ieee:null,upd:new Map(),
+  enter(m,arg){
+    this.ieee=arg;this.d=null;this.upd.clear();
+    m.append(el('a',{class:'back',href:'#devices'},svg('back'),'Devices'));
+    this.head=el('div',{class:'dhead'});this.tabsEl=el('div',{class:'pills'});this.body=el('div');
+    m.append(this.head,this.tabsEl,this.body);
+    if(!arg){this.body.append(el('div',{class:'empty',text:'No device selected.'}));return;}
+    const cached=S.devMap.get(arg);if(cached){this.d=cached;this.renderHead();}
+    this.load();
+  },
+  async load(){
+    try{const d=await api(dpath(this.ieee,''));const merged=Object.assign(S.devMap.get(d.ieee)||{},d);S.devMap.set(d.ieee,merged);if(!S.devices.includes(merged))S.devices=[...S.devMap.values()];this.d=merged;}
+    catch(e){clear(this.body).append(el('div',{class:'empty',text:e.message}));return;}
+    if(S.page!=='device')return;this.renderHead();this.renderTabs();this.renderTab();
+  },
+  set(p){return api(dpath(this.d,'/set'),p).then(r=>{toast('Sent '+Object.keys(p).join(', '));return r;}).catch(e=>toast(e.message,true));},
+  renderHead(){
+    const d=this.d,ok=can();const h=clear(this.head);
+    const name=el('h1',{text:d.friendly_name||d.ieee,title:'Click to rename'});
+    name.addEventListener('click',()=>{if(name.querySelector('input'))return;const inp=el('input',{type:'text',value:d.friendly_name||''});const fin=async(save)=>{if(!inp.parentNode)return;const v=inp.value.trim();inp.remove();name.textContent=d.friendly_name||d.ieee;if(save&&v&&v!==d.friendly_name){try{await api(dpath(d,'/rename'),{friendly_name:v});d.friendly_name=v;name.textContent=v;toast('Renamed to '+v);}catch(e){toast(e.message,true);}}};inp.addEventListener('keydown',e=>{if(e.key==='Enter')fin(true);if(e.key==='Escape')fin(false);});inp.addEventListener('blur',()=>fin(true));name.textContent='';name.append(inp);inp.focus();inp.select();});
+    const desc=el('p',{class:'desc'+(d.description?'':' placeholder'),text:d.description||'Add a description…',title:'Click to edit'});
+    desc.addEventListener('click',()=>{if(desc.querySelector('input'))return;const inp=el('input',{type:'text',maxlength:200,value:d.description||'',placeholder:'Where it is, what it does…'});const fin=async(save)=>{if(!inp.parentNode)return;const v=inp.value.trim();inp.remove();const show=()=>{desc.textContent=d.description||'Add a description…';desc.classList.toggle('placeholder',!d.description);};if(save&&v!==(d.description||'')){try{await api(dpath(d,'/describe'),{description:v});d.description=v||null;toast('Description saved');}catch(e){toast(e.message,true);}}show();};inp.addEventListener('keydown',e=>{if(e.key==='Enter')fin(true);if(e.key==='Escape')fin(false);});inp.addEventListener('blur',()=>fin(true));desc.textContent='';desc.append(inp);inp.focus();});
+    const badges=el('div',{class:'badges'},
+      el('span',{class:'badge',text:d.is_router?'Router':'End device'}),
+      el('span',{class:'badge'},svg(/batt/i.test(d.power_source||'')?'battery':'bolt'),powerLabel(d.power_source)),
+      d.interviewed?el('span',{class:'badge ok',text:'✓ interviewed'}):el('span',{class:'badge danger',text:d.interview_error?'interview failed: '+d.interview_error:'not interviewed'}),
+      el('span',{class:'badge'+(d.available?' ok':'')},el('i',{class:'dot'+(d.available?' on':'')}),d.available?'online':'offline'));
+    const acts=el('div',{class:'acts'},
+      el('button',{class:'btn',onclick:async()=>{try{await api(dpath(d,'/identify'),{});toast('Identify sent');}catch(e){toast(e.message,true);}}},svg('sun'),'Identify'),
+      el('button',{class:'btn',onclick:async()=>{try{await api(dpath(d,'/interview'),{});toast('Interview started');}catch(e){toast(e.message,true);}}},svg('arrows'),'Re-interview'),
+      removeBtn(d,ok));
+    h.append(el('div',{class:'grow'},name,desc,badges),acts);
+  },
+  renderTabs(){const t=clear(this.tabsEl);for(const[id,label]of TABS)t.append(el('button',{text:label,class:id===this.tab?'active':'',onclick:()=>{this.tab=id;this.renderTabs();this.renderTab();}}));},
+  leave(){clearTimeout(this.fwTimer);},
+  renderTab(){const b=clear(this.body);this.upd.clear();clearTimeout(this.fwTimer);if(!this.d)return;this['tab_'+this.tab](b,this.d);},
+  kv(k,v,sub,mono){return el('tr',null,el('td',{text:k}),el('td',null,el('div',{class:mono?'mono':'',text:fmtVal(v)}),sub?el('div',{class:'sub',text:sub}):null));},
+  actRows(d){const a=(d.activity||[]).slice(-5).reverse();if(!a.length)return [el('span',{class:'sub',text:'No changes recorded yet.'})];return a.map(x=>el('div',{class:'act'},el('span',{class:'t',text:fmtTs(x.ts).slice(5)}),el('span',null,el('b',{text:x.key}),': '+fmtVal(x.old)+' → '+fmtVal(x.new))));},
+  tab_about(b,d){
+    const fw=[d.sw_build].filter(Boolean).join(' ')||'—';const fwSub=[d.hw_version!=null?'hw '+d.hw_version:null,d.date_code?'date '+d.date_code:null].filter(Boolean).join(' · ');
+    const vers=[d.zcl_version!=null?'ZCL '+d.zcl_version:null,d.app_version!=null?'app '+d.app_version:null,d.stack_version!=null?'stack '+d.stack_version:null].filter(Boolean).join(' · ')||'—';
+    this.actEl=el('div',null,...this.actRows(d));
+    const topics=el('div');for(const[k,v]of Object.entries(d.mqtt||{}))topics.append(el('div',{class:'topic'},el('span',{class:'mono',text:v}),el('button',{class:'btn sm icon',title:'Copy '+k.replace(/_/g,' '),'aria-label':'Copy',onclick:()=>copyText(v)},svg('copy'))));
+    if(!topics.firstChild)topics.append(el('span',{class:'sub',text:'—'}));
+    const tb=el('tbody',null,
+      this.kv('Type',(d.is_router?'Router':'End device')+' · '+powerLabel(d.power_source)),
+      this.kv('IEEE address',d.ieee,d.oui_vendor||'unknown vendor (OUI)',1),
+      this.kv('Network address',d.nwk,d.nwk_decimal!=null?'decimal '+d.nwk_decimal:'',1),
+      this.kv('Model',d.model,d.manufacturer||''),
+      this.kv('Manufacturer code',d.manufacturer_code!=null?hex(d.manufacturer_code):'—',d.manufacturer_code!=null?'decimal '+d.manufacturer_code:'',1),
+      this.kv('Firmware',fw,fwSub,1),
+      this.kv('Versions',vers),
+      this.kv('Joined',d.joined_at?rel(d.joined_at):'—',d.joined_at?fmtTs(d.joined_at):''),
+      this.kv('Last seen',rel(d.last_seen),d.last_seen?fmtTs(d.last_seen):''),
+      el('tr',null,el('td',{text:'Recent activity'}),el('td',null,this.actEl)),
+      el('tr',null,el('td',{text:'MQTT topics'}),el('td',null,topics)));
+    b.append(el('div',{class:'twrap'},el('table',{class:'kvt'},tb)));
+    b.append(el('h2',{text:'Endpoints'}));
+    const eps=Object.entries(d.endpoints||{});if(!eps.length)b.append(el('div',{class:'empty',text:'No endpoints known — interview the device.'}));
+    for(const[id,ep]of eps){
+      const chips=el('div',{class:'chips'},...[...(ep.in_clusters||[]),...(ep.out_clusters||[])].map(c=>el('span',{class:'chip'},clName(c),el('span',{class:'mono',text:hex(cid(c))}))));
+      b.append(el('div',{class:'card epcard'},el('div',{style:'display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;margin-bottom:10px'},el('b',{text:'Endpoint '+id}),el('span',{class:'sub',text:[ep.category,ep.device_type,ep.profile?'profile '+hex(ep.profile):null,ep.device_id!=null?'device '+hex(ep.device_id):null].filter(Boolean).join(' · ')})),chips));
+    }
+  },
+  tab_controls(b,d){
+    const ex=d.exposes||[];if(!ex.length){b.append(el('div',{class:'empty',text:'No features exposed yet. Re-interview the device to derive them from its clusters.'}));return;}
+    const byCat=new Map();for(const f of ex){const c=CATS.some(x=>x[0]===f.category)?f.category:'control';if(!byCat.has(c))byCat.set(c,[]);byCat.get(c).push(f);}
+    for(const[c,label]of CATS){const list=byCat.get(c);if(!list)continue;b.append(el('h2',{text:label}));const card=el('div',{class:'card',style:'padding-top:4px;padding-bottom:4px'});for(const f of list)card.append(this.feature(f,d));b.append(card);}
+  },
+  feature(f,d){
+    const r=featureControl(d,f,{set:p=>this.set(p)});this.upd.set(f.key,r.update);
+    return el('div',{class:'feat'},el('div',{class:'ico'},svg(featIcon(f))),el('div',null,el('div',{class:'nm'},f.name||f.key,help(f.key,f.description,f.name||f.key)),el('div',{class:'ds',text:(f.description||'')+(f.access==='r'?' (read only)':'')+(f.endpoint!=null&&Object.keys(d.endpoints||{}).length>1?' · ep '+f.endpoint:'')})),r.ctrl);
+  },
+  epSelect(d,onch){const s=el('select',{class:'sm',onchange:onch});for(const id of Object.keys(d.endpoints||{}))s.append(el('option',{value:id,text:'ep '+id}));return s;},
+  clSelect(d,epId,which){const ep=(d.endpoints||{})[epId]||{};const s=el('select',{class:'sm'});const seen=new Set();for(const c of[...(which!=='out'?(ep.in_clusters||[]):[]),...(which!=='in'?(ep.out_clusters||[]):[])]){const id=cid(c);if(seen.has(id))continue;seen.add(id);s.append(el('option',{value:id,text:clName(c)+' '+hex(id)}));}return s;},
+  tab_state(b,d){
+    this.pre=el('pre',{text:JSON.stringify(d.state||{},null,2)});b.append(el('div',{class:'card'},this.pre));
+    b.append(el('h2',{text:'Read now'}));
+    let clSel=this.clSelect(d,Object.keys(d.endpoints||{})[0],'in');const clHost=el('span',null,clSel);
+    const epSel=this.epSelect(d,e=>{clSel=this.clSelect(d,e.target.value,'in');clear(clHost).append(clSel);});
+    const attrs=el('input',{type:'text',class:'sm',placeholder:'0, 4, 0x4000',style:'width:180px',autocomplete:'off'});
+    const out=el('div',{class:'readout'});
+    const go=el('button',{class:'btn primary',text:'Read',onclick:async()=>{const ids=attrs.value.split(/[,\s]+/).filter(Boolean).map(s=>parseInt(s,/^0x/i.test(s)?16:10)).filter(n=>!isNaN(n));if(!ids.length){toast('Enter attribute ids',true);return;}go.disabled=true;try{const r=await api(dpath(d,'/read'),{endpoint:+epSel.value,cluster:+clSel.value,attributes:ids});clear(out);const dec=r.decoded||{},raw=r.values||{};const rows=Object.keys(Object.assign({},raw,dec)).map(k=>el('tr',null,el('td',{class:'mono',text:/^\d+$/.test(k)?hex(+k):k}),el('td',{text:fmtVal(dec[k])}),el('td',{class:'mono sub',text:fmtVal(raw[k])})));out.append(el('div',{class:'twrap'},el('table',null,el('thead',null,el('tr',null,...['Attribute','Decoded','Raw'].map(t=>el('th',{text:t})))),el('tbody',null,...rows))));toast('Read ok');}catch(e){toast(e.message,true);}go.disabled=false;}});
+    b.append(el('div',{class:'card'},el('div',{class:'bar',style:'margin:0'},epSel,clHost,attrs,go,el('span',{class:'sub',text:'Attribute ids, comma-separated (decimal or 0x hex). Sleepy end devices answer only when awake.'})),out));
+  },
+  tab_clusters(b,d){
+    const raw=d.raw||{};const eps=Object.entries(d.endpoints||{});if(!eps.length){b.append(el('div',{class:'empty',text:'No endpoints known.'}));return;}
+    for(const[id,ep]of eps){
+      const card=el('div',{class:'card epcard'},el('h2',{text:'Endpoint '+id+(ep.category?' · '+ep.category:'')}));
+      for(const[lab,list]of[['Input clusters',ep.in_clusters||[]],['Output clusters',ep.out_clusters||[]]]){
+        card.append(el('div',{class:'sub',style:'margin:10px 0 6px;font-weight:700',text:lab}));
+        if(!list.length){card.append(el('div',{class:'sub',text:'none'}));continue;}
+        card.append(el('div',{class:'chips'},...list.map(c=>el('span',{class:'chip'},clName(c),el('span',{class:'mono',text:hex(cid(c))})))));
+      }
+      const withRaw=[...(ep.in_clusters||[]),...(ep.out_clusters||[])].filter(c=>raw[String(cid(c))]);
+      for(const c of withRaw){const attrs=raw[String(cid(c))];const rows=Object.entries(attrs).map(([aid,a])=>el('tr',null,el('td',{class:'mono',text:hex(+aid)}),el('td',{text:a.name||''}),el('td',{class:'mono',text:fmtVal(a.value)}),el('td',{class:'sub',text:a.ts?rel(a.ts):'—',title:a.ts?fmtTs(a.ts):''})));
+        card.append(el('div',{class:'sub',style:'margin:14px 0 6px;font-weight:700',text:'Last seen attributes · '+clName(c)+' '+hex(cid(c))}),el('div',{class:'twrap'},el('table',null,el('thead',null,el('tr',null,...['Id','Name','Value','When'].map(t=>el('th',{text:t})))),el('tbody',null,...rows))));}
+      b.append(card);
+    }
+  },
+  tab_reporting(b,d){
+    const rows=(d.reporting||[]).map(r=>{const mi=el('input',{type:'number',class:'sm',value:r.min??''}),ma=el('input',{type:'number',class:'sm',value:r.max??''}),ch=el('input',{type:'number',class:'sm',step:'any',value:r.change??''});const stTd=el('td',{class:'sub',text:r.status??'—'});
+      return el('tr',null,el('td',{text:'ep '+r.endpoint}),el('td',null,el('span',{text:r.cluster_name||clName(r.cluster)}),' ',el('span',{class:'mono sub',text:hex(r.cluster)})),el('td',null,el('span',{text:r.attribute_name||''}),' ',el('span',{class:'mono sub',text:hex(r.attribute)})),el('td',null,mi),el('td',null,ma),el('td',null,ch),stTd,el('td',null,el('button',{class:'btn sm',text:'Save',onclick:async e=>{e.target.disabled=true;try{const res=await api(dpath(d,'/reporting'),{endpoint:r.endpoint,cluster:r.cluster,attribute:r.attribute,min:+mi.value,max:+ma.value,change:+ch.value});stTd.textContent=res&&res.status!=null?String(res.status):'ok';r.min=+mi.value;r.max=+ma.value;r.change=+ch.value;toast('Reporting configured');}catch(x){stTd.textContent='error';toast(x.message,true);}e.target.disabled=false;}})));});
+    let clSel=this.clSelect(d,Object.keys(d.endpoints||{})[0],'in');const clHost=el('span',null,clSel);
+    const epSel=this.epSelect(d,e=>{clSel=this.clSelect(d,e.target.value,'in');clear(clHost).append(clSel);});
+    const at=el('input',{type:'number',class:'sm',placeholder:'attr',min:0}),mi=el('input',{type:'number',class:'sm',placeholder:'min',value:10}),ma=el('input',{type:'number',class:'sm',placeholder:'max',value:3600}),ch=el('input',{type:'number',class:'sm',step:'any',placeholder:'change',value:1});
+    const add=el('tr',null,el('td',null,epSel),el('td',null,clHost),el('td',null,at),el('td',null,mi),el('td',null,ma),el('td',null,ch),el('td',{class:'sub',text:'new'}),el('td',null,el('button',{class:'btn sm primary',text:'+ Add',onclick:async e=>{if(at.value==='')return toast('Attribute id required',true);e.target.disabled=true;try{await api(dpath(d,'/reporting'),{endpoint:+epSel.value,cluster:+clSel.value,attribute:+at.value,min:+mi.value,max:+ma.value,change:+ch.value});toast('Reporting configured');this.load();}catch(x){toast(x.message,true);}e.target.disabled=false;}})));
+    b.append(el('p',{class:'lead',text:'Attribute reporting makes the device push changes on its own: at least every max seconds, at most every min seconds, and only when the value moved by more than change.'}));
+    b.append(el('div',{class:'twrap'},el('table',{class:'inline'},el('thead',null,el('tr',null,...['Endpoint','Cluster','Attribute','Min (s)','Max (s)','Change','Status',''].map(t=>el('th',{text:t})))),el('tbody',null,...rows,add))));
+  },
+  tab_bind(b,d){
+    const nameOf=t=>t==='coordinator'?'Coordinator':((S.devMap.get(t)||{}).friendly_name||t);
+    b.append(el('p',{class:'lead',text:'Binding lets a remote or sensor talk to another device directly, without the gateway.'}));
+    const rows=(d.bindings||[]).map(r=>el('tr',null,el('td',{text:'ep '+r.endpoint}),el('td',null,el('span',{text:r.cluster_name||clName(r.cluster)}),' ',el('span',{class:'mono sub',text:hex(r.cluster)})),el('td',null,el('span',{text:nameOf(r.target)}),r.target!=='coordinator'?el('div',{class:'sub mono',text:r.target}):null),el('td',{text:r.target_endpoint??'—'}),el('td',null,el('button',{class:'btn sm danger',text:'Unbind',onclick:async e=>{e.target.disabled=true;try{await api(dpath(d,'/unbind'),{endpoint:r.endpoint,cluster:r.cluster,target:r.target,target_endpoint:r.target_endpoint});toast('Unbound');this.load();}catch(x){toast(x.message,true);e.target.disabled=false;}}}))));
+    if(!rows.length)rows.push(el('tr',null,el('td',{colspan:5,class:'sub',text:'No bindings.'})));
+    b.append(el('div',{class:'twrap'},el('table',null,el('thead',null,el('tr',null,...['Endpoint','Cluster','Target','Target ep',''].map(t=>el('th',{text:t})))),el('tbody',null,...rows))));
+    b.append(el('h2',{text:'Add binding'}));
+    let clSel=this.clSelect(d,Object.keys(d.endpoints||{})[0]);const clHost=el('span',null,clSel);
+    const epSel=this.epSelect(d,e=>{clSel=this.clSelect(d,e.target.value);clear(clHost).append(clSel);});
+    const tgt=el('select',{class:'sm'},el('option',{value:'coordinator',text:'Coordinator'}));for(const o of S.devices)if(o.ieee!==d.ieee)tgt.append(el('option',{value:o.ieee,text:o.friendly_name||o.ieee}));
+    const tep=el('input',{type:'number',class:'sm',min:1,max:240,value:1,style:'width:70px'});
+    b.append(el('div',{class:'card'},el('div',{class:'bar',style:'margin:0'},el('span',{class:'sub',text:'Source'}),epSel,clHost,el('span',{class:'sub',text:'→ Target'}),tgt,el('span',{class:'sub',text:'ep'}),tep,el('button',{class:'btn primary',text:'Bind',onclick:async e=>{e.target.disabled=true;try{await api(dpath(d,'/bind'),{endpoint:+epSel.value,cluster:+clSel.value,target:tgt.value,target_endpoint:+tep.value});toast('Bound');this.load();}catch(x){toast(x.message,true);}e.target.disabled=false;}}))));
+  },
+  tab_firmware(b,d){
+    b.append(el('div',{class:'notice'},el('b',{text:'OneRoof Zigbee never downloads firmware. '}),'Only files you upload under Settings → Firmware library can be offered, and only to a device whose own report matches the file\'s manufacturer and image type.',help('firmware.policy',null,'Firmware policy')));
+    this.fwHost=el('div',{class:'sub',text:'Loading…'});b.append(this.fwHost);this.fwLoad();
+  },
+  fwOn(){return S.page==='device'&&this.tab==='firmware'&&!!this.fwHost;},
+  async fwLoad(){
+    let u;try{u=await api(dpath(this.d,'/update'));}catch(e){if(this.fwOn())clear(this.fwHost).append(el('div',{class:'empty',text:e.message}));return;}
+    if(!this.fwOn())return;this.fw=u;this.fwRender(u);
+    clearTimeout(this.fwTimer);if(u.session&&!u.session.finished)this.fwTimer=setTimeout(()=>this.fwLoad(),2000);
+  },
+  fwRender(u){
+    const d=this.d,ok=can(),tip=ok?'':NOCTL,lq=u.last_query,s=u.session,h=clear(this.fwHost);h.className='';
+    if(u.has_ota_client===false)h.append(el('div',{class:'notice warn',text:'This device has no OTA client — it cannot be updated over the air.'}));
+    const chk=el('button',{class:'btn',disabled:u.has_ota_client===false,onclick:()=>this.fwCheck(chk)},svg('arrows'),'Check firmware');
+    this.fwStatus=el('span',{class:'sub',text:lq?'Last report '+rel(lq.ts)+'.':'No report yet — ask the device.'});
+    const kv=el('dl',{class:'kv'});const add=(k,v,m)=>kv.append(el('dt',{text:k}),el('dd',{class:m?'mono':'',text:v==null?'—':String(v)}));
+    if(lq){add('Reported',fmtTs(lq.ts));add('Manufacturer code',hex(lq.manufacturer),1);add('Image type',hex(lq.image_type),1);add('File version',lq.file_version!=null?hex(lq.file_version,8)+' ('+lq.file_version+')':null,1);add('Hardware version',lq.hw_version);}
+    h.append(el('div',{class:'card'},el('h3',null,'Device report',help('firmware.check',null,'Check firmware')),el('div',{class:'bar',style:'margin:8px 0 '+(lq?'12px':'0')},chk,this.fwStatus),lq?kv:null));
+    if(s){const pct=Math.max(0,Math.min(100,+s.progress||0));
+      h.append(el('h2',{text:s.finished?'Last update':'Update in progress'}),el('div',{class:'card',id:'fw-session'},el('div',{style:'display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap'},el('b',{class:'mono',text:s.file}),el('span',{class:'val',text:pct+'%'})),el('div',{class:'prog',style:'margin:8px 0'},el('i',{style:'width:'+pct+'%'})),
+        el('div',{class:'sub',text:(s.offset??0)+' / '+(s.total??'?')+' bytes · started '+(s.started?fmtTs(s.started):'—')+(s.last_activity?' · last activity '+rel(s.last_activity):'')+(s.finished?' · result: '+(s.result||'ok'):'')}),
+        s.finished?null:el('div',{class:'bar',style:'margin:10px 0 0'},el('button',{class:'btn danger',disabled:!ok,title:tip,text:'Cancel update',onclick:async()=>{try{await api(dpath(d,'/update/cancel'),{});toast('Update cancelled');this.fwLoad();}catch(e){toast(e.message,true);}}}))));}
+    h.append(el('h2',null,'Candidate images',help('firmware.update',null,'Update')));
+    const cs=u.candidates||[];if(!cs.length)h.append(el('div',{class:'empty',text:lq?'No uploaded image matches this device\'s manufacturer and image type.':'Check the firmware first: candidates are matched against the device\'s own report.'}));
+    else h.append(el('div',{class:'twrap'},el('table',{class:'fwtab'},thead(['File','Version','SHA-256','Size','']),el('tbody',null,...cs.map(im=>el('tr',null,el('td',{class:'mono',text:im.file}),el('td',null,el('div',{class:'mono',text:hex(im.file_version,8)}),el('div',{class:'sub',text:im.header_string||''})),el('td',{class:'mono sub',text:(im.sha256||'').slice(0,12)+'…',title:im.sha256}),el('td',{class:'sub',text:fmtSize(im.size)}),el('td',null,el('button',{class:'btn sm primary',text:'Update…',disabled:!ok||!!(s&&!s.finished),title:tip,onclick:()=>this.fwStart(im)}))))))));
+  },
+  async fwCheck(btn){
+    btn.disabled=true;const prev=this.fw&&this.fw.last_query?this.fw.last_query.ts:null;
+    try{await api(dpath(this.d,'/update/check'),{});}catch(e){toast(e.message,true);btn.disabled=false;return;}
+    this.fwStatus.textContent='Asked the device; waiting for its report…';
+    for(let i=0;i<10;i++){await new Promise(r=>setTimeout(r,2000));if(!this.fwOn())return;let u;try{u=await api(dpath(this.d,'/update'));}catch(e){continue;}if(u.last_query&&u.last_query.ts!==prev){this.fw=u;this.fwRender(u);toast('Firmware report received');return;}}
+    this.fwStatus.textContent='No report within 20 s. Sleepy devices answer only when awake — wake it and try again.';btn.disabled=false;
+  },
+  async fwStart(im){
+    const d=this.d;
+    if(!(await confirmDlg('Update '+(d.friendly_name||d.ieee)+'?',[el('p',null,'Offer ',el('b',{class:'mono',text:im.file}),' (version ',el('span',{class:'mono',text:hex(im.file_version,8)}),') to the device.'),el('p',{class:'mono sub',style:'word-break:break-all',text:'sha256 '+(im.sha256||'')}),el('p',{text:'The transfer takes minutes to an hour. The device may reboot and be briefly unavailable; do not unplug it meanwhile.'})],'Start update',true)))return;
+    try{await api(dpath(d,'/update/start'),{file:im.file});toast('Update started');this.fwLoad();}catch(e){toast(e.message,true);}
+  },
+  onState(ieee,st){if(S.page!=='device'||!this.d||this.d.ieee!==ieee)return;if(this.tab==='controls')this.upd.forEach(f=>f());else if(this.tab==='state'&&this.pre)this.pre.textContent=JSON.stringify(this.d.state||{},null,2);},
+  onActivity(a){if(!a||S.page!=='device'||!this.d||this.d.ieee!==a.ieee)return;(this.d.activity=this.d.activity||[]).push(a);if(this.d.activity.length>50)this.d.activity.shift();if(this.tab==='about'&&this.actEl)clear(this.actEl).append(...this.actRows(this.d));},
+  onDevice(action,dev){if(S.page!=='device'||!dev||!this.d||dev.ieee!==this.d.ieee)return;if(action==='left'){toast((dev.friendly_name||dev.ieee)+' left the network');location.hash='#devices';return;}this.load();}
+};
+
+/* ============ PAIR ============ */
+views.pair={
+  secs:60,
+  enter(m){
+    const b=S.bridge||{};const ok=can();const strict=!!b.strict_install_codes;
+    m.append(el('h1',{text:'Pair a device'}),el('p',{class:'lead',text:'The join window is the only moment the network key leaves the coordinator. Keep it short, and use an install code when the device has one.'}));
+    if(!ok)m.append(el('div',{class:'notice warn'},el('b',{text:'This UI cannot open the join window. '}),'The UI acts as MQTT user ',el('span',{class:'mono',text:b.ui_user||'?'}),', which is not listed in control_users. Add it to the config to allow pairing from here.'));
+    if(strict)m.append(el('div',{class:'notice'},el('b',{text:'Strict mode is on. '}),'The public ZigBeeAlliance09 link key has been replaced, so only install-code joins can succeed. A plain join window will open but no device can use it.'));
+    const seg=el('div',{class:'seg'});for(const s of[15,60,120])seg.append(el('button',{text:s+' s',class:s===this.secs?'active':'',onclick:e=>{this.secs=s;seg.querySelectorAll('button').forEach(x=>x.classList.toggle('active',x===e.target));}}));
+    this.ringNum=el('b',{text:'—'});this.ringLab=el('span',{text:'closed'});
+    const ringSvg=document.createElementNS('http://www.w3.org/2000/svg','svg');ringSvg.setAttribute('viewBox','0 0 200 200');ringSvg.setAttribute('width','200');ringSvg.setAttribute('height','200');
+    const mk=(cls)=>{const c=document.createElementNS('http://www.w3.org/2000/svg','circle');c.setAttribute('class',cls);c.setAttribute('cx','100');c.setAttribute('cy','100');c.setAttribute('r','88');return c;};
+    this.ringArc=mk('arc');ringSvg.append(mk('track'),this.ringArc);
+    this.openBtn=el('button',{class:'btn primary',style:'width:100%;padding:12px;justify-content:center',disabled:!ok||strict,onclick:()=>this.open()});
+    this.closeBtn=el('button',{class:'btn',style:'width:100%;margin-top:8px;justify-content:center',text:'Close window now',disabled:!ok,onclick:()=>this.open(0)});
+    const left=el('div',{class:'card'},el('div',{class:'ring'},ringSvg,el('div',{class:'val'},this.ringNum,this.ringLab)),el('div',{style:'display:flex;justify-content:center;align-items:center;gap:4px;margin-bottom:14px'},seg,help('pair.seconds',null,'Window length')),this.openBtn,this.closeBtn,
+      strict?el('p',{class:'sub',style:'margin:10px 0 0',text:'Plain join is disabled in strict mode; use the install-code form.'}):null);
+    const ieee=el('input',{type:'text',placeholder:'0x00124b0012345678',autocomplete:'off',spellcheck:'false'});const code=el('input',{type:'text',placeholder:'83FED3407A93 9738C600… (with or without colons)',autocomplete:'off',spellcheck:'false'});
+    const ieeeErr=el('div',{class:'err'}),codeErr=el('div',{class:'err'});
+    const validate=()=>{const i=ieee.value.trim().toLowerCase().replace(/^0x/,'').replace(/[:\s-]/g,'');ieeeErr.textContent=!i?'':/^[0-9a-f]{16}$/.test(i)?'':'IEEE address must be 16 hex digits';const c=code.value.replace(/[:\s-]/g,'').toUpperCase();const okLen=[16,24,32,36,48].includes(c.length);codeErr.textContent=!c?'':!/^[0-9A-F]+$/.test(c)?'Install code must be hex':okLen?'':'Length '+c.length+' hex digits — expect 16, 24, 32 or 36 (incl. 4-digit CRC)';return{i:'0x'+i,c,ok:!ieeeErr.textContent&&!codeErr.textContent&&i&&c};};
+    ieee.addEventListener('input',validate);code.addEventListener('input',validate);
+    const icBtn=el('button',{class:'btn primary',disabled:!ok,text:'Open window for this device',onclick:async()=>{const v=validate();if(!v.ok){toast('Check the IEEE address and install code',true);return;}await this.open(this.secs,{ieee:v.i,install_code:v.c});}});
+    const form=el('details',{open:strict||null},el('summary',{text:'Pair with install code (recommended)'}),
+      el('p',{class:'sub',style:'margin:6px 0 0',text:'Printed on the device or its box as a QR/label. The network key is then handed over encrypted with a key only that device knows, so a sniffer present during the join learns nothing. Install codes are shown to any MQTT user subscribed to the bridge topics.'}),
+      el('div',{class:'field'},lab('Device IEEE address','pair.ieee'),ieee,el('div',{class:'hint',text:'16 hex digits, 0x prefix optional'}),ieeeErr),
+      el('div',{class:'field'},lab('Install code','pair.install_code'),code,el('div',{class:'hint',text:'Hex, 16/24/32/36 digits including the trailing CRC-16; colons and spaces ignored'}),codeErr),icBtn);
+    this.feedEl=el('div',{class:'feed'});
+    const right=el('div',null,el('div',{class:'card'},form),el('h2',{text:'Live join activity'}),this.feedEl);
+    m.append(el('div',{class:'pair'},left,right));this.renderFeed();this.tick();
+    this.timer=setInterval(()=>{if(S.pj.open&&S.pj.seconds_left>0){S.pj.seconds_left--;if(S.pj.seconds_left<=0)S.pj.open=false;renderHeader();this.tick();}},1000);
+  },
+  leave(){clearInterval(this.timer);},
+  async open(secs,extra){secs=secs===undefined?this.secs:secs;try{const r=await api('api/permit_join',Object.assign({seconds:secs},extra||{}));if(secs===0)toast('Join window closed');else{toast('Join window open for '+(r.seconds||secs)+' s'+(extra?' (install code)':''));S.pj.open=true;S.pj.seconds_left=r.seconds||secs;S.pj.total=S.pj.seconds_left;}renderHeader();this.tick();}catch(e){toast(e.message,true);}},
+  tick(){if(S.page!=='pair'||!this.ringArc)return;const C=2*Math.PI*88;const left=S.pj.open?S.pj.seconds_left:0;const tot=Math.max(S.pj.total||left||1,left);this.ringArc.style.strokeDasharray=C;this.ringArc.style.strokeDashoffset=C*(1-left/tot);this.ringNum.textContent=S.pj.open?String(left):'—';this.ringLab.textContent=S.pj.open?'seconds left':'window closed';this.openBtn.textContent=S.pj.open?'Extend to '+this.secs+' s':'Open join window';},
+  feed(kind,obj){const line={t:Date.now(),kind,txt:obj?(obj.friendly_name||(obj.device&&obj.device.friendly_name)||obj.ieee||obj.msg||''):''};S.pairFeed.push(line);if(S.pairFeed.length>100)S.pairFeed.shift();if(S.page==='pair')this.renderFeed();},
+  renderFeed(){const f=clear(this.feedEl);if(!S.pairFeed.length){f.append(el('div',{class:'mute',text:'Join, interview and security events appear here as they happen.'}));return;}for(const l of S.pairFeed.slice().reverse())f.append(el('div',{style:/SECURITY/.test(l.kind)?'color:var(--danger)':''},el('span',{class:'t',text:fmtTs(l.t).slice(11)}),el('span',{text:l.kind}),el('span',{class:'mono',text:l.txt})));}
+};
+
+/* ============ MAP ============ */
+views.map={
+  enter(m){
+    m.append(el('h1',{text:'Network map'}),el('p',{class:'lead',text:'Neighbour tables as last walked. Routers relay; end devices sleep behind a parent. Thicker lines mean better link quality.'}));
+    this.refreshBtn=el('button',{class:'btn',text:'Refresh neighbour tables',onclick:()=>this.refresh(true)});
+    m.append(el('div',{class:'bar'},this.refreshBtn,el('span',{class:'sub',text:'Walking the tables takes a few seconds per router.'})));
+    this.cv=el('canvas',{id:'mapc'});m.append(this.cv);
+    m.append(el('div',{class:'legend'},el('span',null,el('i',{style:'background:var(--ink)'}),'coordinator'),el('span',null,el('i',{style:'background:var(--accent)'}),'router'),el('span',null,el('i',{style:'background:var(--faint)'}),'end device')));
+    this.tableHost=el('div');m.append(el('h2',{text:'Links'}),this.tableHost);
+    this.hover=null;this.drag=null;
+    this.cv.addEventListener('pointermove',e=>this.onPointer(e));this.cv.addEventListener('pointerdown',e=>{const n=this.pick(e);if(n){this.drag=n;this.cv.setPointerCapture(e.pointerId);this.hot=60;}});
+    this.cv.addEventListener('pointerup',()=>{this.drag=null;});this.cv.addEventListener('pointerleave',()=>{this.hover=null;});
+    this.ro=new ResizeObserver(()=>this.size());this.ro.observe(this.cv);
+    this.load();
+  },
+  leave(){cancelAnimationFrame(this.raf);this.ro&&this.ro.disconnect();},
+  async load(){try{this.data=await api('api/map');}catch(e){toast(e.message,true);this.data={nodes:[],links:[]};}this.setup();this.table();},
+  async refresh(){this.refreshBtn.disabled=true;this.refreshBtn.textContent='Walking…';try{await api('api/map/refresh',{});await this.load();toast('Map refreshed');}catch(e){toast(e.message,true);}this.refreshBtn.disabled=false;this.refreshBtn.textContent='Refresh neighbour tables';},
+  size(){const r=this.cv.getBoundingClientRect();const dpr=devicePixelRatio||1;this.cv.width=r.width*dpr;this.cv.height=r.height*dpr;this.W=r.width;this.H=r.height;this.cv.getContext('2d').setTransform(dpr,0,0,dpr,0,0);this.hot=60;},
+  setup(){
+    this.size();const W=this.W,H=this.H;const nodes=this.data.nodes||[];const byId=new Map();
+    this.nodes=nodes.map((n,i)=>{const a=i/Math.max(1,nodes.length)*Math.PI*2;const c=n.type==='coordinator';const o={n,x:c?W/2:W/2+Math.cos(a)*Math.min(W,H)*.35,y:c?H/2:H/2+Math.sin(a)*Math.min(W,H)*.35,vx:0,vy:0,fixed:c};byId.set(n.ieee,o);return o;});
+    this.links=(this.data.links||[]).map(l=>({a:byId.get(l.source),b:byId.get(l.target),lqi:l.lqi||0,l})).filter(l=>l.a&&l.b);
+    this.hot=300;cancelAnimationFrame(this.raf);this.loop();
+  },
+  step(){
+    const N=this.nodes,L=this.links,W=this.W,H=this.H;const k=90;
+    for(let i=0;i<N.length;i++){const a=N[i];for(let j=i+1;j<N.length;j++){const b=N[j];let dx=a.x-b.x,dy=a.y-b.y;let d2=dx*dx+dy*dy||.01;const d=Math.sqrt(d2);const f=k*k/d2*1.6;dx/=d;dy/=d;a.vx+=dx*f;a.vy+=dy*f;b.vx-=dx*f;b.vy-=dy*f;}}
+    for(const l of L){const dx=l.b.x-l.a.x,dy=l.b.y-l.a.y;const d=Math.sqrt(dx*dx+dy*dy)||.01;const rest=k*(1.6-l.lqi/255*.8);const f=(d-rest)*.04;l.a.vx+=dx/d*f;l.a.vy+=dy/d*f;l.b.vx-=dx/d*f;l.b.vy-=dy/d*f;}
+    for(const n of N){if(n.fixed||n===this.drag){n.vx=n.vy=0;continue;}n.vx+=(W/2-n.x)*.002;n.vy+=(H/2-n.y)*.002;n.vx*=.82;n.vy*=.82;n.x=Math.max(20,Math.min(W-20,n.x+n.vx));n.y=Math.max(20,Math.min(H-20,n.y+n.vy));}
+  },
+  loop(){if(S.page!=='map')return;if(this.hot>0){this.step();this.hot--;}this.draw();this.raf=requestAnimationFrame(()=>this.loop());},
+  draw(){
+    const cs=getComputedStyle(document.documentElement);const col=v=>cs.getPropertyValue(v).trim();const ctx=this.cv.getContext('2d');ctx.clearRect(0,0,this.W,this.H);
+    if(!this.nodes.length){ctx.fillStyle=col('--mute');ctx.font='13px '+col('--sans');ctx.textAlign='center';ctx.fillText('No neighbour data yet — refresh the tables.',this.W/2,this.H/2);return;}
+    for(const l of this.links){const q=l.lqi/255;ctx.strokeStyle=col('--accent');ctx.globalAlpha=.15+q*.7;ctx.lineWidth=.5+q*3;ctx.beginPath();ctx.moveTo(l.a.x,l.a.y);ctx.lineTo(l.b.x,l.b.y);ctx.stroke();}
+    ctx.globalAlpha=1;ctx.font='12px '+col('--sans');ctx.textAlign='center';
+    for(const n of this.nodes){const t=n.n.type;const r=t==='coordinator'?11:t==='router'?8:5;ctx.fillStyle=t==='coordinator'?col('--ink'):t==='router'?col('--accent'):col('--faint');ctx.beginPath();ctx.arc(n.x,n.y,r,0,7);ctx.fill();if(n===this.hover){ctx.strokeStyle=col('--ink');ctx.lineWidth=2;ctx.stroke();}if(t!=='end_device'||n===this.hover||this.nodes.length<25){ctx.fillStyle=col('--ink');ctx.fillText(n.n.friendly_name||n.n.ieee,n.x,n.y+r+14);}}
+    if(this.hover){const n=this.hover;const lines=[n.n.friendly_name||'',n.n.ieee,(n.n.type||'').replace('_',' ')+(n.n.lqi!=null?' · LQI '+n.n.lqi:'')];for(const l of this.links)if(l.a===n||l.b===n){const o=l.a===n?l.b:l.a;lines.push('↔ '+(o.n.friendly_name||o.n.ieee)+'  LQI '+l.lqi);}
+      ctx.font='12px '+col('--mono');ctx.textAlign='left';const w=Math.max(...lines.map(s=>ctx.measureText(s).width))+16;const h=lines.length*16+10;let x=n.x+14,y=n.y-h/2;if(x+w>this.W)x=n.x-w-14;y=Math.max(4,Math.min(this.H-h-4,y));ctx.fillStyle=col('--card');ctx.strokeStyle=col('--line');ctx.lineWidth=1;ctx.fillRect(x,y,w,h);ctx.strokeRect(x,y,w,h);ctx.fillStyle=col('--ink');lines.forEach((s,i)=>ctx.fillText(s,x+8,y+17+i*16));}
+  },
+  pick(e){const r=this.cv.getBoundingClientRect();const x=e.clientX-r.left,y=e.clientY-r.top;let best=null,bd=18*18;for(const n of this.nodes){const d=(n.x-x)**2+(n.y-y)**2;if(d<bd){bd=d;best=n;}}return best;},
+  onPointer(e){if(this.drag){const r=this.cv.getBoundingClientRect();this.drag.x=e.clientX-r.left;this.drag.y=e.clientY-r.top;this.hot=30;return;}this.hover=this.pick(e);this.cv.style.cursor=this.hover?'pointer':'default';},
+  table(){const h=clear(this.tableHost);const names=new Map((this.data.nodes||[]).map(n=>[n.ieee,n.friendly_name||n.ieee]));const L=this.data.links||[];if(!L.length){h.append(el('div',{class:'empty',text:'No links reported.'}));return;}
+    h.append(el('div',{class:'twrap'},el('table',null,el('thead',null,el('tr',null,...['From','To','LQI','Depth','Relationship'].map(t=>el('th',{text:t})))),el('tbody',null,...L.map(l=>el('tr',null,el('td',{text:names.get(l.source)||l.source}),el('td',{text:names.get(l.target)||l.target}),el('td',{text:l.lqi}),el('td',{text:l.depth??''}),el('td',{class:'sub',text:l.relationship??''})))))));}
+};
+
+/* ============ LOGS ============ */
+views.logs={
+  tab:'audit',aFilter:'all',lvl:'ALL',q:'',auto:true,paused:false,pending:[],
+  enter(m){
+    if(location.hash==='#logs/security'){this.tab='audit';this.aFilter='security';}
+    m.append(el('h1',{text:'Logs'}),el('p',{class:'lead',text:'The audit log is a SHA-256 hash chain on disk: every control action and every security alert, who did it, and whether the file has been altered since.'}));
+    const tabs=el('div',{class:'seg'});for(const[t,l]of[['audit','Audit'],['app','Application']])tabs.append(el('button',{text:l,class:t===this.tab?'active':'',onclick:()=>{this.tab=t;route();}}));
+    this.search=el('input',{type:'search',placeholder:'Search…',value:this.q,oninput:debounce(e=>{this.q=e.target.value.toLowerCase();this.render();},120)});
+    const bar=el('div',{class:'bar'},tabs,this.search);
+    if(this.tab==='audit'){
+      const f=el('div',{class:'seg'});for(const[v,l]of[['all','All'],['security','Security']])f.append(el('button',{text:l,class:v===this.aFilter?'active':'',onclick:()=>{this.aFilter=v;f.querySelectorAll('button').forEach((b,i)=>b.classList.toggle('active',i===(v==='all'?0:1)));this.render();}}));
+      this.verifyOut=el('span',{class:'sub'});
+      bar.append(f,el('span',{class:'grow'}),el('button',{class:'btn',text:'Verify chain',onclick:()=>this.verify()}),this.verifyOut);
+    }else{
+      const sel=el('select',{onchange:e=>{this.lvl=e.target.value;this.render();}});for(const l of['ALL','DEBUG','INFO','WARNING','ERROR'])sel.append(el('option',{value:l,text:l==='ALL'?'All levels':l,selected:l===this.lvl||null}));
+      this.pauseBtn=el('button',{class:'btn',text:this.paused?'Resume':'Pause',onclick:()=>{this.paused=!this.paused;this.pauseBtn.textContent=this.paused?'Resume ('+this.pending.length+')':'Pause';if(!this.paused){S.logs.push(...this.pending);this.pending=[];this.render();}}});
+      const auto=el('label',{class:'sub',style:'display:flex;gap:6px;align-items:center'},el('input',{type:'checkbox',checked:this.auto||null,onchange:e=>{this.auto=e.target.checked;}}),'Auto-scroll');
+      bar.append(sel,el('span',{class:'grow'}),auto,this.pauseBtn);
+    }
+    bar.append(el('button',{class:'btn',text:'Export JSON',onclick:()=>download('oneroof-'+this.tab+'-'+Date.now()+'.json',this.visible())}));
+    m.append(bar);this.box=el('div',{class:'log'});m.append(this.box);this.render();this.load();
+  },
+  async load(){try{if(this.tab==='audit'){S.audit=await api('api/audit?n=500&level=all');}else{S.logs=await api('api/logs?n=1000');}this.render();}catch(e){toast(e.message,true);}},
+  isSec(r){return r.level==='security'||r.level==='SECURITY'||/^security/.test(r.type||'');},
+  visible(){if(this.tab==='audit')return S.audit.filter(r=>(this.aFilter==='all'||this.isSec(r))&&(!this.q||JSON.stringify(r).toLowerCase().includes(this.q)));const order={DEBUG:0,INFO:1,WARNING:2,ERROR:3,CRITICAL:4};return S.logs.filter(r=>(this.lvl==='ALL'||(order[r.level]??1)>=order[this.lvl])&&(!this.q||(r.msg+' '+r.logger).toLowerCase().includes(this.q)));},
+  rowEl(r){if(this.tab==='audit'){const rest=Object.assign({},r);delete rest.ts;delete rest.level;delete rest.type;const detail=Object.entries(rest).map(([k,v])=>k+'='+(typeof v==='string'?v:JSON.stringify(v))).join('  ');return el('div',{class:'row'+(this.isSec(r)?' sec':'')},el('span',{class:'t',text:fmtTs(r.ts)}),el('span',{class:'l',text:this.isSec(r)?'SEC':(r.level||'')}),el('span',null,el('b',{text:r.type||''}),'  '+detail));}
+    return el('div',{class:'row '+(r.level||'')},el('span',{class:'t',text:fmtTs(r.ts)}),el('span',{class:'l',text:r.level||''}),el('span',null,el('span',{class:'mute',text:(r.logger||'')+' '}),r.msg||''));},
+  render(){if(S.page!=='logs'||!this.box)return;const rows=this.visible();const b=clear(this.box);if(!rows.length){b.append(el('div',{class:'row mute',text:'Nothing to show.'}));return;}const frag=document.createDocumentFragment();for(const r of rows.slice(-1500))frag.append(this.rowEl(r));b.append(frag);if(this.auto)b.scrollTop=b.scrollHeight;},
+  pushAudit(r){S.audit.push(r);if(S.audit.length>2000)S.audit.shift();if(S.page==='logs'&&this.tab==='audit'&&this.visible().includes(r)){if(this.box.firstChild&&this.box.firstChild.classList.contains('mute'))clear(this.box);this.box.append(this.rowEl(r));if(this.auto)this.box.scrollTop=this.box.scrollHeight;}},
+  pushLog(r){if(this.paused){this.pending.push(r);if(this.pauseBtn)this.pauseBtn.textContent='Resume ('+this.pending.length+')';return;}S.logs.push(r);if(S.logs.length>3000)S.logs.shift();if(S.page==='logs'&&this.tab==='app'&&this.visible().includes(r)){if(this.box.firstChild&&this.box.firstChild.classList.contains('mute'))clear(this.box);this.box.append(this.rowEl(r));if(this.auto)this.box.scrollTop=this.box.scrollHeight;}},
+  async verify(){this.verifyOut.textContent='verifying…';try{const r=await api('api/audit/verify');this.verifyOut.textContent=r.ok?'Chain intact':'Chain broken at line '+r.first_bad_line;this.verifyOut.style.color=r.ok?'var(--ok)':'var(--danger)';}catch(e){this.verifyOut.textContent=e.message;}}
+};
+
+/* ============ ACTIVITY (state-change feed) ============ */
+views.activity={
+  dev:'',key:'',q:'',live:true,rows:[],keys:[],
+  enter(m){
+    m.append(el('h1',{text:'Activity'}),el('p',{class:'lead'},'Every state change reported by a device. For who did what (pairing, removals, settings), see ',el('a',{href:'#logs',text:'Logs → Audit'}),'.'));
+    this.devSel=sel([['','All devices'],...S.devices.slice().sort((a,b)=>String(a.friendly_name).localeCompare(String(b.friendly_name))).map(d=>[d.ieee,d.friendly_name||d.ieee])],this.dev,{'aria-label':'Device',onchange:e=>{this.dev=e.target.value;this.load();}});
+    this.keySel=sel([['','All keys']],this.key,{'aria-label':'Key',onchange:e=>{this.key=e.target.value;this.load();}});
+    const search=el('input',{type:'search',placeholder:'Search…',value:this.q,oninput:debounce(e=>{this.q=e.target.value.toLowerCase();this.render();},120)});
+    const live=el('label',{class:'sub',style:'display:flex;gap:6px;align-items:center'},el('input',{type:'checkbox',checked:this.live||null,onchange:e=>{this.live=e.target.checked;}}),'Live');
+    this.count=el('span',{class:'sub'});
+    m.append(el('div',{class:'bar'},this.devSel,this.keySel,search,el('span',{class:'grow'}),live,this.count,el('button',{class:'btn',text:'Export JSON',onclick:()=>download('oneroof-activity-'+Date.now()+'.json',this.visible())})));
+    this.box=el('div',{class:'twrap'});m.append(this.box);this.render();this.load();
+  },
+  async load(){const seq=this.seq=(this.seq||0)+1;try{const r=await api('api/activity?n=300'+(this.dev?'&device='+encodeURIComponent(this.dev):'')+(this.key?'&key='+encodeURIComponent(this.key):''));if(seq!==this.seq)return;this.rows=r.rows||[];this.setKeys(r.keys||[]);this.render();}catch(e){toast(e.message,true);}},
+  setKeys(keys){this.keys=keys;const s=this.keySel;if(!s)return;const cur=this.key;clear(s);s.append(el('option',{value:'',text:'All keys'}));for(const k of keys)s.append(el('option',{value:k,text:k}));s.value=keys.includes(cur)?cur:'';},
+  match(r){return(!this.dev||r.ieee===this.dev)&&(!this.key||r.key===this.key)&&(!this.q||[r.friendly_name,r.key,fmtVal(r.old),fmtVal(r.new)].join(' ').toLowerCase().includes(this.q));},
+  visible(){return this.rows.filter(r=>this.match(r));},
+  groups(rows){const g=[];for(const r of rows){const last=g[g.length-1];if(last&&last.ieee===r.ieee&&Math.abs(tsMs(r.ts)-tsMs(last.ts))<=2000)last.changes.push(r);else g.push({ieee:r.ieee,friendly_name:r.friendly_name,ts:r.ts,changes:[r]});}return g;},
+  render(){
+    if(S.page!=='activity'||!this.box)return;const rows=this.visible();this.count.textContent=rows.length+' change'+(rows.length===1?'':'s');const b=clear(this.box);const gs=this.groups(rows).reverse();
+    if(!gs.length){b.append(el('div',{class:'empty',style:'border:0;box-shadow:none',text:'No state changes recorded.'}));return;}
+    const frag=document.createDocumentFragment();
+    for(const g of gs){const d=S.devMap.get(g.ieee)||{ieee:g.ieee,endpoints:{}};
+      frag.append(el('div',{class:'arow'},el('div',{class:'thumb'},svg(catGlyph(d))),el('a',{class:'aname',href:dlink(d),text:g.friendly_name||d.friendly_name||g.ieee}),el('div',{class:'sub'},el('div',{text:fmtTs(g.ts)}),el('div',{class:'mute',text:rel(g.ts)})),
+        el('div',{class:'chg'},...g.changes.map((c,i)=>el('span',null,i?', ':'',el('b',{text:c.key+': '}),fmtVal(c.old)+' → '+fmtVal(c.new))))));}
+    b.append(frag);
+  },
+  push(a){if(!a||!a.key)return;const d=S.devMap.get(a.ieee);const r=Object.assign({friendly_name:d?d.friendly_name:a.ieee},a);if(this.keys.length&&!this.keys.includes(r.key))this.setKeys([...this.keys,r.key].sort());if(!this.live)return;this.rows.push(r);if(this.rows.length>2000)this.rows.shift();if(S.page==='activity'&&this.match(r))this.render();}
+};
+
+/* ============ SETTINGS ============ */
+let CFG={};
+const getPath=(o,p)=>p.split('.').reduce((c,k)=>c==null?undefined:c[k],o);
+function setPath(o,p,v){const ks=p.split('.');let c=o;for(const k of ks.slice(0,-1)){if(!c[k]||typeof c[k]!=='object')c[k]={};c=c[k];}c[ks[ks.length-1]]=v;}
+function dd(o,n){if(n&&typeof n==='object'&&!Array.isArray(n)){const r={};let k=0;for(const key in n){const s=dd(o&&typeof o==='object'?o[key]:undefined,n[key]);if(s!==undefined){r[key]=s;k++;}}return k?r:undefined;}return JSON.stringify(n??null)===JSON.stringify(o??null)?undefined:n;}
+const NO_RESET=new Set(['serial.port','ui.acts_as']);
+class Form{
+  constructor(ro){this.ro=ro;this.g={};this.s={};this.btn=el('button',{class:'btn primary'+(ro?' hidden':''),text:'Save',disabled:true,onclick:()=>this.submit()});this.rst=el('button',{type:'button',class:'btn text danger'+(ro?' hidden':''),text:'Reset to defaults',title:'Fills the fields with the built-in defaults; nothing is sent until Save',onclick:()=>this.reset()});}
+  reg(p,getter,...inputs){this.g[p]=getter;if(this.ro)for(const i of inputs)i.disabled=true;return inputs[0];}
+  setter(p,fn){this.s[p]=fn;}
+  diff(){const d={};let n=0;for(const p in this.g){const s=dd(getPath(CFG,p),this.g[p]());if(s!==undefined){setPath(d,p,s);n++;}}return n?d:null;}
+  check(){this.btn.disabled=this.ro||!can()||!this.diff();}
+  reset(){const def=(views.settings.cfg||{}).defaults||{};let n=0;for(const p in this.s){if(NO_RESET.has(p))continue;const v=getPath(def,p);if(v===undefined)continue;this.s[p](v);n++;}if(!n)toast('No defaults known for this card',true);this.check();}
+  card(...kids){const c=el('div',{class:'card'},...kids,el('div',{class:'cfoot'},el('span',{class:'sub',text:this.ro?'Read-only: managed by the add-on configuration.':'Only changed values are sent.'}),this.rst,this.btn));c.addEventListener('input',()=>this.check());c.addEventListener('change',()=>this.check());return c;}
+  async submit(){const d=this.diff();if(!d)return;this.btn.disabled=true;try{const r=await api('api/config',d);for(const p in this.g)setPath(CFG,p,this.g[p]());toast('Saved: '+((r.changed||[]).join(', ')||Object.keys(d).join(', ')));views.settings.afterSave(r);}catch(e){toast(e.message,true);}this.check();}
+}
+function lab(text,id){return el('label',null,text,help(id,null,text));}
+const fld=(label,input,hint,id)=>el('div',{class:'field'},lab(label,id),input,hint?el('div',{class:'hint',text:hint}):null);
+function chk(label,on,hint,id){const i=el('input',{type:'checkbox',checked:on?true:null});return[i,el('label',{class:'chk'},i,el('span',null,el('b',{text:label}),help(id,null,label),hint?el('div',{class:'hint',text:hint}):null))];}
+const setVal=(i,v)=>{i.value=v==null?'':String(v);};
+function sel(opts,val,attrs){const s=el('select',attrs);for(const o of opts){const[v,t]=Array.isArray(o)?o:[o,o];s.append(el('option',{value:v,text:t,selected:String(v)===String(val)||null}));}return s;}
+const txt=(val,attrs)=>el('input',Object.assign({type:'text',value:val==null?'':String(val),autocomplete:'off',spellcheck:'false'},attrs));
+const num=(val,min,max)=>el('input',{type:'number',value:val==null?'':val,min,max,step:1});
+const pwd=(ph)=>el('input',{type:'password',autocomplete:'new-password',placeholder:ph||''});
+const lines=t=>t.value.split('\n').map(s=>s.trim()).filter(Boolean);
+const thead=cols=>el('thead',null,el('tr',null,...cols.map(t=>el('th',{text:t}))));
+function strength(p){if(!p)return '';if(p.length<12)return 'Too short: '+p.length+'/12';const c=[/[a-z]/,/[A-Z]/,/\d/,/[^\w]/].filter(r=>r.test(p)).length+(p.length>=16)+(p.length>=24);return c>=5?'Strong':c>=3?'Reasonable':'Weak: add length or variety';}
+function pwCheck(p1,p2,required){if(!p1.value&&!required)return true;if(p1.value.length<12){toast('Password must be at least 12 characters',true);return false;}if(p1.value!==p2.value){toast('Passwords do not match',true);return false;}return true;}
+views.settings={
+  pending:new Set(),
+  async enter(m){
+    m.append(el('h1',{text:'Settings'}),el('p',{class:'lead',text:'Gateway administration: coordinator, network security, broker, users, Home Assistant and backups. Every card saves on its own; changes that need a restart are collected in a banner.'}));
+    this.banner=el('div',{class:'notice restart hidden'});this.host=el('div',{class:'empty',text:'Loading…'});m.append(this.banner,this.host);
+    let c,u,b;try{[c,u,b]=await Promise.all([api('api/config'),api('api/users'),api('api/bridge')]);}catch(e){this.host.textContent=e.message;return;}
+    if(S.page!=='settings')return;
+    S.bridge=b;this.cfg=c;CFG=c.config||{};this.users=u||{users:[]};this.pending=new Set([...(c.restart_required||[]),...(b.restart_required||[])]);
+    this.render();
+  },
+  render(){
+    const c=this.cfg,ro=!!c.managed,ok=can();const h=clear(this.host);h.className='';this.showBanner();
+    if(ro)h.append(el('div',{class:'notice warn'},el('b',{text:'Managed configuration. '}),'These settings are managed by the Home Assistant add-on configuration (Settings → Add-ons → OneRoof Zigbee → Configuration). Users, backups, restart and the log level can still be changed here.'));
+    if(!ok)h.append(el('div',{class:'notice warn'},el('b',{text:'Read-only session. '}),'The UI acts as ',el('span',{class:'mono',text:(S.bridge||{}).ui_user||'?'}),', which is not in control_users; saving is disabled.'));
+    this.usersHost=el('div');
+    h.append(el('h2',{text:'Coordinator'}),this.cardCoordinator(ro),el('h2',{text:'Zigbee network & security'}),this.cardZigbee(ro),el('h2',{text:'MQTT broker'}),this.cardMqtt(ro),this.usersHost,el('h2',{text:'Home Assistant & UI'}),this.cardHa(ro),el('h2',{text:'Backup & restore'}),this.cardBackup(ok),el('h2',{text:'Import a previous setup'}),this.cardImport(ok),el('h2',{text:'Firmware library'}),this.cardFirmware(ok),el('h2',{text:'Maintenance'}),this.cardMaint(ok));
+    this.renderUsers();
+  },
+  showBanner(){const b=this.banner;if(!b)return;clear(b);const keys=[...this.pending];if(!keys.length){b.classList.add('hidden');return;}b.classList.remove('hidden');b.append(el('div',{class:'grow'},el('b',{text:'Restart required to apply: '}),el('span',{class:'mono',text:keys.join(', ')})),el('button',{class:'btn primary',text:'Restart now',onclick:()=>this.restart()}));},
+  afterSave(r,label){const rr=r&&r.restart_required;const keys=Array.isArray(rr)?rr:rr?[label||'configuration']:[];if(!keys.length)return;keys.forEach(k=>this.pending.add(String(k)));this.showBanner();},
+  async restart(){
+    if(!(await confirmDlg('Restart the gateway?',[el('p',{text:'The MQTT broker and the Zigbee coordinator go down for a few seconds. Paired devices keep their state and reconnect by themselves.'})],'Restart now')))return;
+    try{await api('api/restart',{});}catch(e){toast(e.message,true);return;}
+    document.body.append(el('div',{class:'overlay',id:'restarting'},el('div',{class:'card',style:'text-align:center;max-width:320px'},el('div',{class:'bigval',style:'font-size:22px',text:'Restarting…'}),el('p',{class:'sub',text:'Waiting for the gateway to answer again. This page reloads by itself.'}))));
+    if(S.es)S.es.close();
+    const poll=async()=>{try{await api('api/bridge');location.reload();}catch(e){setTimeout(poll,2000);}};setTimeout(poll,3000);
+  },
+  cardCoordinator(ro){
+    const c=this.cfg,co=c.coordinator||{},b=S.bridge||{},v=co.version;const f=new Form(ro);
+    const kv=el('dl',{class:'kv'});const add=(k,val,mono,id)=>kv.append(el('dt',null,k,id?help(id,null,k):null),el('dd',{class:mono?'mono':'',text:val==null||val===''?'—':String(val)}));
+    const pan=co.pan_id??b.pan_id;const ser=CFG.serial||{};
+    add('Gateway version',b.version);add('Adapter',(ser.adapter||'zstack')+(ser.adapter==='zstack'||!ser.adapter?' — TI CC2652/CC1352':''),1,'serial.adapter');add('Coordinator IEEE',co.ieee||b.coordinator_ieee,1);
+    add('Firmware',v?[v.product,[v.major,v.minor,v.maint].filter(x=>x!=null).join('.'),v.revision!=null?'rev '+v.revision:null].filter(x=>x!=null&&x!=='').join(' '):null,1);
+    add('Channel',co.channel??b.channel);add('PAN id',typeof pan==='number'?hex(pan):pan,1);add('Devices',b.device_count);
+    add('Uptime',b.uptime_s!=null?Math.floor(b.uptime_s/3600)+' h '+Math.floor(b.uptime_s%3600/60)+' min':null);
+    add('UI acts as',b.ui_user,1);add('UI may control',can()?'yes, in control_users':'no, not in control_users (pair, remove and key rotation disabled)');
+    add('Config file',c.config_path,1);add('Data directory',c.data_dir,1);
+    const ports=c.serial_ports||[],isNet=!!ser.is_network||/^tcp:\/\//.test(ser.port||''),known=!isNet&&ports.includes(ser.port);
+    const other=txt(known||isNet?'':ser.port,{placeholder:'/dev/ttyUSB0 or /dev/serial/by-id/…',style:'margin-top:6px'});
+    const net=txt(isNet?ser.port:'tcp://',{placeholder:'tcp://10.0.0.5:6638',style:'margin-top:6px'});
+    const netNote=el('div',{class:'hint',style:'margin-top:4px'},'SMLIGHT SLZB-06 / ZigStar LAN / ser2net. The link is plain TCP — keep it on a trusted network. ',help('serial.network',null,'Network coordinator'));
+    const netBox=el('div',null,net,netNote);
+    const ps=sel([...ports.map(p=>[p,p]),['__net','Network coordinator (tcp://host:port)…'],['__other','other…']],isNet?'__net':known?ser.port:'__other');
+    const sync=()=>{other.classList.toggle('hidden',ps.value!=='__other');netBox.classList.toggle('hidden',ps.value!=='__net');};ps.addEventListener('change',sync);sync();
+    f.reg('serial.port',()=>ps.value==='__other'?other.value.trim():ps.value==='__net'?net.value.trim():ps.value,ps,other,net);
+    const bd=sel([115200,230400,57600,38400],ser.baudrate||115200);f.reg('serial.baudrate',()=>+bd.value,bd);f.setter('serial.baudrate',v=>setVal(bd,v));
+    const[rts,rtsRow]=chk('RTS/CTS hardware flow control',ser.rtscts,'Only if the adapter documentation asks for it.','serial.rtscts');f.reg('serial.rtscts',()=>rts.checked,rts);f.setter('serial.rtscts',v=>{rts.checked=!!v;});
+    return f.card(kv,el('h3',{text:'Serial adapter'}),el('div',{class:'fgrid'},fld('Serial port',el('div',null,ps,other,netBox),ports.length?ports.length+' port(s) detected':'No serial ports detected','serial.port'),fld('Baud rate',bd,null,'serial.baudrate')),rtsRow);
+  },
+  cardZigbee(ro){
+    const z=CFG.zigbee||{};const f=new Form(ro);
+    const ch=sel(Array.from({length:16},(_,i)=>11+i),z.channel);f.reg('zigbee.channel',()=>+ch.value,ch);f.setter('zigbee.channel',v=>setVal(ch,v));
+    const mx=num(z.permit_join_max_seconds,1,254);f.reg('zigbee.permit_join_max_seconds',()=>+mx.value,mx);f.setter('zigbee.permit_join_max_seconds',v=>setVal(mx,v));
+    const cd=num(z.permit_join_cooldown_seconds,0,86400);f.reg('zigbee.permit_join_cooldown_seconds',()=>+cd.value,cd);f.setter('zigbee.permit_join_cooldown_seconds',v=>setVal(cd,v));
+    const[ric,ricRow]=chk('Require install code',z.permit_join_require_install_code,null,'zigbee.permit_join_require_install_code');f.reg('zigbee.permit_join_require_install_code',()=>ric.checked,ric);f.setter('zigbee.permit_join_require_install_code',v=>{ric.checked=!!v;});
+    const[st,stRow]=chk('Strict install codes',z.strict_install_codes,'Devices without an install code cannot join at all.','zigbee.strict_install_codes');f.reg('zigbee.strict_install_codes',()=>st.checked,st);f.setter('zigbee.strict_install_codes',v=>{st.checked=!!v;});
+    return f.card(el('div',{class:'fgrid'},fld('Channel',ch,'Changing it re-forms the network.','zigbee.channel'),fld('Max join window (s)',mx,null,'zigbee.permit_join_max_seconds'),fld('Join cooldown (s)',cd,null,'zigbee.permit_join_cooldown_seconds')),ricRow,stRow);
+  },
+  cardMqtt(ro){
+    const m=CFG.mqtt||{},t=m.tls||{},tls=this.cfg.tls||{},ha=this.cfg.ha_setup||{};const f=new Form(ro);
+    const ls=txt(m.listen,{placeholder:'0.0.0.0'});f.reg('mqtt.listen',()=>ls.value.trim(),ls);f.setter('mqtt.listen',v=>setVal(ls,v));
+    const pt=num(m.port,1,65535);f.reg('mqtt.port',()=>+pt.value,pt);f.setter('mqtt.port',v=>setVal(pt,v));
+    const pp=num(m.plaintext_port,1,65535);pp.placeholder='disabled';f.reg('mqtt.plaintext_port',()=>pp.value===''?null:+pp.value,pp);f.setter('mqtt.plaintext_port',v=>setVal(pp,v));
+    const bt=txt(m.base_topic,{placeholder:'zigbee'});f.reg('mqtt.base_topic',()=>bt.value.trim(),bt);f.setter('mqtt.base_topic',v=>setVal(bt,v));
+    let mode=t.mode||'auto';const segBtns=['auto','custom','off'].map(v=>el('button',{type:'button',text:v,class:v===mode?'active':'',disabled:ro||null,onclick:()=>{mode=v;segBtns.forEach(b=>b.classList.toggle('active',b.textContent===v));upd();f.check();}}));
+    const cert=txt(t.cert,{placeholder:'/data/tls/server.crt'}),key=txt(t.key,{placeholder:'/data/tls/server.key'}),cca=txt(t.client_ca,{placeholder:'/data/tls/clients-ca.crt'});
+    const custom=el('div',{class:'fgrid'},fld('Certificate (PEM)',cert,null,'mqtt.tls.cert'),fld('Private key',key,null,'mqtt.tls.key'));
+    const[mt,mtRow]=chk('Require client certificate (mTLS)',!!t.client_ca,null,'mqtt.tls.client_ca');
+    const ccaF=fld('Client CA certificate (PEM)',cca,null,'mqtt.tls.client_ca');
+    const off=el('div',{class:'notice danger',style:'margin-top:10px'},el('b',{text:'Plaintext: '}),'credentials and device state readable on the network.');
+    const hn=txt((t.hostnames||[]).join(', '),{placeholder:'homeassistant.local, 192.168.1.10'});
+    const upd=()=>{custom.classList.toggle('hidden',mode!=='custom');off.classList.toggle('hidden',mode!=='off');mtRow.classList.toggle('hidden',mode==='off');ccaF.classList.toggle('hidden',mode==='off'||!mt.checked);};mt.addEventListener('change',upd);upd();
+    f.reg('mqtt.tls',()=>({mode,cert:cert.value.trim()||null,key:key.value.trim()||null,client_ca:(mode!=='off'&&mt.checked&&cca.value.trim())||null,hostnames:hn.value.split(',').map(s=>s.trim()).filter(Boolean)}),cert,key,cca,hn,mt);
+    f.setter('mqtt.tls',v=>{if(!v||typeof v!=='object')return;if('mode'in v&&['auto','custom','off'].includes(v.mode)){mode=v.mode;segBtns.forEach(b=>b.classList.toggle('active',b.textContent===mode));}if('cert'in v)setVal(cert,v.cert);if('key'in v)setVal(key,v.key);if('client_ca'in v){setVal(cca,v.client_ca);mt.checked=!!v.client_ca;}if('hostnames'in v)setVal(hn,(v.hostnames||[]).join(', '));upd();});
+    const fp=tls.ca_fingerprint_sha256;
+    const steps=['Settings → Devices & services → Add integration → MQTT','Broker: '+(ha.host||'this host')+', port '+(ha.port??m.port),ha.tls?'TLS: on — upload the CA certificate (download below) as \'Broker certificate\'':'TLS: off','Username: '+(ha.user||'homeassistant')+' with the password set under Users & access','Discovery prefix '+(ha.discovery_prefix||'homeassistant')+', base topic '+(ha.base_topic||m.base_topic||'zigbee')];
+    const hakv=el('dl',{class:'kv',style:'margin:8px 0 4px;font-size:12.5px'});for(const[k,v]of[['Host',ha.host],['Port',ha.port??m.port],['TLS',ha.tls?'on':'off'],['User',ha.user],['Base topic',ha.base_topic||m.base_topic],['Discovery prefix',ha.discovery_prefix]])hakv.append(el('dt',{text:k}),el('dd',{class:'mono',text:v==null||v===''?'—':String(v)}));
+    const hap=el('div',{class:'sub-panel'},el('h3',{text:'Connect Home Assistant'}),el('p',{class:'sub',style:'margin:0 0 6px',text:'OneRoof Zigbee is the MQTT broker. Home Assistant\'s MQTT integration connects here directly, and no WebSocket listener is needed: HA uses plain MQTT over TCP.'}),hakv,el('ol',{class:'steps'},...steps.map(s=>el('li',{text:s}))),
+      fp?el('div',null,el('div',{class:'bar',style:'margin:10px 0 4px'},el('a',{class:'btn',href:'api/tls/ca',download:'oneroof-ca.pem'},'Download CA certificate')),el('div',{class:'topic'},el('span',{class:'sub',text:'SHA-256'}),el('span',{class:'mono',text:fp}),el('button',{class:'btn sm icon',title:'Copy fingerprint','aria-label':'Copy fingerprint',onclick:()=>copyText(fp)},svg('copy'))))
+        :el('p',{class:'sub',style:'margin:8px 0 0',text:'No gateway-issued CA certificate (TLS mode is not auto).'}));
+    return f.card(this.mqttMode(),el('div',{class:'fgrid'},fld('Listen address',ls,null,'mqtt.listen'),fld('Port',pt,null,'mqtt.port'),fld('Base topic',bt,null,'mqtt.base_topic')),
+      el('div',{class:'field',style:'max-width:320px'},lab('Additional plaintext port','mqtt.plaintext_port'),pp,el('div',{class:'plain-note',text:'Only for legacy devices that cannot do TLS. Credentials on this port are readable on the network. Leave empty to disable.'})),
+      el('div',{class:'field'},lab('TLS','mqtt.tls.mode'),el('div',null,el('div',{class:'seg'},...segBtns))),custom,off,mtRow,ccaF,fld('Extra TLS hostnames',hn,'Comma-separated.','mqtt.tls.hostnames'),hap);
+  },
+  mqttMode(){
+    const ext=CFG.external,cp=CFG.compat||{},ok=can()&&!this.cfg.managed,host=el('div',{id:'mqtt-mode'});
+    if(ext&&typeof ext==='object'){
+      const sw=el('button',{class:'btn',text:'Switch to the built-in TLS broker',disabled:!ok||null,title:ok?'':NOCTL,onclick:async()=>{
+        if(!(await confirmDlg('Switch to the built-in TLS broker?',[el('p',null,'Stops using ',el('span',{class:'mono',text:String(ext.server||'')}),' and starts the built-in TLS broker.'),el('p',{text:'Home Assistant\'s MQTT integration and every other client must then be pointed at this host:'+((CFG.mqtt||{}).port||8883)+' with the CA certificate (download below). Until then they receive no device state.'})],'Switch broker',true)))return;
+        sw.disabled=true;try{const r=await api('api/config',{mqtt:{external:null}});CFG.external=null;toast('Switched to the built-in broker');this.afterSave(r,'mqtt.external');host.replaceWith(this.mqttMode());}catch(e){toast(e.message,true);sw.disabled=false;}}});
+      host.append(el('div',{class:'notice',id:'mqtt-ext'},el('b',{text:'Using external broker '}),el('span',{class:'mono',text:String(ext.server||'?')}),' as ',el('span',{class:'mono',text:String(ext.user||'anonymous')}),' (legacy layout).',
+        el('div',{class:'sub',style:'margin:4px 0 8px',text:'MQTT control requests are refused (control from this UI only). Listen address, port and TLS below apply once the built-in broker is active.'}),sw));
+    }
+    if('legacy_layout'in cp){
+      const on=!!cp.legacy_layout;const row=el('div',{class:'chk',id:'compat-row',style:'align-items:center'});
+      if(on){
+        const i=el('input',{type:'checkbox',checked:true,disabled:!ok||null});i.addEventListener('change',async()=>{if(i.checked)return;i.checked=true;
+          if(!(await confirmDlg('Turn the legacy layout off?',[el('p',{text:'Topics and discovery identities switch to OneRoof\'s own. Home Assistant will create NEW entities for every device; the old ones become unavailable and dashboards and automations must be updated. It can only be turned on again by importing again.'})],'Turn off',true)))return;
+          i.disabled=true;try{const r=await api('api/config',{compat:{legacy_layout:false}});CFG.compat=Object.assign({},cp,{legacy_layout:false});toast('Legacy layout off');this.afterSave(r,'compat.legacy_layout');host.replaceWith(this.mqttMode());}catch(e){toast(e.message,true);i.disabled=false;i.checked=true;}});
+        row.append(el('label',{class:'sw'},i,el('i')),el('span',null,el('b',{text:'Legacy layout (topics + HA identities)'}),help('compat.legacy_layout',null,'Legacy layout'),el('div',{class:'hint',text:'on — same topics and HA entities as before the migration'})));
+      }else row.append(el('span',null,el('b',{text:'Legacy layout (topics + HA identities)'}),help('compat.legacy_layout',null,'Legacy layout'),el('div',{class:'hint',text:'off — enabled by importing a previous setup'})));
+      host.append(row);
+    }
+    return host;
+  },
+  renderUsers(){
+    const h=clear(this.usersHost);const roles=this.cfg.roles||{},ok=can();
+    const card=el('div',{class:'card'},el('p',{class:'sub',style:'margin:0 0 12px'},'Users connect to the built-in MQTT broker. Only users with ',el('b',{text:'control'}),' may open the join window, remove devices or rotate the key.'));
+    const rows=(this.users.users||[]).map(x=>this.userRow(x,ok));
+    if(!rows.length)rows.push(el('tr',null,el('td',{colspan:7,class:'sub',text:'No users.'})));
+    card.append(el('div',{class:'twrap flat'},el('table',{class:'utab'},thead(['Name','Role','Source','Password','Control','Filters','']),el('tbody',null,...rows))));
+    this.formHost=el('div');card.append(this.formHost);this.userForm(null,roles,ok);
+    h.append(el('h2',{text:'Users & access'}),card);this.refreshActs();
+  },
+  userNames(){const names=(this.users.users||[]).map(u=>u.name);const cur=(CFG.ui||{}).acts_as;if(cur&&!names.includes(cur))names.push(cur);return names;},
+  refreshActs(){const s=this.actsSel;if(!s)return;const cur=s.value;clear(s);for(const n of this.userNames())s.append(el('option',{value:n,text:n}));s.value=this.userNames().includes(cur)?cur:((CFG.ui||{}).acts_as||'');},
+  userRow(x,ok){
+    const rc={admin:'acc',homeassistant:'ok',custom:'warn'}[x.role]||'';
+    const list=a=>el('div',{class:'mono filt',text:(a||[]).join('\n')||'—'});
+    const filt=el('details',null,el('summary',{text:'show'}),el('div',{class:'sub',text:'subscribe'}),list(x.subscribe),el('div',{class:'sub',text:'publish'}),list(x.publish));
+    const acts=el('div',{class:'acts'});
+    if(x.editable)acts.append(el('button',{class:'btn sm',text:'Edit',disabled:!ok,onclick:()=>{this.userForm(x,this.cfg.roles||{},ok);this.formHost.scrollIntoView({behavior:'smooth',block:'nearest'});}}));
+    acts.append(el('button',{class:'btn sm',text:'Set password',disabled:!ok,onclick:()=>this.setPassword(x)}));
+    if(x.source!=='gateway'&&x.source!=='config')acts.append(el('button',{class:'btn sm danger',text:'Remove',disabled:!ok,onclick:async()=>{if(!(await confirmDlg('Remove user '+x.name+'?',[el('p',{text:'The broker disconnects this user immediately; anything still using these credentials stops working.'})],'Remove user',true)))return;try{const r=await api('api/users/'+encodeURIComponent(x.name)+'/remove',{});this.users=r;toast('Removed '+x.name);this.renderUsers();}catch(e){toast(e.message,true);}}}));
+    return el('tr',null,el('td',null,el('b',{text:x.name})),el('td',null,el('span',{class:'badge '+rc,text:x.role})),el('td',{class:'sub',text:x.source||''}),el('td',{text:x.has_password?'✓':'—',title:x.has_password?'Password set':'No password'}),el('td',{text:x.control?'✓':'—',title:x.control?'May open the network':'No control'}),el('td',null,filt),el('td',null,acts));
+  },
+  async setPassword(x){
+    const p1=pwd('min 12 characters'),p2=pwd('repeat');const sh=el('div',{class:'hint'});p1.addEventListener('input',()=>{sh.textContent=strength(p1.value);});
+    if(!(await confirmDlg('Set password for '+x.name,[fld('New password',p1,null,'users.password'),el('div',{class:'field'},el('label',{text:'Confirm'}),p2,sh)],'Set password')))return;
+    if(!pwCheck(p1,p2,true))return;
+    const body={name:x.name,role:x.role,password:p1.value,control:!!x.control};if(x.role==='custom'){body.subscribe=x.subscribe||[];body.publish=x.publish||[];}
+    try{const r=await api('api/users',body);this.users=r;toast('Password updated for '+x.name);this.renderUsers();}catch(e){toast(e.message,true);}
+  },
+  userForm(x,roles,ok){
+    const h=clear(this.formHost);const edit=!!x;const roleNames=Object.keys(roles).length?Object.keys(roles):['homeassistant','admin','readonly','custom'];
+    const name=txt(edit?x.name:'',{placeholder:'name',readonly:edit||null,maxlength:64});
+    const role=sel(roleNames,edit?x.role:roleNames[0]);const rdesc=el('div',{class:'hint'});
+    const p1=pwd(edit?'leave blank to keep':'min 12 characters'),p2=pwd('repeat');const sh=el('div',{class:'hint'});p1.addEventListener('input',()=>{sh.textContent=strength(p1.value);});
+    const[ctl,ctlRow]=chk('Control',edit?x.control:!!(roles[role.value]||{}).control,'May open the join window, remove devices and rotate the network key.','users.control');
+    const sub=el('textarea',{rows:3,placeholder:'one topic filter per line',text:edit?(x.subscribe||[]).join('\n'):''}),pub=el('textarea',{rows:3,placeholder:'one topic filter per line',text:edit?(x.publish||[]).join('\n'):''});
+    const cust=el('div',{class:'fgrid'},fld('Subscribe filters',sub,null,'users.subscribe'),fld('Publish filters',pub,null,'users.publish'));
+    const upd=()=>{rdesc.textContent=(roles[role.value]||{}).description||'';cust.classList.toggle('hidden',role.value!=='custom');};
+    role.addEventListener('change',()=>{upd();ctl.checked=!!(roles[role.value]||{}).control;});upd();
+    const save=el('button',{class:'btn primary',text:edit?'Save user':'Add user',disabled:!ok,onclick:async()=>{
+      const n=name.value.trim();if(!n){toast('Name required',true);return;}if(!pwCheck(p1,p2,!edit))return;
+      const body={name:n,role:role.value,control:ctl.checked};if(p1.value)body.password=p1.value;if(role.value==='custom'){body.subscribe=lines(sub);body.publish=lines(pub);}
+      save.disabled=true;try{const r=await api('api/users',body);this.users=r;toast(edit?'User updated':'User '+n+' added');this.renderUsers();}catch(e){toast(e.message,true);save.disabled=false;}}});
+    h.append(el('h3',{text:edit?'Edit '+x.name:'Add user'}),el('div',{class:'fgrid'},fld('Name',name,null,'users.name'),el('div',{class:'field'},lab('Role','users.role'),role,rdesc),fld('Password',p1,null,'users.password'),el('div',{class:'field'},lab('Confirm password','users.password'),p2,sh)),ctlRow,cust,
+      el('div',{class:'cfoot'},edit?el('button',{class:'btn',text:'Cancel',onclick:()=>this.userForm(null,roles,ok)}):null,save));
+  },
+  cardHa(ro){
+    const ha=CFG.homeassistant||{},ui=CFG.ui||{};const f=new Form(ro);
+    const[disc,discRow]=chk('Home Assistant MQTT discovery',ha.discovery,null,'homeassistant.discovery');f.reg('homeassistant.discovery',()=>disc.checked,disc);f.setter('homeassistant.discovery',v=>{disc.checked=!!v;});
+    const pre=txt(ha.discovery_prefix,{placeholder:'homeassistant'});f.reg('homeassistant.discovery_prefix',()=>pre.value.trim(),pre);f.setter('homeassistant.discovery_prefix',v=>setVal(pre,v));
+    const acts=sel(this.userNames(),ui.acts_as);f.reg('ui.acts_as',()=>acts.value,acts);this.actsSel=acts;
+    const port=num(ui.port,1,65535);f.reg('ui.port',()=>+port.value,port);f.setter('ui.port',v=>setVal(port,v));
+    return f.card(discRow,el('div',{class:'fgrid'},fld('Discovery prefix',pre,null,'homeassistant.discovery_prefix'),fld('UI acts as user',acts,null,'ui.acts_as'),fld('UI port',port,null,'ui.port')));
+  },
+  cardBackup(ok){
+    const p1=pwd('min 12 characters'),p2=pwd('repeat');const sh=el('div',{class:'hint'});p1.addEventListener('input',()=>{sh.textContent=strength(p1.value);});
+    const mk=el('button',{class:'btn primary',text:'Create backup',disabled:!ok,onclick:async()=>{if(!pwCheck(p1,p2,true))return;mk.disabled=true;try{const r=await api('api/backup',{password:p1.value});const bin=atob(r.data_b64||'');const buf=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)buf[i]=bin.charCodeAt(i);const url=URL.createObjectURL(new Blob([buf],{type:'application/octet-stream'}));const a=el('a',{href:url,download:r.filename||'oneroof-backup.ozbk'});document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),10000);toast('Backup downloaded: '+(r.filename||''));p1.value=p2.value='';sh.textContent='';}catch(e){toast(e.message,true);}mk.disabled=!ok;}});
+    const file=el('input',{type:'file',accept:'.ozbk'}),rp=pwd('backup password');const out=el('div',{class:'sub',style:'margin-top:8px'});
+    const rs=el('button',{class:'btn danger',text:'Restore…',disabled:!ok,onclick:async()=>{const fl=file.files&&file.files[0];if(!fl){toast('Choose a backup file',true);return;}if(!rp.value){toast('Enter the backup password',true);return;}
+      if(!(await confirmDlg('Restore '+fl.name+'?',[el('p',{text:'The current network key, TLS keys, device database and configuration are replaced by the backup. The gateway must restart afterwards; devices paired after the backup was taken need re-pairing.'})],'Restore backup',true)))return;
+      rs.disabled=true;try{const b64=await readFile(fl,true);const r=await api('api/restore',{password:rp.value,data_b64:b64});clear(out).append(el('b',{text:'Restored: '}),el('span',{class:'mono',text:(r.restored||[]).join(', ')||'nothing'}));toast('Backup restored');this.afterSave(r,'restore');}catch(e){toast(e.message,true);}rs.disabled=!ok;}});
+    return el('div',{class:'card'},el('div',{class:'grid2'},
+      el('div',null,el('h3',{text:'Create backup'}),el('p',{class:'sub',text:'The backup contains the Zigbee network key, the TLS keys and certificates, the device database and the configuration. It is encrypted with the password you enter here; without that password the backup is useless, so store the password with the file but not in it.'}),fld('Password',p1,null,'backup.password'),el('div',{class:'field'},lab('Confirm password','backup.password'),p2,sh),mk),
+      el('div',null,el('h3',{text:'Restore'}),el('p',{class:'sub',text:'Upload a .ozbk file and its password. Restoring replaces the current keys and database and requires a restart.'}),fld('Backup file',file,null,'backup.file'),fld('Password',rp,null,'backup.password'),rs,out)));
+  },
+  cardFirmware(ok){
+    const tip=ok?'':NOCTL;const host=el('div',{class:'sub',text:'Loading…'});
+    const file=el('input',{type:'file',accept:'.ota,.zigbee,.bin,.hex'}),out=el('div',{class:'sub',style:'margin-top:8px'});
+    const load=async()=>{let r;try{r=await api('api/firmware');}catch(e){host.textContent=e.message;return;}const ims=r.images||[];clear(host);host.className='';
+      if(!ims.length){host.append(el('div',{class:'empty',text:'No firmware images in the library.'}));return;}
+      host.append(el('div',{class:'twrap flat'},el('table',{class:'fwtab'},thead(['File','Manufacturer','Image type','Version','Size','SHA-256','']),el('tbody',null,...ims.map(im=>el('tr',null,el('td',{class:'mono',text:im.file}),el('td',{class:'mono',text:hex(im.manufacturer)}),el('td',{class:'mono',text:hex(im.image_type)}),el('td',null,el('div',{class:'mono',text:hex(im.file_version,8)}),el('div',{class:'sub',text:im.header_string||''})),el('td',{class:'sub',text:fmtSize(im.size)}),
+        el('td',null,el('span',{class:'mono sub',text:(im.sha256||'').slice(0,12)+'…',title:im.sha256}),' ',el('button',{class:'btn sm icon',title:'Copy SHA-256','aria-label':'Copy SHA-256',onclick:()=>copyText(im.sha256)},svg('copy'))),
+        el('td',null,el('button',{class:'btn sm danger',text:'Remove',disabled:!ok,title:tip,onclick:async()=>{if(!(await confirmDlg('Remove '+im.file+'?',[el('p',{text:'The file is deleted from the library and can no longer be offered to any device.'})],'Remove image',true)))return;try{await api('api/firmware/'+encodeURIComponent(im.file)+'/remove',{});toast('Removed '+im.file);load();}catch(e){toast(e.message,true);}}}))))))),
+        );if(r.allow_downgrade)host.append(el('p',{class:'sub',style:'margin:6px 0 0',text:'Downgrades are allowed by configuration.'}));};
+    const up=el('button',{class:'btn primary',text:'Upload',disabled:!ok,title:tip,onclick:async()=>{const fl=file.files&&file.files[0];if(!fl){toast('Choose a firmware file',true);return;}up.disabled=true;
+      try{const r=await api('api/firmware/upload',{filename:fl.name,data_b64:await readFile(fl,true)});const im=r.image||{};clear(out).append(el('b',{text:'Accepted: '}),el('span',{class:'mono',text:(im.file||fl.name)+' · manufacturer '+hex(im.manufacturer)+' · type '+hex(im.image_type)+' · version '+hex(im.file_version,8)+' · '+fmtSize(im.size)}));toast('Firmware uploaded');file.value='';load();}
+      catch(e){clear(out).append(el('span',{style:'color:var(--danger)',text:'Rejected: '+e.message}));}up.disabled=!ok;}});
+    load();
+    return el('div',{class:'card'},el('p',{class:'sub',style:'margin:0 0 12px'},el('b',{text:'OneRoof Zigbee never downloads firmware. '}),'Only files you upload here can be offered, and only to a device whose own report matches the file\'s manufacturer and image type.',help('firmware.policy',null,'Firmware policy')),host,
+      el('h3',null,'Upload image',help('firmware.upload',null,'Upload image')),el('div',{class:'bar',style:'margin:6px 0 0'},file,up),out);
+  },
+  cardImport(ok){
+    const tip=ok?'':NOCTL;const fy=el('input',{type:'file',accept:'.yaml,.yml'}),fd=el('input',{type:'file',accept:'.db,.json'}),fb=el('input',{type:'file',accept:'.json'});const out=el('div');let body=null,prev=null;
+    const gather=async()=>{const b={};for(const[i,k]of[[fy,'configuration.yaml'],[fd,'database.db'],[fb,'coordinator_backup.json']]){const f=i.files&&i.files[0];if(f)b[k]=await readFile(f);}if(!Object.keys(b).length)throw new Error('Choose at least configuration.yaml');return b;};
+    const apply=el('button',{class:'btn danger primary hidden',disabled:!ok,title:tip});let opts=null;
+    const pv=el('button',{class:'btn primary',text:'Preview',disabled:!ok,title:tip,onclick:async()=>{pv.disabled=true;try{body=await gather();prev=await api('api/import/preview',body);this.importPreview(out,prev);opts=this.importCompat(prev);out.append(opts.node);apply.textContent='Import '+(prev.devices||[]).length+' devices';apply.disabled=!ok;apply.classList.remove('hidden');}catch(e){toast(e.message,true);}pv.disabled=!ok;}});
+    apply.addEventListener('click',async()=>{if(!prev)return;const extra=opts?opts.get():{};if(extra===null){toast('Enter the broker login or untick "Keep using my current MQTT broker"',true);return;}
+      if(!(await confirmDlg('Import this setup?',[el('p',{text:'This replaces the current network parameters. Existing pairings to THIS gateway (if any) will stop working. Continue?'})],'Import now',true)))return;apply.disabled=true;
+      try{const r=await api('api/import/apply',Object.assign({},body,extra));const rr=r.restart_required;const need=Array.isArray(rr)?rr.length>0:!!rr;const cp=Array.isArray(r.compat)?r.compat:[];
+        clear(out).append(el('div',{class:'notice'},el('b',{text:'Imported. '}),r.summary||((r.devices||[]).length+' devices'),r.network_adopted?' Network parameters adopted.':'',cp.length?el('div',{class:'sub',style:'margin-top:4px'},'Compatibility applied: ',el('span',{class:'mono',text:cp.join(', ')})):null));if(need)out.append(el('div',{class:'bar'},el('span',{class:'sub',text:'A restart is needed to bring the adopted network up.'}),el('button',{class:'btn primary',text:'Restart now',onclick:()=>this.restart()})));
+        toast('Import applied');apply.classList.add('hidden');this.afterSave(r,'import');views.devices.refresh();}
+      catch(e){toast(e.message,true);apply.disabled=!ok;}});
+    return el('div',{class:'card'},el('p',{class:'sub',style:'margin:0 0 12px',text:'Bring your existing Zigbee network over without re-pairing. Keep the same coordinator dongle: the network already lives in it — we adopt its key, PAN and channel and import your device names and models.'}),
+      el('div',{class:'fgrid'},fld('configuration.yaml',fy,'Required for names; contains the network key.','import.config'),fld('database.db',fd,'Models and endpoints — skips interviews.','import.db'),fld('coordinator_backup.json',fb,'Optional; needed if the dongle was wiped or replaced.','import.backup')),
+      el('div',{class:'bar'},pv,apply),out);
+  },
+  importPreview(out,p){
+    const n=p.network||{};clear(out);
+    const kv=el('dl',{class:'kv'});const add=(k,v,m)=>kv.append(el('dt',{text:k}),el('dd',{class:m?'mono':'',text:v==null||v===''?'—':String(v)}));
+    add('Network found',n.found?'yes':'no');add('Source',n.source);add('Channel',n.channel);add('PAN id',typeof n.pan_id==='number'?hex(n.pan_id):n.pan_id,1);add('Extended PAN id',n.ext_pan_id,1);add('Frame counter',n.frame_counter);add('Coordinator',n.coordinator_ieee,1);
+    out.append(el('div',{class:'sub-panel',id:'imp-net'},el('h3',{text:'Network'}),kv,
+      n.found?null:el('p',{class:'sub',style:'margin:8px 0 0',text:'No network parameters found: devices are imported by name but must be paired again.'}),
+      n.key_is_well_known_default?el('div',{class:'notice danger',style:'margin:10px 0 0'},el('b',{text:'Default network key. '}),'This network uses a well-known default key, which is public: anyone in radio range can decrypt your traffic. Once the import works, rotate the key under Maintenance and re-pair the devices.'):null));
+    const ds=p.devices||[];out.append(el('h3',{text:'Devices ('+ds.length+')'}));
+    const eps=x=>{const e=x.endpoints;return Array.isArray(e)?e.join(', '):e&&typeof e==='object'?Object.keys(e).join(', '):String(e??'—');};
+    if(!ds.length)out.append(el('div',{class:'empty',text:'No devices found in the files.'}));
+    else out.append(el('div',{class:'twrap flat'},el('table',{class:'imptab'},thead(['Name','Model','Manufacturer','Type','Endpoints','Interviewed']),el('tbody',null,...ds.map(x=>el('tr',null,el('td',null,el('b',{text:x.friendly_name||x.ieee}),el('div',{class:'sub mono',text:x.ieee})),el('td',{text:x.model||'—'}),el('td',{class:'sub',text:x.manufacturer||'—'}),el('td',{class:'sub',text:x.router?'Router':'End device'}),el('td',{class:'mono',text:eps(x)}),el('td',{text:x.interviewed?'✓':'—'})))))));
+    const w=p.warnings||[];if(w.length)out.append(el('div',{class:'notice warn',style:'margin-top:12px'},el('b',{text:'Warnings'}),el('ul',{class:'steps'},...w.map(s=>el('li',{text:s})))));
+  },
+  importCompat(p){
+    const m=p.mqtt||{},hasSrv=!!m.server,needCreds=hasSrv&&(!m.has_password||!m.user);
+    const[kb,kbRow]=chk('Keep using my current MQTT broker',hasSrv,hasSrv?'Server '+m.server+(m.user?', user '+m.user:', no user'):'configuration.yaml has no mqtt server; the built-in broker will be used','import.keep_broker');
+    kb.disabled=!hasSrv;kbRow.classList.add('imp-keep-broker');
+    const bu=txt(m.user||'',{placeholder:'addons',autocomplete:'username'}),bp=pwd('Broker password');bp.autocomplete='current-password';
+    const creds=el('div',{class:'sub-panel',style:'margin-top:0'},el('p',{class:'sub',style:'margin:0 0 4px',text:'The previous setup got this login from the Home Assistant Supervisor; enter your MQTT broker add-on\'s login (Settings → Add-ons → your broker → Configuration → Logins)'}),el('div',{class:'fgrid'},fld('Broker user',bu),fld('Broker password',bp)));
+    const[ke,keRow]=chk('Keep Home Assistant entities and topics identical',true,'Same <base>/<friendly name> topics and the same discovery identities, so entity ids, dashboards, automations and other MQTT clients are unchanged. Base topic: '+(m.base_topic||'—'),'import.keep_entities');
+    keRow.classList.add('imp-keep-entities');
+    const upd=()=>creds.classList.toggle('hidden',!(kb.checked&&needCreds));kb.addEventListener('change',upd);upd();
+    const node=el('div',{class:'sub-panel',id:'imp-compat'},el('h3',{text:'Keep everything working'}),el('p',{class:'sub',style:'margin:0 0 4px',text:'Leave both on for a migration nobody notices: the same broker, the same topics, the same Home Assistant entities. You can switch to the built-in TLS broker later from Settings → MQTT broker.'}),kbRow,creds,keRow);
+    const get=()=>{const o={keep_broker:hasSrv&&kb.checked,keep_entities:ke.checked};if(o.keep_broker&&needCreds){if(!bu.value.trim()||!bp.value)return null;o.broker_user=bu.value.trim();o.broker_password=bp.value;}return o;};
+    return{node,get};
+  },
+  cardMaint(ok){
+    const b=S.bridge||{};const lv=sel(['DEBUG','INFO','WARNING','ERROR'],CFG.log_level||b.log_level||'INFO');
+    const SENT='I understand all devices must be re-paired';const inp=txt('',{placeholder:SENT,style:'width:100%;margin:8px 0'});
+    const rot=el('button',{class:'btn danger',text:'Rotate network key',disabled:true,title:ok?'':'UI user is not in control_users',onclick:async()=>{if(!(await confirmDlg('Rotate the network key?',[el('p',{text:'A new random network key is written to the coordinator. Every paired device loses connectivity immediately and must be paired again, one by one. Do this if you suspect the key leaked, for example after an unexpected join alert.'})],'Rotate key now',true)))return;try{await api('api/rotate_network_key',{confirm:SENT});toast('Network key rotated. Re-pair every device.');inp.value='';rot.disabled=true;}catch(e){toast(e.message,true);}}});
+    inp.addEventListener('input',()=>{rot.disabled=!ok||inp.value!==SENT;});
+    return el('div',{class:'card'},
+      el('h3',null,'Runtime log level',help('maintenance.log_level',null,'Runtime log level')),el('div',{class:'bar',style:'margin:6px 0 0'},lv,el('button',{class:'btn',text:'Apply',onclick:async()=>{try{await api('api/settings',{log_level:lv.value});toast('Log level set to '+lv.value);}catch(e){toast(e.message,true);}}}),el('span',{class:'sub',text:'Not persisted; resets to the configured level on restart.'})),
+      el('h3',null,'Restart gateway',help('maintenance.restart',null,'Restart gateway')),el('button',{class:'btn',style:'margin-top:6px',text:'Restart gateway',disabled:!ok,onclick:()=>this.restart()}),
+      el('div',{class:'danger-zone'},el('h3',null,'Rotate network key',help('maintenance.rotate',null,'Rotate network key')),el('p',{class:'sub',style:'margin:0',text:'Every device, including routers, is disconnected and must be re-paired. Type the sentence below exactly to enable the button.'}),
+        el('div',{class:'mono sub',text:SENT}),inp,rot,ok?null:el('p',{class:'sub',text:'Disabled: the UI user is not in control_users.'})));
+  }
+};
+
+/* ============ boot ============ */
+async function loadBridge(){try{S.bridge=await api('api/bridge');S.pj=Object.assign(S.pj,S.bridge.permit_join||{});if(S.pj.open)S.pj.total=S.pj.seconds_left;renderHeader();}catch(e){renderHeader('bridge unreachable');}}
+buildNav();
+$('#h-sec').addEventListener('click',()=>{views.logs.tab='audit';views.logs.aFilter='security';location.hash='#logs/security';if(S.page==='logs')route();});
+$('#h-sec').addEventListener('keydown',e=>{if(e.key==='Enter')$('#h-sec').click();});
+window.addEventListener('hashchange',route);
+(async()=>{await loadBridge();try{const sec=await api('api/audit?level=security&n=1');if(sec.length){S.lastSec=sec[sec.length-1];renderHeader();}}catch(e){}try{S.devices=await api('api/devices');S.devMap=new Map(S.devices.map(d=>[d.ieee,d]));}catch(e){}route();connectSSE();setInterval(()=>{if(S.page==='devices')views.devices.rows.forEach(r=>r.upd());},30000);setInterval(loadBridge,60000);})();
+</script>
+</body>
+</html>

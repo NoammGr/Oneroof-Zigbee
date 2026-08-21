@@ -3,6 +3,13 @@
 All notable changes to One Roof Zigbee. Version numbers are MAJOR.MINOR.PATCH:
 MAJOR = breaking (re-pairing or config migration needed), MINOR = features, PATCH = fixes.
 
+## [1.2.5] — 2026-08-21
+
+### Fixed — "UI not built" in the add-on
+- The web UI's `index.html` was not included in the installed package (only `.py` files were), so the
+  add-on served "UI not built". The static files are now declared as package data and verified present
+  in the built wheel.
+
 ## [1.2.4] — 2026-08-21
 
 ### Fixed — first run on real hardware (Sonoff ZBDongle-P, Z-Stack 3.x.0)
