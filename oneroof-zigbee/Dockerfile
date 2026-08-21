@@ -10,11 +10,17 @@ FROM ${BUILD_FROM}
 ARG BUILD_VERSION
 ARG SOURCE_REPO=https://github.com/NoammGr/Oneroof-Zigbee
 
-RUN apk add --no-cache python3 py3-pip py3-setuptools py3-wheel py3-cryptography py3-yaml py3-pyserial eudev-libs \
-    && pip install --no-cache-dir --break-system-packages --no-deps --no-build-isolation \
-         pyserial-asyncio \
-         "oneroof-zigbee @ ${SOURCE_REPO}/archive/refs/tags/v${BUILD_VERSION}.tar.gz" \
-    && apk del --no-cache py3-pip \
+# Source: the release tarball for this version; if the tag is not published yet, fall back to
+# the main branch (the Auto-tag workflow creates the tag on the next push).
+RUN apk add --no-cache python3 py3-pip py3-setuptools py3-wheel py3-cryptography py3-yaml py3-pyserial eudev-libs curl \
+    && SRC="${SOURCE_REPO}/archive/refs/tags/v${BUILD_VERSION}.tar.gz" \
+    && if ! curl -fsSL -o /tmp/src.tar.gz "$SRC"; then \
+         echo "NOTICE: release tag v${BUILD_VERSION} not found, building from main branch instead"; \
+         curl -fsSL -o /tmp/src.tar.gz "${SOURCE_REPO}/archive/refs/heads/main.tar.gz"; \
+       fi \
+    && pip install --no-cache-dir --break-system-packages --no-deps --no-build-isolation pyserial-asyncio /tmp/src.tar.gz \
+    && rm -f /tmp/src.tar.gz \
+    && apk del --no-cache py3-pip curl \
     && addgroup -S -g 1000 oneroof \
     && adduser  -S -u 1000 -G oneroof -G dialout -h /nonexistent -s /sbin/nologin oneroof \
     && mkdir -p /data && chown oneroof:oneroof /data

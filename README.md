@@ -147,6 +147,6 @@ Source-available, see [LICENSE](LICENSE).
 
 ## Versions
 
-Releases are tagged `vX.Y.Z` and listed in [CHANGELOG.md](CHANGELOG.md). Tagging triggers the
-release workflow: tests → add-on images on GHCR (amd64, aarch64) → GitHub Release. The add-on's
+Releases are tagged `vX.Y.Z` and listed in [CHANGELOG.md](CHANGELOG.md). Pushing `main` auto-creates
+the tag for the version in `pyproject.toml`; the tag triggers the release workflow: tests → add-on images on GHCR (amd64, aarch64) → GitHub Release. The add-on's
 `version` in `oneroof-zigbee/config.yaml` and `oneroof_zigbee.__version__` must match the tag.

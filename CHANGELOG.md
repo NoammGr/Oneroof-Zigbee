@@ -3,6 +3,14 @@
 All notable changes to OneRoof Zigbee. Versions follow [Semantic Versioning](https://semver.org):
 MAJOR = breaking (re-pairing or config migration needed), MINOR = features, PATCH = fixes.
 
+## [1.1.8] — 2026-08-21
+
+### Changed — releases no longer depend on pushing tags by hand
+- New *Auto-tag* workflow: every push to `main` creates the `vX.Y.Z` tag for the version in `pyproject.toml`
+  if it does not exist, which in turn runs the release pipeline.
+- Add-on build falls back to the `main` branch tarball when the release tag is not published yet (a NOTICE
+  appears in the build log), so an install never fails on a missing tag. Verified locally for both paths.
+
 ## [1.1.7] — 2026-08-21
 
 ### Fixed — add-on image build on the Home Assistant base

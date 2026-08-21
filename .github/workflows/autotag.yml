@@ -1,0 +1,30 @@
+name: Auto-tag
+
+# Creates the vX.Y.Z tag for the version in pyproject.toml whenever main is
+# pushed, so releases never depend on pushing tags by hand. Creating the tag
+# triggers the Release workflow (tests → add-on images → GitHub Release).
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Create tag if missing
+        run: |
+          V=$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml)
+          [ -n "$V" ] || { echo "no version in pyproject.toml"; exit 1; }
+          if git ls-remote --exit-code --tags origin "refs/tags/v$V" >/dev/null 2>&1; then
+            echo "tag v$V already exists"; exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "v$V" -m "v$V (auto-tagged from pyproject.toml)"
+          git push origin "v$V"
+          echo "created v$V"
