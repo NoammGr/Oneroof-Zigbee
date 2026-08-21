@@ -1,0 +1,49 @@
+serial:
+  port: /dev/ttyUSB0          # macOS: /dev/tty.usbserial-XXXX ; SMLIGHT LAN: not supported yet (serial only)
+  baudrate: 115200
+
+data_dir: ./data              # keystore, passwords, device registry, audit log (all 0600)
+
+zigbee:
+  channel: 15                 # 15 / 20 / 25 avoid Wi-Fi 1/6/11
+  strict_install_codes: false # true = ONLY install-code joins possible (public link key disabled)
+  permit_join_max_seconds: 120
+  permit_join_require_install_code: false
+  permit_join_cooldown_seconds: 5
+
+mqtt:
+  listen: 0.0.0.0
+  port: 8883
+  base_topic: oneroof/zigbee
+  control_users: [admin]      # ONLY these users may open the join window / remove devices / rotate keys
+  tls: auto                   # default. A private CA + server cert are generated in data/tls/;
+                              # give data/tls/ca.crt to Home Assistant ("Broker certificate" in the MQTT integration).
+  # tls:                      # or bring your own:
+  #   mode: custom
+  #   cert: /etc/ssl/mine.crt
+  #   key:  /etc/ssl/mine.key
+  #   client_ca: /etc/ssl/clients-ca.crt   # optional: require client certificates (mTLS)
+  # tls: off                  # plaintext — only ever for loopback testing
+  users:
+    homeassistant:
+      subscribe: ["oneroof/zigbee/#", "homeassistant/#"]
+      publish:   ["oneroof/zigbee/+/set", "oneroof/zigbee/bridge/request/#", "homeassistant/status"]
+    admin:                      # use this from your laptop when pairing; not from HA automations
+      subscribe: ["oneroof/zigbee/#"]
+      publish:   ["oneroof/zigbee/bridge/request/#", "oneroof/zigbee/+/set"]
+    # a read-only dashboard user:
+    # grafana:
+    #   subscribe: ["oneroof/zigbee/+/state"]
+
+ui:
+  enabled: true
+  listen: 127.0.0.1        # loopback only; reach it via ssh -L 8099:localhost:8099 or HA Ingress
+  port: 8099
+  acts_as: admin           # must be in mqtt.control_users to pair/remove from the UI
+  # tls: auto                # forced on automatically if you ever bind to a non-loopback address
+
+homeassistant:
+  discovery: true
+  discovery_prefix: homeassistant
+
+log_level: INFO
