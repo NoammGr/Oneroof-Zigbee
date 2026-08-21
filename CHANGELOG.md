@@ -3,6 +3,13 @@
 All notable changes to OneRoof Zigbee. Versions follow [Semantic Versioning](https://semver.org):
 MAJOR = breaking (re-pairing or config migration needed), MINOR = features, PATCH = fixes.
 
+## [1.1.5] — 2026-08-21
+
+### Fixed
+- End-to-end tests: wait for MQTT delivery of state/availability instead of reading immediately after the
+  interview flag flips; the assertion could run a few milliseconds early on slower CI runners. No product
+  change.
+
 ## [1.1.4] — 2026-08-21
 
 ### Changed

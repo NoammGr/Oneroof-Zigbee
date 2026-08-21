@@ -182,10 +182,11 @@ async def test_03_pair_plug_interview_discovery_state(stack):
     assert sw["command_topic"] == f"{BASE}/{ieee}/set" and sw["device"]["model"] == "TS011F" and sw["device"]["manufacturer"] == "_TZ3000_ko6v90pg"
     assert f"homeassistant/sensor/{ieee}/power/config" in s.got and f"homeassistant/sensor/{ieee}/energy/config" in s.got
     # state on MQTT reflects the interview reads incl. divisors and StartUpOnOff
+    await wait_for(lambda: "energy" in json.loads(s.got.get(f"{BASE}/{ieee}/state", b"{}")))
     state = json.loads(s.got[f"{BASE}/{ieee}/state"])
     assert state["state"] == "ON" and state["power"] == 71.0 and state["current"] == 0.3 and state["voltage"] == 236.0
     assert state["energy"] == 193.08 and state["power_on_behavior"] == "previous"
-    assert s.got[f"{BASE}/{ieee}/availability"] == b"online"
+    await wait_for(lambda: s.got.get(f"{BASE}/{ieee}/availability") == b"online")
     # bound + reporting configured for on/off, metering, electrical
     binds = {int.from_bytes(f.data[11:13], "little") for f in s.fake.requests if f.subsystem.name == "ZDO" and f.command == 0x21}
     assert {0x0006, 0x0702, 0x0B04} <= binds
@@ -211,6 +212,7 @@ async def test_04_pair_sensor_with_install_code(stack):
     s.world.announce(d)
     dev = await wait_for(lambda: (lambda x: x if x and x.interviewed else None)(_gw(s).registry.get(SENS_IEEE)), 8)
     assert dev.model == "lumi.weather" and not dev.is_router
+    await wait_for(lambda: "battery" in json.loads(s.got.get(f"{BASE}/{dev.ieee_str}/state", b"{}")))
     state = json.loads(s.got[f"{BASE}/{dev.ieee_str}/state"])
     assert state["temperature"] == 21.35 and state["humidity"] == 45.12 and state["battery"] == 90
     assert f"homeassistant/sensor/{dev.ieee_str}/temperature/config" in s.got
