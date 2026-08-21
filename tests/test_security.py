@@ -129,3 +129,11 @@ def test_local_ca_and_server_cert(tmp_path):
     assert srv.minimum_version == ssl.TLSVersion.TLSv1_2
     cli = client_context(ca)
     assert cli.verify_mode == ssl.CERT_REQUIRED
+
+
+def test_join_guard_first_window_allowed_right_after_boot(monkeypatch):
+    """monotonic() is uptime on Linux: a freshly booted host must not be in 'cooldown'."""
+    import time as _t
+    monkeypatch.setattr(_t, "monotonic", lambda: 2.0)
+    g = JoinGuard(JoinPolicy(cooldown_seconds=1000), Audit(None))
+    assert g.request_open(10, "me").seconds == 10

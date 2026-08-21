@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from .audit import Audit
 
@@ -56,7 +56,7 @@ class JoinGuard:
     policy: JoinPolicy
     audit: Audit
     _window: JoinWindow | None = None
-    _last_close: float = field(default=0.0)
+    _last_close: float | None = None  # None = no window has ever closed; monotonic() starts near 0 on a fresh boot
     _close_task: asyncio.Task[None] | None = None
 
     @property
@@ -74,7 +74,7 @@ class JoinGuard:
         if self.policy.require_install_code and allowed_ieee is None:
             self.audit.security("permit_join_denied", reason="install code required", by=requested_by)
             raise JoinPolicyError("policy requires an install code for every join")
-        if now - self._last_close < self.policy.cooldown_seconds and not self.window:
+        if self._last_close is not None and now - self._last_close < self.policy.cooldown_seconds and not self.window:
             self.audit.security("permit_join_denied", reason="cooldown", by=requested_by)
             raise JoinPolicyError(f"cooldown: wait {self.policy.cooldown_seconds}s between join windows")
         self._window = JoinWindow(now, seconds, requested_by, allowed_ieee)

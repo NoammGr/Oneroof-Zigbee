@@ -3,6 +3,13 @@
 All notable changes to OneRoof Zigbee. Versions follow [Semantic Versioning](https://semver.org):
 MAJOR = breaking (re-pairing or config migration needed), MINOR = features, PATCH = fixes.
 
+## [1.0.1] — 2026-08-21
+
+### Fixed
+- Join window could be refused with "cooldown" on a freshly booted host (the cooldown compared against
+  a never-set close time; `monotonic()` is uptime on Linux). Found by CI running in a young container.
+- MQTT client-ID takeover: the superseded session stayed in the client count until its task unwound.
+
 ## [1.0.0] — 2026-08-21
 
 First release. Zigbee gateway and MQTT broker in one process, written from scratch, security first.

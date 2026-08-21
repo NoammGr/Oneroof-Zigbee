@@ -380,6 +380,7 @@ class Broker:
         for other in list(self._sessions):
             if other.client_id == session.client_id:
                 log.info("client %r: taken over by new connection from %s", session.client_id, session.ip)
+                self._sessions.discard(other)  # count/route to the new session immediately, not when the old task unwinds
                 other.close()
         self._sessions.add(session)
         await self._publish_client_count()
