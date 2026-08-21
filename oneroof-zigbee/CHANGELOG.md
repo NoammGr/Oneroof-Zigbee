@@ -1,7 +1,12 @@
 # Changelog
 
-All notable changes to OneRoof Zigbee. Versions follow [Semantic Versioning](https://semver.org):
+All notable changes to One Roof Zigbee. Version numbers are MAJOR.MINOR.PATCH:
 MAJOR = breaking (re-pairing or config migration needed), MINOR = features, PATCH = fixes.
+
+## [1.1.12] — 2026-08-21
+
+### Changed
+- Changelog header explains the version scheme in its own words (no external reference).
 
 ## [1.1.11] — 2026-08-21
 
