@@ -27,6 +27,7 @@ jobs:
           V=$(python -c "import oneroof_zigbee;print(oneroof_zigbee.__version__)")
           [ "v$V" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} != package v$V"; exit 1; }
           grep -q "version: \"$V\"" oneroof-zigbee/config.yaml || { echo "add-on config.yaml version != $V"; exit 1; }
+          cmp -s CHANGELOG.md oneroof-zigbee/CHANGELOG.md || { echo "oneroof-zigbee/CHANGELOG.md is out of sync with CHANGELOG.md (cp CHANGELOG.md oneroof-zigbee/)"; exit 1; }
 
   image:
     needs: verify
