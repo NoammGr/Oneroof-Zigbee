@@ -136,3 +136,9 @@ Everything above is implemented and tested against simulated hardware; it has
 ## License
 
 Source-available, see [LICENSE](LICENSE).
+
+## Versions
+
+Releases are tagged `vX.Y.Z` and listed in [CHANGELOG.md](CHANGELOG.md). Tagging triggers the
+release workflow: tests → add-on images on GHCR (amd64, aarch64) → GitHub Release. The add-on's
+`version` in `addon/oneroof_zigbee/config.yaml` and `oneroof_zigbee.__version__` must match the tag.
