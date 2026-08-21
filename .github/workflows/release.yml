@@ -79,7 +79,7 @@ jobs:
           V=${GITHUB_REF_NAME#v}
           awk -v v="$V" '/^## \[/{p = index($0, "[" v "]") > 0} p' CHANGELOG.md > notes.md
           test -s notes.md || echo "See CHANGELOG.md" > notes.md
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           body_path: notes.md
           name: OneRoof Zigbee ${{ github.ref_name }}
