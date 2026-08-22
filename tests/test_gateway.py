@@ -336,3 +336,24 @@ async def test_identity_and_vendor_heartbeat_attributes_never_become_state(tmp_p
     assert all(e["key"] == "state" for e in events) and all(r["key"] == "state" for r in list(gw.activity)[before:])
     assert gw._apply_changes(dev, {"basic_0xffe2": 57}) == []
     await t.close()
+
+
+async def test_imported_device_goes_online_on_first_frame(tmp_path):
+    """Availability must follow reality: an imported device (offline until heard) that reports
+    is marked online and the retained availability message flips, or Home Assistant keeps every
+    entity unavailable while states flow."""
+    from oneroof_zigbee.devices import Endpoint
+    fake, coord, broker, gw, t = await make(tmp_path)
+    dev = gw.registry.add_or_update(0xA4C1380000000099, 0x5151, is_router=True)
+    dev.endpoints[1] = Endpoint(1, 0x0104, 0x0051, [0, 6], [], "plug")
+    dev.interviewed = True
+    dev.context["imported_from"] = "previous"
+    dev.context["reporting_done"] = True
+    dev.available = False
+    await gw._announce(dev)
+    assert broker.last(f"oneroof/zigbee/{dev.ieee_str}/availability") == b"offline"
+    fake.emit_incoming(0x5151, 0x0006, bytes([0x18, 0x01, 0x0A, 0x00, 0x00, 0x10, 0x01]))  # on/off report
+    await asyncio.sleep(0.1)
+    assert dev.available is True
+    assert broker.last(f"oneroof/zigbee/{dev.ieee_str}/availability") == b"online"
+    await t.close()

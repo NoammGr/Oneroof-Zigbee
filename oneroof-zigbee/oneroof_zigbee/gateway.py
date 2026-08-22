@@ -567,6 +567,11 @@ class Gateway:
             return
         dev.last_seen = time.time()
         dev.lqi = m.lqi
+        if not dev.available:
+            # Heard from it: it is online, whatever its import/registry state said.
+            dev.available = True
+            await self._publish_availability(dev, True)
+            self._emit_device_event("online", dev)
         if (str(dev.manufacturer or "").startswith("_TZ") and dev.ieee not in self._settled
                 and dev.ieee not in self._interview_tasks and dev.context.get("reporting_done")):
             self._settled.add(dev.ieee)  # once per device per start (the device forgets it on its own power cycle)

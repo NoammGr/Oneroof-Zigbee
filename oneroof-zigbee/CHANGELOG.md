@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.5.2] — 2026-08-22
+
+### Fixed — imported devices stayed "unavailable" in Home Assistant
+- A device imported from a previous setup is offline until heard from; when it then reported, its
+  availability was never switched to online, so Home Assistant kept all of its entities unavailable
+  while state messages were flowing. Any frame from a device now marks it online and publishes the
+  (retained) availability.
+
 ## [1.5.1] — 2026-08-22
 
 ### Fixed
