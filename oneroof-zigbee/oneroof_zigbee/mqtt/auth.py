@@ -166,14 +166,23 @@ class Acl:
     def __init__(self) -> None:
         self._pub: dict[str, list[str]] = {}
         self._sub: dict[str, list[str]] = {}
+        self._deny_pub: dict[str, list[str]] = {}  # publish filters refused unless a *specific* allow matches
 
-    def allow(self, user: str, *, publish: list[str] | None = None, subscribe: list[str] | None = None) -> None:
-        for f in (publish or []) + (subscribe or []):
+    def allow(self, user: str, *, publish: list[str] | None = None, subscribe: list[str] | None = None,
+              deny_publish: list[str] | None = None) -> None:
+        for f in (publish or []) + (subscribe or []) + (deny_publish or []):
             validate_filter(f)
         if publish:
             self._pub.setdefault(user, []).extend(publish)
         if subscribe:
             self._sub.setdefault(user, []).extend(subscribe)
+        if deny_publish:
+            self._deny_pub.setdefault(user, []).extend(deny_publish)
+
+    def clear(self, user: str) -> None:
+        self._pub.pop(user, None)
+        self._sub.pop(user, None)
+        self._deny_pub.pop(user, None)
 
     @classmethod
     def from_dict(cls, data: dict[str, dict[str, list[str]]]) -> Acl:
@@ -184,7 +193,16 @@ class Acl:
         return acl
 
     def can_publish(self, user: str, topic: str) -> bool:
-        return any(topic_matches(f, topic) for f in self._pub.get(user, ()))
+        """Allow filters grant. A deny filter refuses a topic that is covered only by the bare
+        catch-all "#"; any narrower allow (e.g. "<base>/+/set", "<base>/bridge/request/#") wins over
+        the deny, so "publish anywhere except the gateway's device topics, commands excepted" is
+        expressible."""
+        allows = self._pub.get(user, ())
+        if not any(topic_matches(f, topic) for f in allows):
+            return False
+        if any(topic_matches(d, topic) for d in self._deny_pub.get(user, ())):
+            return any(topic_matches(f, topic) for f in allows if f != "#")
+        return True
 
     def can_subscribe(self, user: str, topic_filter: str) -> bool:
         try:

@@ -635,3 +635,13 @@ async def test_mqtt5_subscription_identifiers_are_echoed(broker: Broker) -> None
     assert isinstance(d, pk.Disconnect) and d.reason == pk.RC_MALFORMED
     w.close()
     await gw.disconnect()
+
+
+def test_acl_deny_publish_with_specific_allow_override() -> None:
+    acl = Acl()
+    acl.allow("ha", publish=["#", "z/+/set", "z/bridge/request/#"], subscribe=["#"], deny_publish=["z/#"])
+    assert acl.can_publish("ha", "anything/else")
+    assert acl.can_publish("ha", "z/lamp/set") and acl.can_publish("ha", "z/bridge/request/permit_join")
+    assert not acl.can_publish("ha", "z/lamp") and not acl.can_publish("ha", "z/bridge/devices") and not acl.can_publish("ha", "z/lamp/availability")
+    acl.clear("ha")
+    assert not acl.can_publish("ha", "anything/else")

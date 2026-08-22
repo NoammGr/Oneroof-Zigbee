@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.6.1] — 2026-08-22
+
+### Changed — the Home Assistant role is a full broker client
+- Home Assistant is the hub: its login (shared by One Roof Bridge through the Supervisor) may now
+  subscribe to and publish on any topic — its other integrations' discovery topics, the NVR's events —
+  with one exception kept on purpose: it cannot publish on the gateway's own device topics, so a
+  leaked Home Assistant token cannot forge sensor states; commands (`/set`, `/get`, bridge requests)
+  remain allowed. Opening the network stays a control-user privilege.
+- ACL gained deny lists with narrower-allow override; add-on DOCS describe the Bridge and NVR setup.
+
 ## [1.6.0] — 2026-08-22
 
 ### Added — device descriptions for the other One Roof apps

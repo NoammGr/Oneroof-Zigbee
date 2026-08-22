@@ -267,8 +267,12 @@ async def test_users_live_and_roles(admin_ui):
     assert st == 200
     users = {u["name"]: u for u in json.loads(body)["users"]}
     assert users["ha"]["has_password"] and users["ha"]["control"] is False and users["ha"]["role"] == "homeassistant"
-    # ACL applied live (no restart): HA may set devices but not publish elsewhere; not a control user
+    # ACL applied live (no restart): HA may command devices and use any other topic, but may not forge
+    # the gateway's own device state; not a control user
     assert acl.can_publish("ha", "oneroof/zigbee/0xabc/set") and not acl.can_publish("ha", "oneroof/zigbee/0xabc/state")
+    assert acl.can_publish("ha", "oneroof/events") and acl.can_publish("ha", "tasmota/discovery/x/config")
+    assert not acl.can_publish("ha", "oneroof/zigbee/bridge/devices") and acl.can_publish("ha", "oneroof/zigbee/bridge/request/permit_join")
+    assert acl.can_subscribe("ha", "oneroof/#") and acl.can_subscribe("ha", "esphome/discover/#")
     assert "ha" not in gw.control_users and pw.verify("ha", "ha-secret-password")
     st, _, body = await http(server.port, "POST", "/api/users", {"name": "ops", "role": "admin", "password": "ops-secret-password"})
     assert "ops" in gw.control_users

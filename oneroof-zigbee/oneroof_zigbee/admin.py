@@ -36,8 +36,10 @@ from .mqtt import Acl, PasswordFile
 log = logging.getLogger("oneroof_zigbee.admin")
 
 ROLE_TEMPLATES: dict[str, dict[str, Any]] = {
-    "homeassistant": {"subscribe": ["{base}/#", "homeassistant/#"], "publish": ["{base}/+/set", "{base}/bridge/request/#", "homeassistant/status"], "control": False,
-                      "description": "Home Assistant: read everything, control devices, cannot open the network"},
+    "homeassistant": {"subscribe": ["#"], "publish": ["#", "{base}/+/set", "{base}/+/get", "{base}/bridge/request/#"],
+                      "deny_publish": ["{base}/#"], "control": False,
+                      "description": "Home Assistant and the apps that share its login (One Roof Bridge …): read everything, publish "
+                                     "anywhere except the gateway's own device topics (commands via /set allowed), cannot open the network"},
     "admin": {"subscribe": ["{base}/#"], "publish": ["{base}/#"], "control": True,
               "description": "Admin: everything incl. pairing, removing, key rotation"},
     "readonly": {"subscribe": ["{base}/+/state", "{base}/bridge/state", "{base}/bridge/info", "{base}/bridge/devices"], "publish": [], "control": False,
@@ -91,7 +93,8 @@ class Admin:
         for name, u in self._read_users_file().items():
             role = u.get("role", "custom")
             sub, pub, control = self._expand(role, u, base)
-            self.acl.allow(name, publish=pub, subscribe=sub)
+            self.acl.clear(name)
+            self.acl.allow(name, publish=pub, subscribe=sub, deny_publish=self._deny(role, base))
             if control:
                 self.control_users.add(name)
             else:
@@ -103,6 +106,11 @@ class Admin:
         if role == "custom":
             return list(u.get("subscribe", [])), list(u.get("publish", [])), bool(u.get("control", False))
         return ([s.format(base=base) for s in t["subscribe"]], [p.format(base=base) for p in t["publish"]], bool(u.get("control", t["control"])))
+
+    @staticmethod
+    def _deny(role: str, base: str) -> list[str]:
+        t = ROLE_TEMPLATES.get(role, ROLE_TEMPLATES["custom"])
+        return [d.format(base=base) for d in t.get("deny_publish", [])]
 
     def list_users(self) -> list[dict[str, Any]]:
         file_users = self._read_users_file()
