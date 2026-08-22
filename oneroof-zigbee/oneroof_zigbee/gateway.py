@@ -77,6 +77,10 @@ class Gateway:
         self._lookup_times: dict[int, float] = {}
         self._locate_task: asyncio.Task[None] | None = None
         self._settled: set[int] = set()  # Tuya devices given their settle read this run
+        self._rotation: Any = None  # KeyRotation, created on first use
+        from .monitor import Monitor
+        self.monitor = Monitor(lambda t, **f: self.audit.security(t, **f))
+        self._monitor_task: asyncio.Task[None] | None = None
         self._timers: dict[tuple[int, str], asyncio.Task[None]] = {}
         self._started = False
         # optional observers (the UI attaches here); called synchronously, must not raise
@@ -100,6 +104,10 @@ class Gateway:
                 d.interviewed = False
                 d.context.pop("reporting_done", None)
                 self.registry.save()
+        for d in self.registry.all():
+            lq = d.state.get("linkquality")
+            if d.lqi is None and isinstance(lq, int) and 0 <= lq <= 255:
+                d.lqi = lq  # last known value from the imported state until the device talks
         self.coord.known_ieee.update(d.ieee for d in self.registry.all())
         self.coord.on_aps(self._on_aps)
         self.coord.on_device_joined(self._on_joined)
@@ -114,6 +122,8 @@ class Gateway:
         self.broker.subscribe("homeassistant/status", self._on_ha_status)
 
         self._load_activity()
+        self._load_profiles()
+        self._monitor_task = asyncio.create_task(self._monitor_loop(), name="monitor")
         await self.broker.publish(f"{b}/bridge/state", self.topics.bridge_state_payload(True), retain=True)
         await self._publish_bridge_info()
         if self.cfg.homeassistant.discovery:
@@ -157,11 +167,71 @@ class Gateway:
             dev.available = True
             dev.last_seen = time.time()
             dev.context["reporting_done"] = True
-            if dev.endpoints:
+            if dev.endpoints and dev.interviewed:
                 self._interview_tasks[dev.ieee] = asyncio.create_task(self._post_import_setup(dev), name=f"post-import-{dev.ieee_str}")
             else:
                 self._start_interview(dev)
             await asyncio.sleep(1.0)  # one broadcast per second keeps the mesh calm
+
+    # ----------------------------------------------------------- monitor --
+
+    def _profiles_path(self):
+        return self.cfg.data_dir / "profiles.json"
+
+    def _load_profiles(self) -> None:
+        try:
+            if self._profiles_path().exists():
+                self.monitor.load(json.loads(self._profiles_path().read_text()))
+        except (OSError, ValueError):
+            log.debug("profiles.json unreadable", exc_info=True)
+
+    def _save_profiles(self) -> None:
+        try:
+            tmp = self._profiles_path().with_suffix(".tmp")
+            tmp.write_text(json.dumps(self.monitor.export()))
+            tmp.replace(self._profiles_path())
+        except OSError:
+            log.debug("profiles.json not saved", exc_info=True)
+
+    ROUTER_POLL_AFTER_S = 900  # a mains device silent this long is asked for one attribute
+
+    async def _monitor_loop(self) -> None:
+        tick = 0
+        while True:
+            await asyncio.sleep(60)
+            tick += 1
+            try:
+                self.monitor.sweep([(d.ieee, bool(d.is_router or d.rx_on_when_idle)) for d in self.registry.all()])
+                self._save_profiles()
+                if tick % 5 == 0:
+                    await self._poll_silent_routers()
+            except Exception:
+                log.debug("monitor sweep failed", exc_info=True)
+
+    async def _poll_silent_routers(self) -> None:
+        """Mains devices that do not report by themselves (not yet bound, or models that only answer)
+        are asked for one attribute now and then: keeps last-seen and link quality fresh, feeds the
+        liveness monitor, and their pending binding/reporting setup runs on that contact."""
+        now = time.time()
+        for dev in self.registry.all():
+            if not (dev.is_router or dev.rx_on_when_idle) or not dev.nwk or not dev.endpoints:
+                continue
+            if dev.last_seen and now - dev.last_seen < self.ROUTER_POLL_AFTER_S:
+                continue
+            if dev.ieee in self._interview_tasks:
+                continue
+            ep = next((e for e in dev.endpoints.values() if 0x0006 in e.in_clusters), None) or dev.primary_endpoint()
+            if ep is None:
+                continue
+            cluster, attr = (0x0006, 0x0000) if 0x0006 in ep.in_clusters else (0x0000, 0x0004)
+            try:
+                state = await self.read_attributes(dev, ep.id, cluster, [attr])
+                if state:
+                    self._apply_changes(dev, state)
+                    await self._publish_state(dev)
+            except (ZnpError, asyncio.TimeoutError) as e:
+                log.debug("%s: poll failed (%s)", dev.ieee_str, e)
+            await asyncio.sleep(0.5)
 
     def _load_activity(self) -> None:
         if not self._activity_path or not self._activity_path.exists():
@@ -194,6 +264,9 @@ class Gateway:
     async def stop(self) -> None:
         if self._locate_task:
             self._locate_task.cancel()
+        if self._monitor_task:
+            self._monitor_task.cancel()
+        self._save_profiles()
         for t in self._interview_tasks.values():
             t.cancel()
         for t in self._timers.values():
@@ -216,10 +289,32 @@ class Gateway:
         dev.last_seen = time.time()
         await self._publish_availability(dev, True)
         self._emit_device_event("joined", dev)
+        if j.plain_join and self.cfg.zigbee.rotate_key_after_plain_join:
+            dev.context["rotate_after_join"] = True
         if not dev.interviewed:
             self._start_interview(dev)
         else:
             await self._publish_bridge_info()
+            await self._maybe_rotate_after_join(dev)
+
+    async def _maybe_rotate_after_join(self, dev: Device) -> None:
+        """A device paired without an install code received the network key under the public key,
+        so a sniffer present at that moment may hold it. Now that the device has its own link key
+        (trust-centre key exchange is mandatory here), rotate the network key over the air: the new
+        key reaches every device under per-device keys and the exposed one dies within minutes."""
+        if not dev.context.pop("rotate_after_join", False):
+            return
+        from .rotation import KeyRotation
+        from .security import Keystore
+        if self._rotation is None:
+            self._rotation = KeyRotation(self.coord, self.registry, Keystore(self.cfg.data_dir / "network.keystore"), self.audit)
+        if self._rotation.running:
+            return
+        try:
+            self._rotation.start(window_s=300, by="policy:rotate_after_plain_join")
+            self.audit.security("key_rotation_after_plain_join", ieee=dev.ieee_str)
+        except ValueError as e:
+            log.info("rotation after join not started: %s", e)
 
     async def _on_left(self, ieee: int, nwk: int) -> None:
         dev = self.registry.get(ieee)
@@ -298,6 +393,7 @@ class Gateway:
             await self._publish_state(dev)
             await self._publish_bridge_info()
             self._emit_device_event("interviewed", dev)
+            await self._maybe_rotate_after_join(dev)
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -473,10 +569,10 @@ class Gateway:
             asyncio.create_task(self._vendor_settle(dev), name=f"settle-{dev.ieee_str}")
         if dev.context.get("imported_from") and not dev.context.get("reporting_done") and dev.ieee not in self._interview_tasks:
             dev.context["reporting_done"] = True  # set first so a burst of frames schedules it once
-            if dev.endpoints:
+            if dev.endpoints and dev.interviewed:
                 self._interview_tasks[dev.ieee] = asyncio.create_task(self._post_import_setup(dev), name=f"post-import-{dev.ieee_str}")
             else:
-                self._start_interview(dev)  # imported without database.db: learn endpoints/clusters now
+                self._start_interview(dev)  # no endpoints, or never marked interviewed: learn/confirm now
         # m.secure is the *APS-layer* flag; ordinary ZCL traffic is NWK-encrypted only,
         # so it is informational, not an alert. NWK security is enforced by the firmware.
         try:
@@ -485,6 +581,8 @@ class Gateway:
             log.debug("%s: undecodable ZCL on %#06x: %s", dev.ieee_str, m.cluster, e)
             return
 
+        self.monitor.observe(dev.ieee, seq=frame.seq, lqi=m.lqi, is_command=bool(frame.is_cluster_specific and frame.direction == 0),
+                             mains=bool(dev.is_router or dev.rx_on_when_idle))
         fut = self._pending_rsp.get((m.src_addr, frame.seq, m.cluster))
         if (fut and not fut.done() and frame.direction == zcl.DIRECTION_SERVER_TO_CLIENT
                 and frame.frame_type == zcl.FRAME_TYPE_GLOBAL
@@ -1024,18 +1122,32 @@ class Gateway:
         return {"verified": ok, "first_bad_line": line}
 
     async def _req_rotate_key(self, body: dict[str, Any], who: str) -> dict[str, Any]:
-        """Schedule a fresh network key on next start. Every device must be re-paired.
+        """Two ways to rotate the network key.
 
-        Deliberately not a silent in-place rotation: Z-Stack's over-the-air key
-        switch leaves devices that miss the broadcast stranded, and *that* is
-        the moment an attacker with the old key would want. Re-pairing with
-        install codes is the safe path.
+        mode "over_the_air" (default): the new key is handed to every device under its own link key,
+        then switched (see rotation.py). Nothing is re-paired; whoever holds only the old network key
+        is locked out. Whoever also holds the trust-centre seed is not — for that, use "repair".
+
+        mode "repair": a fresh key AND a fresh trust-centre seed on next start; every device must be
+        paired again. Confirmation sentence required.
         """
-        if body.get("confirm") != "I understand all devices must be re-paired":
-            raise ValueError('send {"confirm": "I understand all devices must be re-paired"}')
         from .security import Keystore, NetworkSecrets
+        mode = str(body.get("mode", "over_the_air"))
         ks = Keystore(self.cfg.data_dir / "network.keystore")
-        fresh = NetworkSecrets.generate(self.coord.secrets.channel)
-        ks.save(fresh)
-        self.audit.security("network_key_rotation_scheduled", by=who)
-        return {"restart_required": True}
+        if mode == "repair":
+            if body.get("confirm") != "I understand all devices must be re-paired":
+                raise ValueError('send {"confirm": "I understand all devices must be re-paired"}')
+            fresh = NetworkSecrets.generate(self.coord.secrets.channel)
+            ks.save(fresh)
+            self.audit.security("network_key_rotation_scheduled", by=who, mode="repair")
+            return {"restart_required": True}
+        if mode != "over_the_air":
+            raise ValueError("mode must be over_the_air or repair")
+        from .rotation import DEFAULT_WINDOW_S, KeyRotation
+        if self._rotation is None:
+            self._rotation = KeyRotation(self.coord, self.registry, ks, self.audit)
+        st = self._rotation.start(window_s=int(body.get("window_s", DEFAULT_WINDOW_S)), by=who)
+        return {"rotation": st.to_json()}
+
+    def rotation_status(self) -> dict[str, Any]:
+        return self._rotation.state.to_json() if self._rotation else {"phase": "idle"}

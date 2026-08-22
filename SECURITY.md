@@ -164,3 +164,46 @@ Existing users with a wrong password are never adopted; the plaintext listener t
 reachable from outside Home Assistant unless a host port is mapped. Review or remove the adopted user
 under Settings → Users & access at any time.
 
+## Network key rotation
+
+The network key is shared by every device; whoever holds it can read and inject traffic while in
+radio range. Two ways to replace it:
+
+* **Over the air** (Settings → Maintenance → Rotate network key): the trust centre hands the new key
+  to each device individually, encrypted under that device's own link key, waits a configurable
+  window (battery devices collect it from their parent when they wake), then broadcasts the switch.
+  Nothing is re-paired. Whoever holds only the old network key cannot read the per-device deliveries
+  and is locked out. A device that slept through the window rejoins with its link key and receives
+  the current key then. Recorded as `network_key_rotation_started` / `network_key_rotated`.
+* **Rotate and re-pair everything**: new key *and* new trust-centre seed on the next start. Required
+  when the seed may have leaked as well (it is in the previous setup's backup files alongside the
+  key); over-the-air rotation does not exclude someone holding both.
+
+## Liveness and anomaly monitor
+
+Zigbee offers no per-device secure session, so an attacker who obtained the network key cannot be
+stopped by the protocol from injecting traffic. What betrays them is behaviour. The gateway keeps a
+small behavioural profile per device (persisted) and raises a `device_anomaly` security alert — in
+the UI, the Activity log and the Home Assistant "Last security alert" entity — when it sees:
+
+* a ZCL sequence number that jumps far ahead or backwards (an impersonator keeps its own counter);
+* link quality far from the device's running average (a different radio in a different place);
+* cluster commands from a device that has only ever reported (sensors do not send on/off);
+* a burst far above the device's usual peak, and silence right after a burst (the signature of a
+  replay that stranded the real device's frame counter);
+* a mains-powered device missing its usual cadence by a wide margin (supervised-line liveness).
+
+Thresholds are conservative, one alert per kind per device per 15 minutes, and every alert carries
+its evidence.
+
+## Pairing: install codes first, exposure bounded otherwise
+
+* With an install code the network key travels under a key derived from that code; a sniffer learns
+  nothing. Strict mode makes this the only way in.
+* Without an install code the key travels under the public link key — unavoidable for devices that
+  have no code. The gateway bounds that exposure: the window admits **one** device and closes the
+  moment it joins (`permit_join_close_after_first_join`), and once the new device has completed its
+  trust-centre key exchange the network key is **rotated over the air** (`rotate_key_after_plain_join`,
+  on by default), so a key captured during pairing stops working within minutes. Both are settings
+  under Settings → Zigbee.
+

@@ -93,7 +93,8 @@ async def run(cfg: Config, config_path: Path | None = None, *, managed: bool = F
     transport.start()
     guard = JoinGuard(JoinPolicy(max_seconds=cfg.zigbee.permit_join_max_seconds,
                                  cooldown_seconds=cfg.zigbee.permit_join_cooldown_seconds,
-                                 require_install_code=cfg.zigbee.permit_join_require_install_code), audit)
+                                 require_install_code=cfg.zigbee.permit_join_require_install_code,
+                                 close_after_first_join=cfg.zigbee.permit_join_close_after_first_join), audit)
     coord = Coordinator(transport, secrets, guard, audit, strict_install_codes=cfg.zigbee.strict_install_codes)
     await coord.start()
 

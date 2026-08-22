@@ -1,109 +1,35 @@
 # Changelog
 
+## [1.4.4] — 2026-08-22
+
+### Added — security requirements
+- **Network key rotation over the air**: the new key is handed to every device under its own link
+  key, then switched; devices stay paired; whoever holds only the old key is locked out. Live progress
+  in Settings → Maintenance. "Rotate and re-pair everything" remains for a leaked trust-centre seed.
+- **Liveness and anomaly monitor**: per-device behavioural profiles; `device_anomaly` alerts for
+  sequence jumps, link-quality swings, commands from devices that only report, bursts, silence after a
+  burst, and mains devices that go silent.
+- **Pairing exposure bounded**: a plain join window admits one device and closes at once; after a
+  pairing without install code the key is rotated automatically within minutes.
+
+### Changed
+- Last known link quality shown for every device; silent mains devices polled every 5 minutes so
+  models that never report come alive and get bound; imported devices never marked as interviewed
+  are interviewed on contact; wider page layout.
+
 ## [1.3.10] — 2026-08-22
 
-### Changed — the restore is now the normal path, and secrets stay out of the log
-- Importing a previous setup and starting the coordinator always goes through the sequence that
-  proved to work on hardware: network formed, then — with the stack stopped — key items written at
-  their exact length, frame counter table and trust-centre seed written, then started and verified
-  (key, seed, counter, and the neighbour check). The simulated firmware in the tests now behaves
-  like the real one (ignores the pre-configured key, 17-byte key items) and an end-to-end restore
-  test guards it.
-- The add-on never prints a generated password any more (Home Assistant receives it through the
-  Supervisor; set your own in Settings → Users & access), and the start-up banner no longer shows
-  manual MQTT instructions.
-- Devices show their last known link quality (kept across restarts and seeded from the imported
-  state) instead of "—" until they next report.
-- Tuya mains devices (`_TZ…`) get the one Basic-cluster read after which they stop reporting every
-  200 ms, at configuration and once per start on their first frame.
-
-## [1.3.9] — 2026-08-22
-
-### Fixed
-- Key items are written with exactly their own length (the counter part is absent on firmware that
-  keeps counters in the security material table; a longer write was refused). The item length is
-  logged.
-- The ZDO network-key update is also tried in its broadcast form when the self-addressed form is
-  refused; it installs the key locally as well, and the broadcast is encrypted under the current key.
-
-## [1.3.8] — 2026-08-22
-
-### Fixed — Home Assistant denied everything right after a restart
-- Users managed in the web UI (and their role permissions) were loaded into the broker's access list
-  only after the coordinator had started, ~10 s after the broker opened its port. Home Assistant
-  reconnects within a second, subscribes once and keeps the denials (`acl: user 'homeassistant'
-  denied subscribe …`). Users are now loaded before the broker accepts any client.
-
-## [1.3.7] — 2026-08-22
-
-### Fixed — the imported key is installed through the network-key update
-- On firmware whose key items are read-only (confirmed: writes refused even with the stack stopped,
-  and 0 neighbours heard), the imported key is now installed with the ZDO network-key update/switch
-  commands addressed to the coordinator itself — the mechanism Zigbee uses for key rotation, nothing
-  is sent over the air. The devices' key sequence number is kept. Result is logged and recorded
-  (`network_key_repaired method=zdo`); the neighbour check 45 s later confirms it.
-
-## [1.3.6] — 2026-08-22
-
-### Fixed — key material is written the way the firmware accepts it
-- Key items, the frame counter and the trust-centre seed are now written into the coordinator
-  **while the stack is stopped** — right after a reset and before the network is started — both when
-  the network is formed for an imported setup and when a repair is needed. Writes while the network
-  runs are refused by the firmware; that is why earlier repairs did not take.
-
-## [1.3.5] — 2026-08-22
-
-### Fixed
-- The frame counter is read from the right extended-NV table (0x0007; 0x0001 is the address manager,
-  whose entries were misread as counters).
-- A key-item mismatch no longer re-forms the network at every start (destructive, and it did not
-  change the verdict on hardware); it is reported and left to the neighbour check.
-
-### Added — neighbour check
-- 45 s after start the coordinator's neighbour table is read and logged (`coordinator hears N
-  neighbour(s), M router(s)`), recorded as `neighbour_check`; an empty table raises
-  `no_neighbours_heard`. Routers announce themselves under the network key, so this is the ground
-  truth for "is the key right and is anyone in range".
-
-## [1.3.4] — 2026-08-22
-
-### Fixed — frame counter read and written where this firmware keeps it
-- On Z-Stack 3.x.0 the live NWK frame counter is kept in the security material table (extended NV
-  API), not in the legacy key item. The gateway now reads the counter from there (entry for our
-  extended PAN id, else the generic entry) and, when the SET command is not kept, writes it there
-  before restarting the network. Routers drop frames from a coordinator whose counter is below the
-  one they remember, which looks exactly like a wrong key.
-
-## [1.3.3] — 2026-08-22
-
-### Fixed — the network is formed on the keystore key
-- Confirmed on hardware: the firmware only takes `PRECFGKEY` as the network key when
-  `PRECFGKEYS_ENABLE` is 1 during formation; with 0 it made up a key of its own, so an imported
-  network was formed on the wrong key and no router ever answered. Formation now enables it for the
-  formation step only and switches it back to 0 afterwards (joining devices still receive the key
-  under a link key, never assume it).
-- A refused direct write to the key items (status 0x02) no longer crashes the gateway: the network is
-  re-formed on the keystore key instead and verified; a refused frame-counter write raises
-  `frame_counter_unverified` instead of failing the start.
-
-## [1.3.2] — 2026-08-22
-
-### Fixed — the radio's active key is repaired, not just reported
-- If the key the radio actually uses differs from the keystore's (some firmware variants form the
-  network on a key of their own unless the key items are written explicitly), the active, alternate
-  and legacy key items are rewritten with the imported key — keeping the frame counter — the network
-  is restarted and the key verified again (`network_key_repaired`). "No route" to every router
-  (`AF … 0xcd`) was the visible symptom.
-
-## [1.3.1] — 2026-08-22
-
-### Fixed — imported network: link-key seed restored, key verified
-- The previous setup's backup carries the trust-centre link-key seed the devices' individual link
-  keys were derived from; the import now keeps it and the coordinator is given it when the network is
-  formed (or at the next start if missing), so every device's link key stays valid.
-- At start the gateway checks that the key the radio actually uses equals the keystore's and that the
-  seed matches (`active network key … matches: yes/NO`, never printing either); a mismatch raises a
-  `network_key_mismatch` alert.
+### Fixed — the imported network really lands on the coordinator
+- Verified on hardware and guarded by tests against a simulated firmware that behaves the same:
+  the firmware ignores the pre-configured key at formation and its key items are 17 bytes, writable
+  only with the stack stopped. Formation and every start now: form → stop → write key items at exact
+  length, frame counter (security material table) and trust-centre seed → start → verify key, seed,
+  counter → neighbour check (`coordinator hears N neighbour(s)`). Mismatches are repaired, never
+  re-formed blindly, and reported (`network_key_mismatch/repaired`, `frame_counter_verified`,
+  `no_neighbours_heard`).
+- The trust-centre link-key seed from the backup is restored so every device's link key stays valid.
+- Secrets never reach the log: key-bearing frames are redacted at DEBUG, generated passwords are not
+  printed. Tuya mains devices get the Basic-cluster read that stops their 200 ms reports.
 
 ## [1.3.0] — 2026-08-22
 
@@ -129,75 +55,13 @@
 
 ## [1.2.21] — 2026-08-21
 
-### Fixed
-- Per-client subscription limit raised from 64 to 2048: Home Assistant subscribes to one topic per
-  entity plus its discovery filters and was being cut off (`subscription limit reached`), leaving
-  entities without updates.
-
-## [1.2.20] — 2026-08-21
-
-### Fixed — devices ignored the coordinator after an import
-- The coordinator's NWK frame counter is now read back after every start. If it is below the
-  imported value, it is set again with the network up and verified; if the firmware still does not
-  keep it, the active/alternate key items are written directly and the network restarted. The log
-  states the counter found and the result; Activity records `frame_counter_verified` or a
-  `frame_counter_unverified` alert. Devices drop every frame from a coordinator whose counter is
-  lower than the last one they saw — which looked like "no answer, no state, no LQI".
-
-## [1.2.19] — 2026-08-21
-
-### Fixed — Home Assistant could lock itself out
-- The login lockout is now per address **and username**. Everything inside Home Assistant arrives
-  from one address, so a stored login that kept failing (after a user was removed or its password
-  changed) locked that address and rejected a correct login typed into the MQTT dialog as well.
-
-## [1.2.18] — 2026-08-21
-
-### Changed
-- Imported devices whose address is known from the backup are interviewed directly after start
-  instead of waiting for an answer to a broadcast address query (which some devices never give).
-  A failed direct interview is retried when the device next talks.
-
-## [1.2.17] — 2026-08-21
-
-### Added — Home Assistant's existing broker login is adopted
-- For one hour after an import (or the first start), the add-on adopts the login Home Assistant's MQTT
-  integration keeps sending from its own address inside the add-on network: the user is created with
-  the Home Assistant role, the window closes, and `broker_login_adopted` is recorded. No dialog, no
-  typing — the migration is fully automatic. Details and limits in SECURITY.md.
-
-## [1.2.16] — 2026-08-21
-
-### Added — MQTT 5 clients
-- The broker accepts MQTT 5 connections next to 3.1.1: properties in every packet are parsed and
-  validated, reason codes are used in CONNACK/SUBACK/UNSUBACK/DISCONNECT, session expiry 0 is treated as a
-  clean session, "retain handling = never" is honoured, a taken-over session is told why. The broker
-  advertises QoS 1, retained messages and wildcards, and no topic aliases or shared subscriptions.
-  Home Assistant's MQTT integration can be left on its default protocol setting.
-
-## [1.2.15] — 2026-08-21
-
-### Fixed — Home Assistant kept the previous broker's login
-- Home Assistant adopts an announced broker only when no MQTT integration exists yet; with an existing
-  one it keeps the previous login (`addons`) and fails to connect every few seconds. The broker now logs
-  a one-time instruction when it sees that login, and README/DOCS describe the one-time reconfiguration.
-- Changing the Home Assistant user's password in the web UI also updates the login the add-on announces
-  to Home Assistant on every start.
-
-## [1.2.14] — 2026-08-21
-
-### Changed — deterministic builds, clear versions, clean logs
-- The gateway package lives inside the add-on folder and is copied into the image at build time; nothing
-  is downloaded during the build, and the build fails if the packaged version and the add-on version
-  disagree. The image always contains exactly the version the add-on store shows.
-- The running version is shown at the top right of every page and in the first log line at start.
-- The byte-level DEBUG log of coordinator traffic redacts frames that carry keys (network key, link keys,
-  trust-centre key, install codes), so a pasted log never gives away the network.
-- After start, the PAN id and channel the radio reports are compared with the keystore; a mismatch (the
-  firmware kept a previous network) is logged and raised as a `network_parameters_mismatch` alert, so a
-  key rotation that did not take effect cannot go unnoticed.
-- Repository tidied: build artefacts removed from version control, `config.example.yaml` under `docs/`,
-  the test runner under `tests/`; add-on README brought up to date.
+### Fixed — broker and Home Assistant integration on a real installation
+- Add-on built from its own folder (no downloads at build time; version asserted at build).
+- MQTT 5 clients accepted next to 3.1.1; Home Assistant's dialog can stay on its default.
+- Home Assistant's existing broker login is adopted automatically for an hour after an import or
+  first start; lockouts are per address *and* username so a stale login cannot block a correct one.
+- Per-client subscription limit raised to 2048 (Home Assistant subscribes per entity).
+- Running version shown in the UI header and the first log line.
 
 ## [1.2.9] — 2026-08-21
 
@@ -281,13 +145,6 @@
 - End-to-end scenario with a stand-in existing broker and an already-subscribed Home Assistant: identical topics,
   identical discovery identities, control via the old `/set` topic, network still not openable over MQTT.
 
-## [1.0.1] — 2026-08-21
-
-### Fixed
-- Join window could be refused with "cooldown" on a freshly booted host (the cooldown compared against
-  a never-set close time; `monotonic()` is uptime on Linux). Found by CI running in a young container.
-- MQTT client-ID takeover: the superseded session stayed in the client count until its task unwound.
-
 ## [1.0.0] — 2026-08-21
 
 First release. Zigbee gateway and MQTT broker in one process, written from scratch, security first.
@@ -341,3 +198,6 @@ First release. Zigbee gateway and MQTT broker in one process, written from scrat
 ### Known limitations
 - Not yet validated on physical hardware.
 - No Tuya/Aqara private clusters, groups/scenes, Silicon Labs (EZSP) coordinators, or touchlink.
+
+### Fixed (1.0.1)
+- Join window cooldown on a freshly booted host; client-ID takeover count.

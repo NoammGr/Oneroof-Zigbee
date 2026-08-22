@@ -198,3 +198,126 @@ async def test_remove_device_clears_discovery(tmp_path):
     assert broker.last(f"homeassistant/light/{dev.ieee_str}/light/config") == b""
     assert broker.last(f"oneroof/zigbee/{dev.ieee_str}/state") == b""
     await t.close()
+
+
+async def test_over_the_air_key_rotation_keeps_devices_and_locks_out_old_key(tmp_path):
+    """Rotate without re-pairing: every device gets the new key under its own link key, then a
+    switch is broadcast; the radio and the keystore end up on the new key, registry untouched."""
+    from oneroof_zigbee.security import Keystore
+    fake, coord, broker, gw, t = await make(tmp_path)
+    Keystore(tmp_path / "network.keystore").save(coord.secrets)  # as the runtime would have
+    gw.registry.add_or_update(0x00158D0000000001, 0x1234, is_router=True)
+    gw.registry.add_or_update(0x00158D0000000002, 0x5678, is_router=False)
+    gw.registry.add_or_update(0x00158D0000000003, 0, is_router=False)  # address unknown: skipped, reported
+    old_key = coord.secrets.network_key
+    events = []
+    coord.audit.subscribe(lambda r: events.append(r))
+    from oneroof_zigbee.rotation import KeyRotation
+    KeyRotation.MIN_WINDOW_S = 1
+    result = await gw.handle_request("rotate_network_key", {"window_s": 1}, "ui:admin")
+    assert result["ok"] and result["rotation"]["phase"] in ("delivering", "waiting")
+    for _ in range(100):
+        await asyncio.sleep(0.02)
+        if gw.rotation_status()["phase"] == "waiting":
+            break
+    st = gw.rotation_status()
+    assert sorted(st["delivered"]) == ["0x00158d0000000001", "0x00158d0000000002"]
+    assert st["failed"] == {"0x00158d0000000003": "address unknown"}
+    assert sorted(d for d, _ in fake.key_deliveries) == [0x1234, 0x5678], "unicast to each device, never to 0x0000/broadcast"
+    assert fake.active_key == old_key, "nothing switches before the delivery window ends"
+    for _ in range(150):
+        await asyncio.sleep(0.02)
+        if gw.rotation_status()["phase"] in ("done", "failed"):
+            break
+    st = gw.rotation_status()
+    assert st["phase"] == "done", st
+    new = Keystore(tmp_path / "network.keystore").load()
+    assert new.network_key != old_key and fake.active_key == new.network_key and coord.secrets.network_key == new.network_key
+    assert new.pan_id == coord.secrets.pan_id and new.tclk_seed == coord.secrets.tclk_seed
+    assert len(gw.registry.all()) == 3, "no device removed"
+    types = [e["type"] for e in events]
+    assert "network_key_rotation_started" in types and "network_key_rotated" in types
+    assert [e for e in events if e["type"] == "network_key_rotated"][-1]["verified"] is True
+    # control-user gate still applies
+    denied = await gw.handle_request("rotate_network_key", {}, "homeassistant")
+    assert denied == {"ok": False, "error": "not authorized"}
+    await t.close()
+
+
+async def test_plain_join_closes_the_window_and_rotates_the_key(tmp_path):
+    """A window without install code admits one device, closes at once, and — once the device has
+    its own link key (interview done) — the network key is rotated over the air."""
+    from oneroof_zigbee.rotation import KeyRotation
+    from oneroof_zigbee.security import Keystore
+    KeyRotation.MIN_WINDOW_S = 1
+    fake, coord, broker, gw, t = await make(tmp_path)
+    Keystore(tmp_path / "network.keystore").save(coord.secrets)
+    old_key = coord.secrets.network_key
+    events = []
+    coord.audit.subscribe(lambda r: events.append(r))
+    await broker.inject("oneroof/zigbee/bridge/request/permit_join", b'{"seconds": 60}', user="admin")
+    assert coord.guard.window is not None and coord.guard.window.install_code is False
+    fake.emit_announce(IEEE, NWK)
+    for _ in range(100):
+        await asyncio.sleep(0.02)
+        if gw.registry.get(IEEE) and gw.registry.get(IEEE).interviewed:
+            break
+    assert coord.guard.window is None, "window closed right after the first join"
+    assert fake.permit_durations[-1] == 0
+    assert "permit_join_closed_after_join" in [e["type"] for e in events]
+    # a second device announcing now is unexpected and evicted
+    fake.emit_announce(IEEE + 1, NWK + 1)
+    await asyncio.sleep(0.1)
+    assert any(e["type"] == "unexpected_join" for e in events)
+    # rotation was started by policy and completes
+    assert any(e["type"] == "key_rotation_after_plain_join" for e in events)
+    gw._rotation.state.window_s = 1
+    for _ in range(200):
+        await asyncio.sleep(0.02)
+        if gw.rotation_status()["phase"] in ("done", "failed"):
+            break
+    assert gw.rotation_status()["phase"] == "done"
+    assert Keystore(tmp_path / "network.keystore").load().network_key != old_key
+    assert fake.active_key == coord.secrets.network_key
+    await t.close()
+
+
+async def test_install_code_join_does_not_rotate(tmp_path):
+    fake, coord, broker, gw, t = await make(tmp_path)
+    events = []
+    coord.audit.subscribe(lambda r: events.append(r))
+    code = "83FED3407A939723A5C639B26916D505C3B5"
+    await broker.inject("oneroof/zigbee/bridge/request/permit_join",
+                        json.dumps({"seconds": 60, "ieee": f"0x{IEEE:016x}", "install_code": code}).encode(), user="admin")
+    assert coord.guard.window is not None and coord.guard.window.install_code is True
+    fake.emit_announce(IEEE, NWK)
+    for _ in range(100):
+        await asyncio.sleep(0.02)
+        if gw.registry.get(IEEE) and gw.registry.get(IEEE).interviewed:
+            break
+    await asyncio.sleep(0.05)
+    types = [e["type"] for e in events]
+    assert "permit_join_closed_after_join" in types and "key_rotation_after_plain_join" not in types
+    await t.close()
+
+
+async def test_silent_routers_are_polled_and_lqi_seeded_from_state(tmp_path):
+    from oneroof_zigbee.devices import Endpoint
+    fake, coord, broker, gw, t = await make(tmp_path)
+    dev = gw.registry.add_or_update(0x00158D0000000011, NWK, is_router=True)
+    dev.endpoints[1] = Endpoint(1, 0x0104, 0x0100, [0, 6, 8], [], "light")
+    dev.interviewed = True
+    dev.state["linkquality"] = 77
+    dev.last_seen = 0.0
+    dev.lqi = None
+    # seeding happens at start: emulate the start-up pass
+    for d in gw.registry.all():
+        if d.lqi is None and isinstance(d.state.get("linkquality"), int):
+            d.lqi = d.state["linkquality"]
+    assert dev.lqi == 77
+    fake.requests.clear()
+    await gw._poll_silent_routers()
+    reads = [f for f in fake.requests if f.subsystem is Subsystem.AF and f.command == 0x01 and int.from_bytes(f.data[4:6], "little") == 0x0006]
+    assert reads, "on/off attribute read sent to the silent router"
+    assert dev.state.get("state") == "ON" and dev.last_seen > 0, "answer applied; last-seen refreshed"
+    await t.close()

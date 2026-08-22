@@ -105,6 +105,7 @@ class UiApi:
         r("POST", "/api/devices/<ieee>/unbind", self.dev_unbind)
         r("POST", "/api/map/refresh", self.map_refresh)
         r("POST", "/api/rotate_network_key", self.rotate)
+        r("GET", "/api/rotate_network_key", self.rotate_status)
         r("POST", "/api/settings", self.settings)
         r("GET", "/api/config", self.config_get)
         r("POST", "/api/config", self.config_save)
@@ -389,6 +390,9 @@ class UiApi:
         async with self._map_lock:
             self._map_cache = await self._build_map()
         return Response.json({"ok": True, **self._map_cache})
+
+    async def rotate_status(self, req: Request) -> Response:
+        return Response.json(self.gw.rotation_status())
 
     async def rotate(self, req: Request) -> Response:
         self._require_control()

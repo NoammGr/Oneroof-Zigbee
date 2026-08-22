@@ -87,6 +87,8 @@ class ZigbeeConfig:
     strict_install_codes: bool = False
     permit_join_max_seconds: int = 120
     permit_join_require_install_code: bool = False
+    permit_join_close_after_first_join: bool = True   # one device per plain window
+    rotate_key_after_plain_join: bool = True          # a key exposed during pairing must not live long
     permit_join_cooldown_seconds: int = 5
 
 
@@ -195,6 +197,8 @@ class Config:
             strict_install_codes=bool(z.get("strict_install_codes", False)),
             permit_join_max_seconds=int(z.get("permit_join_max_seconds", 120)),
             permit_join_require_install_code=bool(z.get("permit_join_require_install_code", False)),
+            permit_join_close_after_first_join=bool(z.get("permit_join_close_after_first_join", True)),
+            rotate_key_after_plain_join=bool(z.get("rotate_key_after_plain_join", True)),
             permit_join_cooldown_seconds=int(z.get("permit_join_cooldown_seconds", 5)),
         )
         if zig.channel not in ZIGBEE_CHANNELS:

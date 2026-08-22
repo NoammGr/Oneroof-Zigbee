@@ -33,6 +33,7 @@ class JoinPolicy:
     max_seconds: int = 120
     cooldown_seconds: int = 5
     require_install_code: bool = False
+    close_after_first_join: bool = True  # a plain window admits exactly one device, then closes
 
 
 @dataclass
@@ -42,6 +43,7 @@ class JoinWindow:
     requested_by: str
     allowed_ieee: int | None = None  # None → any device (only when install codes not required)
     closed: bool = False
+    install_code: bool = False  # opened with an install code: the key travels under a per-device key
 
     @property
     def expires_at(self) -> float:

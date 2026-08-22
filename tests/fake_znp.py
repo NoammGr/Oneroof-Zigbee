@@ -47,6 +47,8 @@ class FakeZnp:
         self.active_key = None  # None = whatever PRECFGKEY holds; set to model a radio on another key
         self.refuse_key_item_writes = False  # True = a firmware whose key items cannot be written at all
         self.pending_key = None
+        self.key_deliveries: list[tuple[int, int]] = []
+        self.active_seq = 0
         self.has_exnv = True  # Z-Stack 3.x.0: frame counters live in the security material table
         self.sec_material: list[tuple[int, bytes]] = [(0, b"\xff" * 8)]  # (frameCounter, extPanId LE)  # model firmware that does not keep SET_NWK_FRAME_COUNTER
         self.nwk_to_ieee: dict[int, int] = {}  # populated by emit_announce; used for IEEE_ADDR_REQ
@@ -133,7 +135,7 @@ class FakeZnp:
                     self._srsp(f, b"\x00\x01" + (b"\x01" if self.formed else b"\x00"))
                 elif item in (c.NvId.NWK_ACTIVE_KEY_INFO, c.NvId.NWK_ALTERN_KEY_INFO):
                     key = self.active_key if self.active_key is not None else self.nv.get(c.NvId.PRECFGKEY, bytes(16))[:16]
-                    body = b"\x00" + key  # 17 bytes: the counter lives in the security material table
+                    body = bytes([self.active_seq]) + key  # 17 bytes: the counter lives in the security material table
                     self._srsp(f, b"\x00" + bytes([len(body)]) + body)
                 elif item in self.nv:
                     v = self.nv[item]
@@ -222,12 +224,18 @@ class FakeZnp:
                 else:
                     self.emit(Frame(FrameType.AREQ, Subsystem.ZDO, c.ZdoCmd.IEEE_ADDR_RSP, Writer().u8(0x81).ieee(0).u16(nwk).bytes()))
             elif cmd == c.ZdoCmd.EXT_UPDATE_NWK_KEY:
-                self.pending_key = (f.data[2], f.data[3:19])
-                self._srsp(f, b"\x00")
+                dst = int.from_bytes(f.data[0:2], "little")
+                if dst == 0x0000:
+                    self._srsp(f, b"\x01")  # the real firmware refuses a transport to itself
+                else:
+                    self.pending_key = (f.data[2], f.data[3:19])
+                    self.key_deliveries.append((dst, f.data[2]))
+                    self._srsp(f, b"\x00")
             elif cmd == c.ZdoCmd.EXT_SWITCH_NWK_KEY:
                 seq = f.data[2]
                 if self.pending_key and self.pending_key[0] == seq:
                     self.active_key = self.pending_key[1]
+                    self.active_seq = seq
                 self._srsp(f, b"\x00")
             elif cmd == c.ZdoCmd.MGMT_LQI_REQ:
                 nwk = int.from_bytes(f.data[0:2], "little")

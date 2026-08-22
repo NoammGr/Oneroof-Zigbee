@@ -62,7 +62,7 @@ nav.side a:hover{background:var(--card-2);color:var(--ink)}
 nav.side a.active{color:var(--accent);background:var(--accent-soft)}
 nav.side a svg.i,.tabs a svg.i{font-size:20px;stroke-width:1.6;opacity:.85}
 nav a.active svg.i{opacity:1}
-main{padding:32px 36px 100px;max-width:1180px;width:100%;min-width:0}
+main{padding:32px 36px 100px;max-width:1680px;width:100%;min-width:0}
 .tabs{display:none}
 h1{font-family:var(--head);font-size:30px;font-weight:800;letter-spacing:-.02em;margin:0 0 6px;line-height:1.15}
 .lead{color:var(--mute);margin:0 0 22px;max-width:64ch}
@@ -404,6 +404,8 @@ const HELP={
   'zigbee.permit_join_max_seconds':'Upper bound for any join window opened from the UI or over MQTT (1–254 s). While the window is open, the network key is handed to any device that asks, so keep this short.',
   'zigbee.permit_join_cooldown_seconds':'Minimum pause between two join windows. Stops a compromised MQTT client from keeping the network permanently open by re-requesting permit_join in a loop.',
   'zigbee.permit_join_require_install_code':'Plain join windows are refused; every device must be paired with the install code printed on it. The network key then travels encrypted with a per-device key, so a sniffer present during pairing learns nothing.',
+  'zigbee.permit_join_close_after_first_join':'A join window without install code admits exactly one device and closes the moment it joins, so nothing can slip in behind it. Pair devices one at a time.',
+  'zigbee.rotate_key_after_plain_join':'A device paired without an install code receives the network key under the public key; a sniffer present at that moment may have captured it. After such a pairing the key is rotated over the air within minutes (the new device already has its own link key by then), so the exposed key dies young.',
   'zigbee.strict_install_codes':'Replaces the public ZigBeeAlliance09 link key with a random one, so a device can only join with its install code. Strongest setting, but devices that do not print an install code cannot be paired at all.',
   'mqtt.listen':'Interface the broker binds to. 0.0.0.0 = all interfaces (needed when Home Assistant runs elsewhere); 127.0.0.1 keeps it local to this host.',
   'mqtt.port':'TCP port of the MQTT broker. 8883 is the convention for MQTT over TLS, 1883 for plaintext. Home Assistant connects here — no separate broker is needed.',
@@ -429,7 +431,9 @@ const HELP={
   'backup.file':'An .ozbk file created by this gateway. Restoring replaces the current keys and database, so devices paired after the backup need re-pairing.',
   'maintenance.log_level':'Verbosity of the application log until the next restart. DEBUG logs every frame and can include device payloads; use it briefly.',
   'maintenance.restart':'Restarts the whole process: broker, coordinator link and this UI. Devices keep their state and reconnect by themselves; expect a few seconds of downtime.',
-  'maintenance.rotate':'Writes a fresh random network key to the coordinator. Every device must be paired again. Use it when you suspect the key leaked (an unexpected join, a device you never paired).',
+  'maintenance.rotate':'Over the air: the new network key is handed to every device encrypted under that device\'s own link key, then everyone switches. Nothing is re-paired. Whoever holds only the old network key is locked out. A device asleep through the whole window rejoins with its link key and picks the key up then.',
+  'maintenance.rotate_window':'How long to wait between handing out the key and switching to it. Battery devices receive the key from their parent router when they next wake; longer windows reach more of them before the switch, the rest rejoin afterwards.',
+  'maintenance.repair':'Fresh network key AND fresh trust-centre seed on the next start. Every device must be paired again. Needed only when the seed may have leaked too (for example the previous setup\'s backup files) — over-the-air rotation alone does not exclude someone who has both.',
   'pair.seconds':'How long the network accepts new devices. The network key is handed to anyone who joins in this window, so keep it just long enough to press the button on the device.',
   'pair.ieee':'The 64-bit address printed on the device or its QR label (16 hex digits). The join window is then opened for this one device only.',
   'pair.install_code':'Secret printed on the device or its box as a QR code/label. It derives a one-off link key, so the network key is never sent under the well-known default key.',
@@ -592,7 +596,7 @@ views.devices={
       el('td',{class:'sub'},el('div',{text:d.kind||'—'}),el('div',{class:'mute',text:(d.vendor?d.vendor+' · ':'')+(d.is_router?'Router':'End device')})),lqi,seenTd,stateTd,ctl,
       el('td',{onclick:stop},this.menu(d,ok)));
     tr.addEventListener('click',()=>{location.hash='#device/'+encodeURIComponent(d.ieee);});
-    const upd=()=>{clear(lqi).append(el('span',{class:'lqi'},el('i',{style:'width:'+Math.min(100,(d.lqi||0)/255*100)+'%'})),String(d.lqi??'—'));seenTd.textContent=rel(d.last_seen);stateTd.textContent=d.interviewed===false?'interviewing…':stateSummary(d.state);avail.className='dot'+(d.available?' on':'');};
+    const upd=()=>{clear(lqi).append(el('span',{class:'lqi'},el('i',{style:'width:'+Math.min(100,(d.lqi||0)/255*100)+'%'})),String(d.lqi??'—'));seenTd.textContent=rel(d.last_seen);stateTd.textContent=d.interviewed===false?(d.interview_error?'not interviewed · '+(stateSummary(d.state)||'no state yet'):'interviewing…'):stateSummary(d.state);avail.className='dot'+(d.available?' on':'');};
     upd();this.rows.set(d.ieee,{tr,upd,ctl,d});return tr;
   },
   controls(d,cl){
@@ -695,7 +699,7 @@ views.dashboard={
     try{ex=await this.exposes(d);}catch(e){clear(c.body).append(el('div',{class:'sub',text:e.message}));return;}
     if(this.cards.get(d.ieee)!==c)return;clear(c.body);c.ups=[];
     const list=ex.filter(f=>f.category!=='diagnostic'&&f.key!=='identify');
-    if(!list.length){c.body.append(el('div',{class:'sub',text:d.interviewed===false?'Interviewing…':(stateSummary(d.state)||'No features exposed.')}));return;}
+    if(!list.length){c.body.append(el('div',{class:'sub',text:d.interviewed===false?(d.interview_error?'Not interviewed yet':'Interviewing…'):(stateSummary(d.state)||'No features exposed.')}));return;}
     for(const f of list){const r=featureControl(d,f,{compact:true,set:p=>api(dpath(d,'/set'),p).catch(e=>toast(e.message,true))});c.ups.push(r.update);c.body.append(el('div',{class:'frow','data-key':f.key},el('div',{class:'fn',title:f.description||''},svg(featIcon(f)),el('span',{text:f.name||f.key})),r.ctrl));}
   },
   onState(ieee){const c=this.cards.get(ieee);if(!c||S.page!=='dashboard')return;c.ups.forEach(u=>u());c.foot();},
@@ -878,7 +882,7 @@ views.pair={
   secs:60,
   enter(m){
     const b=S.bridge||{};const ok=can();const strict=!!b.strict_install_codes;
-    m.append(el('h1',{text:'Pair a device'}),el('p',{class:'lead',text:'The join window is the only moment the network key leaves the coordinator. Keep it short, and use an install code when the device has one.'}));
+    m.append(el('h1',{text:'Pair a device'}),el('p',{class:'lead',text:'The join window is the only moment the network key leaves the coordinator. Use an install code when the device has one; otherwise the window closes after the first device and the key is rotated over the air right after.'}));
     if(!ok)m.append(el('div',{class:'notice warn'},el('b',{text:'This UI cannot open the join window. '}),'The UI acts as MQTT user ',el('span',{class:'mono',text:b.ui_user||'?'}),', which is not listed in control_users. Add it to the config to allow pairing from here.'));
     if(strict)m.append(el('div',{class:'notice'},el('b',{text:'Strict mode is on. '}),'The public ZigBeeAlliance09 link key has been replaced, so only install-code joins can succeed. A plain join window will open but no device can use it.'));
     const seg=el('div',{class:'seg'});for(const s of[15,60,120])seg.append(el('button',{text:s+' s',class:s===this.secs?'active':'',onclick:e=>{this.secs=s;seg.querySelectorAll('button').forEach(x=>x.classList.toggle('active',x===e.target));}}));
@@ -1104,8 +1108,10 @@ views.settings={
     const mx=num(z.permit_join_max_seconds,1,254);f.reg('zigbee.permit_join_max_seconds',()=>+mx.value,mx);f.setter('zigbee.permit_join_max_seconds',v=>setVal(mx,v));
     const cd=num(z.permit_join_cooldown_seconds,0,86400);f.reg('zigbee.permit_join_cooldown_seconds',()=>+cd.value,cd);f.setter('zigbee.permit_join_cooldown_seconds',v=>setVal(cd,v));
     const[ric,ricRow]=chk('Require install code',z.permit_join_require_install_code,null,'zigbee.permit_join_require_install_code');f.reg('zigbee.permit_join_require_install_code',()=>ric.checked,ric);f.setter('zigbee.permit_join_require_install_code',v=>{ric.checked=!!v;});
+    const[one,oneRow]=chk('One device per join window',z.permit_join_close_after_first_join!==false,null,'zigbee.permit_join_close_after_first_join');f.reg('zigbee.permit_join_close_after_first_join',()=>one.checked,one);f.setter('zigbee.permit_join_close_after_first_join',v=>{one.checked=!!v;});
+    const[rk,rkRow]=chk('Rotate key after a pairing without install code',z.rotate_key_after_plain_join!==false,null,'zigbee.rotate_key_after_plain_join');f.reg('zigbee.rotate_key_after_plain_join',()=>rk.checked,rk);f.setter('zigbee.rotate_key_after_plain_join',v=>{rk.checked=!!v;});
     const[st,stRow]=chk('Strict install codes',z.strict_install_codes,'Devices without an install code cannot join at all.','zigbee.strict_install_codes');f.reg('zigbee.strict_install_codes',()=>st.checked,st);f.setter('zigbee.strict_install_codes',v=>{st.checked=!!v;});
-    return f.card(el('div',{class:'fgrid'},fld('Channel',ch,'Changing it re-forms the network.','zigbee.channel'),fld('Max join window (s)',mx,null,'zigbee.permit_join_max_seconds'),fld('Join cooldown (s)',cd,null,'zigbee.permit_join_cooldown_seconds')),ricRow,stRow);
+    return f.card(el('div',{class:'fgrid'},fld('Channel',ch,'Changing it re-forms the network.','zigbee.channel'),fld('Max join window (s)',mx,null,'zigbee.permit_join_max_seconds'),fld('Join cooldown (s)',cd,null,'zigbee.permit_join_cooldown_seconds')),oneRow,rkRow,ricRow,stRow);
   },
   cardMqtt(ro){
     const m=CFG.mqtt||{},t=m.tls||{},tls=this.cfg.tls||{},ha=this.cfg.ha_setup||{};const f=new Form(ro);
@@ -1284,13 +1290,41 @@ views.settings={
   cardMaint(ok){
     const b=S.bridge||{};const lv=sel(['DEBUG','INFO','WARNING','ERROR'],CFG.log_level||b.log_level||'INFO');
     const SENT='I understand all devices must be re-paired';const inp=txt('',{placeholder:SENT,style:'width:100%;margin:8px 0'});
-    const rot=el('button',{class:'btn danger',text:'Rotate network key',disabled:true,title:ok?'':'UI user is not in control_users',onclick:async()=>{if(!(await confirmDlg('Rotate the network key?',[el('p',{text:'A new random network key is written to the coordinator. Every paired device loses connectivity immediately and must be paired again, one by one. Do this if you suspect the key leaked, for example after an unexpected join alert.'})],'Rotate key now',true)))return;try{await api('api/rotate_network_key',{confirm:SENT});toast('Network key rotated. Re-pair every device.');inp.value='';rot.disabled=true;}catch(e){toast(e.message,true);}}});
+    const rot=el('button',{class:'btn danger',text:'Rotate network key',disabled:true,title:ok?'':'UI user is not in control_users',onclick:async()=>{if(!(await confirmDlg('Rotate the network key?',[el('p',{text:'A new random network key is written to the coordinator. Every paired device loses connectivity immediately and must be paired again, one by one. Do this if you suspect the key leaked, for example after an unexpected join alert.'})],'Rotate key now',true)))return;try{await api('api/rotate_network_key',{mode:'repair',confirm:SENT});toast('Network key and seed will be replaced on restart. Re-pair every device.');inp.value='';rot.disabled=true;}catch(e){toast(e.message,true);}}});
     inp.addEventListener('input',()=>{rot.disabled=!ok||inp.value!==SENT;});
     return el('div',{class:'card'},
       el('h3',null,'Runtime log level',help('maintenance.log_level',null,'Runtime log level')),el('div',{class:'bar',style:'margin:6px 0 0'},lv,el('button',{class:'btn',text:'Apply',onclick:async()=>{try{await api('api/settings',{log_level:lv.value});toast('Log level set to '+lv.value);}catch(e){toast(e.message,true);}}}),el('span',{class:'sub',text:'Not persisted; resets to the configured level on restart.'})),
       el('h3',null,'Restart gateway',help('maintenance.restart',null,'Restart gateway')),el('button',{class:'btn',style:'margin-top:6px',text:'Restart gateway',disabled:!ok,onclick:()=>this.restart()}),
-      el('div',{class:'danger-zone'},el('h3',null,'Rotate network key',help('maintenance.rotate',null,'Rotate network key')),el('p',{class:'sub',style:'margin:0',text:'Every device, including routers, is disconnected and must be re-paired. Type the sentence below exactly to enable the button.'}),
+      this.cardRotate(ok),
+      el('div',{class:'danger-zone'},el('h3',null,'Rotate and re-pair everything',help('maintenance.repair',null,'Rotate and re-pair everything')),el('p',{class:'sub',style:'margin:0',text:'New network key and new trust-centre seed. Every device, including routers, is disconnected and must be paired again. Only needed if the seed may have leaked too. Type the sentence below exactly to enable the button.'}),
         el('div',{class:'mono sub',text:SENT}),inp,rot,ok?null:el('p',{class:'sub',text:'Disabled: the UI user is not in control_users.'})));
+  },
+  cardRotate(ok){
+    const win=sel([['120','2 minutes'],['300','5 minutes'],['900','15 minutes'],['3600','1 hour'],['21600','6 hours']],'300');
+    const status=el('div',{class:'sub',style:'margin-top:8px'});
+    const btn=el('button',{class:'btn primary',text:'Rotate key over the air',disabled:!ok,title:ok?'':'UI user is not in control_users',onclick:async()=>{
+      if(!(await confirmDlg('Rotate the network key over the air?',[el('p',{text:'Each device receives the new key encrypted under its own link key; after the waiting period everyone switches. Devices stay paired. Anyone holding only the old network key is locked out.'}),el('p',{class:'sub',text:'Not excluded: someone who also has the trust-centre seed (e.g. from the previous setup\'s backup files). For that, use "Rotate and re-pair everything".'})],'Rotate now',false)))return;
+      try{const r=await api('api/rotate_network_key',{mode:'over_the_air',window_s:parseInt(win.value,10)});toast('Key rotation started');this._rotPoll(status,btn);}catch(e){toast(e.message,true);}}});
+    const box=el('div',{style:'margin-top:14px'},el('h3',null,'Rotate network key',help('maintenance.rotate',null,'Rotate network key')),
+      el('p',{class:'sub',style:'margin:0 0 6px',text:'Devices stay paired. Use it after any suspicion that the key was seen by someone else.'}),
+      el('div',{class:'bar'},el('span',{class:'sub',text:'Wait before switching'},help('maintenance.rotate_window',null,'Wait before switching')),win,btn),status);
+    this._rotPoll(status,btn,true);
+    return box;
+  },
+  async _rotPoll(status,btn,once){
+    try{const st=await api('api/rotate_network_key');
+      const ph=st.phase||'idle';
+      if(ph==='idle'){status.textContent='';btn.disabled=btn.title!=='';return;}
+      const d=(st.delivered||[]).length,f=Object.keys(st.failed||{}).length;
+      const txt={delivering:'Handing the new key to devices… '+d+' delivered'+(f?', '+f+' skipped':''),
+        waiting:'Waiting '+st.seconds_left+' s before switching — '+d+' delivered'+(f?', '+f+' skipped':''),
+        switching:'Switching…',done:'Done: '+d+' devices received the new key'+(f?', '+f+' will pick it up when they rejoin':'')+'. The old key is no longer valid.',
+        failed:'Failed: '+(st.error||'unknown error')}[ph]||ph;
+      clear(status).append(el('span',{class:ph==='failed'?'danger':'',text:txt}));
+      if(f&&ph==='done')status.append(el('div',{class:'mono sub',text:Object.entries(st.failed).map(([k,v])=>k+': '+v).join(' · ')}));
+      btn.disabled=ph==='delivering'||ph==='waiting'||ph==='switching'||btn.title!=='';
+      if(!once||ph==='delivering'||ph==='waiting'||ph==='switching')setTimeout(()=>this._rotPoll(status,btn,false),2000);
+    }catch(e){}
   }
 };
 

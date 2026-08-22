@@ -41,7 +41,8 @@ Security:
 | `api/devices/<ieee>/interview` | `{}` | |
 | `api/devices/<ieee>/identify` | `{}` | identify 10 s |
 | `api/map/refresh` | `{}` | walks neighbour tables of coordinator + routers (takes seconds) |
-| `api/rotate_network_key` | `{confirm: "I understand all devices must be re-paired"}` | control-only |
+| `api/rotate_network_key` | `{mode: "over_the_air", window_s: 300}` (default) → `{rotation: {phase, delivered[], failed{}, switch_at, seconds_left}}`; or `{mode: "repair", confirm: "I understand all devices must be re-paired"}` → `{restart_required: true}` | control-only |
+| `GET api/rotate_network_key` | — | rotation status `{phase: idle\|delivering\|waiting\|switching\|done\|failed, …}` |
 | `api/settings` | `{log_level?: "DEBUG"}` | runtime-only settings |
 
 Errors: `{ok: false, error: "..."}` with 400/403/404/500.

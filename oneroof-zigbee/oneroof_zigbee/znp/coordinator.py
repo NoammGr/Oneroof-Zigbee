@@ -62,6 +62,7 @@ class JoinedDevice:
     nwk: int
     parent: int | None
     capabilities: int
+    plain_join: bool = False  # joined through a window without install code: the key travelled under the public key
 
 
 ApsCb = Callable[[IncomingAps], Awaitable[None]]
@@ -143,7 +144,15 @@ class Coordinator:
                 log.exception("eviction failed")
             return
         self.known_ieee.add(a.ieee)
-        dev = JoinedDevice(a.ieee, a.nwk_addr, None, a.capabilities)
+        w = self.guard.window
+        plain = bool(w and not w.install_code)
+        if w and (self.guard.policy.close_after_first_join or w.allowed_ieee is not None):
+            # One device per window: nothing else can slip in behind the one we expected.
+            self.audit.event("permit_join_closed_after_join", ieee=f"0x{a.ieee:016x}")
+            if self._permit_task:
+                self._permit_task.cancel()
+            await self._force_close_join()
+        dev = JoinedDevice(a.ieee, a.nwk_addr, None, a.capabilities, plain_join=plain)
         for cb in self._join_cbs:
             await cb(dev)
 
@@ -338,6 +347,24 @@ class Coordinator:
                 await self._nv_write(NvId.TCLK_SEED, self.secrets.tclk_seed)
                 self.audit.event("tclk_seed_restored")
                 log.warning("trust-centre link-key seed written from the import; takes effect on the next restart")
+
+    # ------------------------------------------------ network key rotation --
+
+    async def active_key_sequence(self) -> int:
+        raw = await self._nv_read(NvId.NWK_ACTIVE_KEY_INFO)
+        return raw[0] if raw else 0
+
+    async def active_key_matches(self) -> bool:
+        raw = await self._nv_read(NvId.NWK_ACTIVE_KEY_INFO)
+        return raw is not None and len(raw) >= 17 and raw[1:17] == self.secrets.network_key
+
+    async def deliver_network_key(self, nwk: int, seq: int, key: bytes) -> None:
+        """Hand a device the next network key, encrypted under its own link key (unicast)."""
+        await self.t.request(c.zdo_ext_update_nwk_key(nwk, seq, key))
+
+    async def switch_network_key(self, seq: int) -> None:
+        """Tell everyone (and ourselves) to start using the key with this sequence number."""
+        await self.t.request(c.zdo_ext_switch_nwk_key(0xFFFF, seq))
 
     async def _install_key_via_zdo(self, active_seq: int) -> None:
         """Install the keystore key with the network-key update/switch commands addressed to the
@@ -568,6 +595,7 @@ class Coordinator:
         if install_code is None and self.strict:
             raise PermissionError("strict mode: joining requires an install code")
         window = self.guard.request_open(seconds, requested_by, ieee)  # policy first: no side effects on denial
+        window.install_code = install_code is not None
         if install_code is not None:
             key = derive_link_key(install_code)
             await self.t.request(c.appcnf_add_install_code(ieee, key, c.InstallCodeFormat.DERIVED_KEY))

@@ -180,7 +180,8 @@ class Admin:
     DEFAULTS: dict[str, dict[str, Any]] = {
         "serial": {"baudrate": 115200, "rtscts": False},
         "zigbee": {"channel": 15, "strict_install_codes": False, "permit_join_max_seconds": 120,
-                   "permit_join_require_install_code": False, "permit_join_cooldown_seconds": 5},
+                   "permit_join_require_install_code": False, "permit_join_cooldown_seconds": 5,
+                   "permit_join_close_after_first_join": True, "rotate_key_after_plain_join": True},
         "mqtt": {"listen": "0.0.0.0", "port": 8883, "plaintext_port": None, "base_topic": "oneroof/zigbee", "tls": {"mode": "auto"}},
         "homeassistant": {"discovery": True, "discovery_prefix": "homeassistant"},
         "ui": {"enabled": True, "port": 8099},
@@ -201,7 +202,9 @@ class Admin:
             "zigbee": {"channel": c.zigbee.channel, "strict_install_codes": c.zigbee.strict_install_codes,
                        "permit_join_max_seconds": c.zigbee.permit_join_max_seconds,
                        "permit_join_require_install_code": c.zigbee.permit_join_require_install_code,
-                       "permit_join_cooldown_seconds": c.zigbee.permit_join_cooldown_seconds},
+                       "permit_join_cooldown_seconds": c.zigbee.permit_join_cooldown_seconds,
+                       "permit_join_close_after_first_join": c.zigbee.permit_join_close_after_first_join,
+                       "rotate_key_after_plain_join": c.zigbee.rotate_key_after_plain_join},
             "mqtt": {"listen": c.mqtt.listen, "port": c.mqtt.port, "plaintext_port": c.mqtt.plaintext_port, "base_topic": c.mqtt.base_topic,
                      "tls": {"mode": c.mqtt.tls.mode, "cert": str(c.mqtt.tls.cert) if c.mqtt.tls.cert else None,
                              "key": str(c.mqtt.tls.key) if c.mqtt.tls.key else None,
@@ -223,7 +226,8 @@ class Admin:
             raise PermissionError("no config file path known")
         raw = yaml.safe_load(self.config_path.read_text()) or {}
         allowed = {"serial": {"port", "baudrate", "rtscts"},
-                   "zigbee": {"channel", "strict_install_codes", "permit_join_max_seconds", "permit_join_require_install_code", "permit_join_cooldown_seconds"},
+                   "zigbee": {"channel", "strict_install_codes", "permit_join_max_seconds", "permit_join_require_install_code", "permit_join_cooldown_seconds",
+                              "permit_join_close_after_first_join", "rotate_key_after_plain_join"},
                    "mqtt": {"listen", "port", "plaintext_port", "base_topic", "tls", "external"},
                    "compat": {"legacy_layout"},
                    "homeassistant": {"discovery", "discovery_prefix"},

@@ -19,7 +19,7 @@ OneRoof Zigbee is written from scratch so that every security decision could be 
 | **Least privilege** | Only explicit *control users* may pair devices, remove them or rotate keys. Home Assistant's own user can control devices but cannot open the network. |
 | **A short, guarded join window** | Capped and auto-closing, with cooldown; install-code pairing; an optional strict mode that only admits devices with install codes. |
 | **Nothing uninvited** | A device appearing outside a join window is removed and raises an alert. Firmware comes only from files you upload and verify — the gateway never downloads anything. |
-| **Everything accountable** | A tamper-evident, hash-chained audit log records who did what; security alerts are published to Home Assistant. |
+| **Everything accountable** | A tamper-evident, hash-chained audit log records who did what; security alerts are published to Home Assistant. A behavioural monitor flags impersonation, bursts and devices that go silent; the network key can be rotated over the air without re-pairing. |
 | **Small enough to read** | About 9 k lines of Python and three dependencies. The UI is a single file that makes no external requests. |
 
 Read [SECURITY.md](SECURITY.md) for the full model, including what this does *not* protect against.

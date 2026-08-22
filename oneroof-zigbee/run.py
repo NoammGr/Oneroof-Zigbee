@@ -55,6 +55,8 @@ def build_config(opts: dict) -> dict:
             "strict_install_codes": bool(opts.get("strict_install_codes", False)),
             "permit_join_max_seconds": int(opts.get("permit_join_max_seconds", 120)),
             "permit_join_require_install_code": bool(opts.get("permit_join_require_install_code", False)),
+            "permit_join_close_after_first_join": bool(opts.get("permit_join_close_after_first_join", True)),
+            "rotate_key_after_plain_join": bool(opts.get("rotate_key_after_plain_join", True)),
         },
         "mqtt": {
             "listen": "0.0.0.0",
