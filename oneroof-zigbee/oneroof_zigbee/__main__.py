@@ -98,6 +98,8 @@ async def run(cfg: Config, config_path: Path | None = None, *, managed: bool = F
     coord = Coordinator(transport, secrets, guard, audit, strict_install_codes=cfg.zigbee.strict_install_codes)
     await coord.start()
 
+    if isinstance(broker, Broker):
+        broker.audit = audit  # login failures / lockouts as security records (notifications, Activity)
     if managed and isinstance(broker, Broker):
         broker.adopt_login = admin.adopt_login  # adopt Home Assistant's existing broker login (time-boxed)
     if control_users == {cfg.mqtt.gateway_user}:
@@ -106,6 +108,21 @@ async def run(cfg: Config, config_path: Path | None = None, *, managed: bool = F
     registry = Registry(cfg.data_dir / "devices.json")
     gw = Gateway(cfg, coord, broker, audit, registry, control_users=control_users)
     await gw.start()
+
+    # Telegram notifications: the only outbound connection, behind the egress allow-list (off until enabled in the UI).
+    from .notify import EgressClient, NotifySecrets, NotifySettings, TelegramNotifier
+
+    def _friendly(ieee: str) -> str | None:
+        try:
+            from .znp.wire import ieee_int
+            d = registry.get(ieee_int(ieee))
+        except ValueError:
+            return None
+        return d.friendly_name if d else None
+
+    notifier = TelegramNotifier(audit, EgressClient(audit), NotifySettings(cfg.data_dir / "notify.yaml"),
+                                NotifySecrets(cfg.data_dir / "notify.secrets"), resolve_name=_friendly)
+    notifier.start()
 
     ui_server = None
     if cfg.ui.enabled:
@@ -116,7 +133,7 @@ async def run(cfg: Config, config_path: Path | None = None, *, managed: bool = F
         ring.setFormatter(logging.Formatter("%(message)s"))
         logging.getLogger().addHandler(ring)
         ui_server = Server(cfg.ui.listen, cfg.ui.port, tls=_tls_context(cfg, cfg.ui.tls))
-        UiApi(gw, ui_server, bus, ring, acts_as=cfg.ui.acts_as, admin=admin)
+        UiApi(gw, ui_server, bus, ring, acts_as=cfg.ui.acts_as, admin=admin, notifier=notifier)
         await ui_server.start()
         global _last_ui
         _last_ui = ui_server
@@ -138,6 +155,7 @@ async def run(cfg: Config, config_path: Path | None = None, *, managed: bool = F
     elif closed.done() and not stop.is_set():
         log.error("serial transport closed — exiting so the supervisor restarts us")
         rc = 3
+    await notifier.stop()
     await gw.stop()
     if ui_server:
         await ui_server.stop()

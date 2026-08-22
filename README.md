@@ -36,6 +36,7 @@ Read [SECURITY.md](SECURITY.md) for the full model, including what this does *no
 * **Web UI**: Dashboard, Devices (About / Controls / State / Datapoints / Clusters / Reporting / Bind / Firmware), Pair, Map, Logs, Activity, Settings (full admin console with help on every setting).
 * **Migrate from a previous setup without re-pairing** (same dongle) — same broker, topics and HA entities.
 * **Backups** (encrypted), **OTA** (local, verified), **import**, **restart** — all from the UI.
+* **Telegram notifications** (optional, off by default) for security and network events — names, not addresses; batched, rate-limited, quiet hours. The gateway makes no other outbound connection, and the one it can make is allow-listed, TLS-verified and listed in a ledger you can check under Settings → Outbound connections.
 
 Not yet: built-in datapoint maps for every Tuya model (unknown ones are inferred conservatively or taught by hand; the inference knows no irrigation or air-quality layouts yet), Aqara private settings (power outage memory, sensitivity …), groups & scenes, Silicon Labs (EZSP) dongles, touchlink.
 

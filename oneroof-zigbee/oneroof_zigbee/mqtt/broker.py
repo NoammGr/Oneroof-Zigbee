@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from typing import Any
 import ssl
 import time
 from collections.abc import Awaitable, Callable
@@ -210,6 +211,8 @@ class _Session:
             ok = broker.adopt_login(self.ip, first.username, first.password or b"")
         if not ok:
             log.warning("auth: bad credentials for user %r from %s", first.username, self.ip)
+            if broker.audit is not None:
+                broker.audit.security("auth_failed", user=first.username, ip=self.ip)
             if first.username == "addons" and not broker._hinted_addons:
                 # The login a previous broker add-on handed to Home Assistant's MQTT integration.
                 broker._hinted_addons = True
@@ -341,6 +344,7 @@ class Broker:
         # Optional (ip, username, password) -> bool hook consulted after a failed login; True admits
         # the client (the hook created the user). Used by the add-on to adopt Home Assistant's login.
         self.adopt_login: Callable[[str, str, bytes], bool] | None = None
+        self.audit: Any = None  # optional Audit: login failures and lockouts become security records
         # DoS limits: total connections, concurrent scrypt verifications, retained store size.
         self._conn_sem = asyncio.Semaphore(MAX_CONNECTIONS)
         self._verify_sem = asyncio.Semaphore(MAX_CONCURRENT_VERIFY)
@@ -471,6 +475,8 @@ class Broker:
             self._lockouts[key] = now + AUTH_LOCKOUT_SECONDS
             self._auth_failures.pop(key, None)
             log.warning("auth: %s (user %r) locked out for %.0f s after %d failures", ip, username, AUTH_LOCKOUT_SECONDS, len(hist))
+            if self.audit is not None:
+                self.audit.security("auth_lockout", user=username, ip=ip, failures=len(hist), seconds=int(AUTH_LOCKOUT_SECONDS))
         else:
             self._auth_failures[key] = hist
 

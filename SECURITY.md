@@ -207,3 +207,42 @@ its evidence.
   on by default), so a key captured during pairing stops working within minutes. Both are settings
   under Settings → Zigbee.
 
+
+## Outbound connections and notifications
+
+By default the gateway makes **no outbound connection at all**: no update checks, no telemetry, no
+firmware downloads, no DNS lookups of its own. The one optional exception is Telegram notifications
+(Settings → Telegram notifications), and it is built so that you can verify that claim rather than
+take it on trust.
+
+**What leaves the network, and when.** With notifications enabled, short plain-text messages about
+network events go to `api.telegram.org` over HTTPS (`sendMessage` of the Bot API): join-window
+opened/closed, devices joining/leaving/removed/interviewed, security alerts (unexpected joins,
+unknown devices, denied requests, key rotations, network-key and parameter mismatches, frame-counter
+problems, adopted broker logins, definition changes, backups, imports), behaviour anomalies, liveness
+("went silent") and, if you tick it, health (coordinator start, restarts, neighbour checks, gateway
+start/stop). Each category can be switched off. Routine events are batched into one message every
+`digest_seconds`; security alerts and anomalies go out immediately; never more than 20 messages a
+minute (the rest is summarised as "… and N more"); quiet hours hold routine messages back.
+
+**How it is protected.** All outbound traffic goes through a single client (`notify/egress.py`)
+with an allow-list fixed in the code (`api.telegram.org` only), HTTPS only, TLS 1.2 or newer,
+certificate verified against the system trust store with hostname checking, 10 s timeouts. The
+policy is checked before any socket is opened; a refused attempt raises, is recorded as an
+`egress_refused` security event and shows up in the ledger. While notifications are disabled the
+client refuses everything. The ledger — per host: attempts, refusals, last contact, last error — is
+shown under Settings → Outbound connections and served by `GET api/egress`, so "no outbound
+connection except the ones listed here" is a statement you can check at any time.
+
+**Secrets.** The bot token and chat id live in `<data_dir>/notify.secrets`, AES-256-GCM under a
+scrypt-derived key from a random passphrase in a 0600 file next to it (the same scheme as the network
+keystore). The token is never returned by the API (only `has_token`), never written to the YAML
+settings, never logged (the request path that carries it is not logged either) and never part of
+the audit log or a backup. Non-secret settings are in `<data_dir>/notify.yaml` (0600).
+
+**What is never sent.** Device addresses (IEEE) — messages use friendly names and an unnamed
+device is "an unregistered device" — unless you switch *Include device addresses* on; device state
+or sensor values; MQTT credentials, network keys, install codes, the audit log, configuration or
+anything about Home Assistant. Failed deliveries are recorded as `notify_failed` events (no content,
+no token) and retried three times with backoff. The broker's login lockouts are not audited today
+and therefore not notified.

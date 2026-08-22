@@ -469,6 +469,21 @@ const HELP={
   'definitions.on_off_as':'For devices that report a sensor through the On/Off cluster (some contact or motion sensors): publish the On/Off attribute under this key (contact, occupancy, water_leak …) instead of as a switch.',
   'definitions.card':'Definitions you saved from the device pages: what a model is and what its Tuya datapoints mean. They take precedence over the built-in table, apply to every device of the model and live in definitions.yaml in the data directory (included in backups). Export to share or keep a copy; import merges a file into the current list.',
   'definitions.import':'A definitions YAML file exported from this or another gateway. Every entry is validated first; one bad entry rejects the whole file. Merge keeps existing definitions for other models; Replace all discards them.',
+  'notify.card':'Short plain-text messages to a Telegram chat of yours about what happens on the network. Off by default; while it is off the gateway opens no outbound connection at all. Every message goes over TLS 1.2+ to api.telegram.org only; device names are used, never addresses, unless you choose otherwise.',
+  'notify.enabled':'Master switch. Off: nothing is sent and the outbound client refuses every connection. On: messages for the ticked categories are sent to the chat below.',
+  'notify.bot_token':'Token of your own bot, as given by Telegram\'s @BotFather (looks like 123456789:AAF…). Stored encrypted in the data directory, never shown again, never logged and never part of a backup. Leave empty to keep the saved one.',
+  'notify.chat_id':'Numeric id of the chat, group or channel the bot should post to (send /start to the bot, then read the id from a bot such as @userinfobot, or use a group\'s negative id). The bot must be a member of that chat.',
+  'notify.cat.join_window':'The join window was opened (by whom, for how long) or closed. Useful because an open window is the moment the network key is handed out.',
+  'notify.cat.devices':'A device joined, rejoined, left, was removed or finished its interview (with its model).',
+  'notify.cat.security':'Sent immediately: unexpected joins, traffic from unknown devices, adopted or evicted unknowns, denied control requests, join-window policy refusals, key rotations, network-key or parameter mismatches, frame-counter problems, adopted broker logins, definition changes, backups and imports.',
+  'notify.cat.anomalies':'Sent immediately: behaviour anomalies on known devices — sequence jumps, link-quality swings, unexpected commands, bursts, silence after a burst — with the evidence.',
+  'notify.cat.health':'Coordinator start, restart requests, the periodic neighbour check and gateway start/stop. Chatty; off by default.',
+  'notify.cat.liveness':'A mains-powered device has missed its usual reporting cadence by a wide margin (supervised-line style liveness).',
+  'notify.digest_seconds':'Routine events (join window, devices, health, liveness) are collected for this many seconds and sent as one message. 0 sends each at once. Security alerts and anomalies never wait. Regardless of this, at most 20 messages per minute are sent; the rest is summarised as "… and N more".',
+  'notify.quiet':'Optional. Between these local times routine messages are held and delivered when the quiet period ends. Security alerts and anomalies are still sent right away. Leave both empty to disable.',
+  'notify.include_addresses':'Adds the 64-bit IEEE address after the device name, and shows the address of devices that have no name. Off by default so that a chat transcript does not reveal your device identifiers.',
+  'notify.test':'Sends one test message to the chat with the saved token. The result (or the error Telegram returned) is shown below and in the audit log; the token itself never appears anywhere.',
+  'egress.card':'Every outbound connection attempt the gateway makes, by host: how many, when the last one was, how many were refused and the last error. The allow-list is fixed in the code; anything else is refused before a socket is opened and recorded as a security event.',
   'compat.legacy_layout':'Topics are <base>/<friendly name> and discovery messages use the previous identities, so Home Assistant keeps the entities it already had. Enabled by the import; it can only be switched off here, which makes HA create new entities and leaves the old ones unavailable.',
   state:'Switches the device on or off. toggle flips the current state.',
   power_on_behavior:'What the device does after a power cut: stay off, turn on, toggle or restore the previous state. "previous" is usually what you want for lights.',
@@ -1168,7 +1183,7 @@ views.settings={
     if(ro)h.append(el('div',{class:'notice warn'},el('b',{text:'Managed configuration. '}),'These settings are managed by the Home Assistant add-on configuration (Settings → Add-ons → OneRoof Zigbee → Configuration). Users, backups, restart and the log level can still be changed here.'));
     if(!ok)h.append(el('div',{class:'notice warn'},el('b',{text:'Read-only session. '}),'The UI acts as ',el('span',{class:'mono',text:(S.bridge||{}).ui_user||'?'}),', which is not in control_users; saving is disabled.'));
     this.usersHost=el('div');
-    h.append(el('h2',{text:'Coordinator'}),this.cardCoordinator(ro),el('h2',{text:'Zigbee network & security'}),this.cardZigbee(ro),el('h2',{text:'MQTT broker'}),this.cardMqtt(ro),this.usersHost,el('h2',{text:'Home Assistant & UI'}),this.cardHa(ro),el('h2',{text:'Backup & restore'}),this.cardBackup(ok),el('h2',{text:'Import a previous setup'}),this.cardImport(ok),el('h2',{text:'Firmware library'}),this.cardFirmware(ok),el('h2',null,'Device definitions',help('definitions.card',null,'Device definitions')),this.cardDefinitions(ok),el('h2',{text:'Maintenance'}),this.cardMaint(ok));
+    h.append(el('h2',{text:'Coordinator'}),this.cardCoordinator(ro),el('h2',{text:'Zigbee network & security'}),this.cardZigbee(ro),el('h2',{text:'MQTT broker'}),this.cardMqtt(ro),this.usersHost,el('h2',{text:'Home Assistant & UI'}),this.cardHa(ro),el('h2',{text:'Backup & restore'}),this.cardBackup(ok),el('h2',{text:'Import a previous setup'}),this.cardImport(ok),el('h2',{text:'Firmware library'}),this.cardFirmware(ok),el('h2',null,'Device definitions',help('definitions.card',null,'Device definitions')),this.cardDefinitions(ok),el('h2',null,'Telegram notifications',help('notify.card',null,'Telegram notifications')),this.cardNotify(ok),el('h2',null,'Outbound connections',help('egress.card',null,'Outbound connections')),this.cardEgress(),el('h2',{text:'Maintenance'}),this.cardMaint(ok));
     this.renderUsers();
   },
   showBanner(){const b=this.banner;if(!b)return;clear(b);const keys=[...this.pending];if(!keys.length){b.classList.add('hidden');return;}b.classList.remove('hidden');b.append(el('div',{class:'grow'},el('b',{text:'Restart required to apply: '}),el('span',{class:'mono',text:keys.join(', ')})),el('button',{class:'btn primary',text:'Restart now',onclick:()=>this.restart()}));},
@@ -1401,6 +1416,48 @@ views.settings={
     const node=el('div',{class:'sub-panel',id:'imp-compat'},el('h3',{text:'Keep everything working'}),el('p',{class:'sub',style:'margin:0 0 4px',text:'Leave both on for a migration nobody notices: the same broker, the same topics, the same Home Assistant entities. You can switch to the built-in TLS broker later from Settings → MQTT broker.'}),kbRow,creds,keRow);
     const get=()=>{const o={keep_broker:hasSrv&&kb.checked,keep_entities:ke.checked};if(o.keep_broker&&needCreds){if(!bu.value.trim()||!bp.value)return null;o.broker_user=bu.value.trim();o.broker_password=bp.value;}return o;};
     return{node,get};
+  },
+  cardNotify(ok){
+    const tip=ok?'':NOCTL;const card=el('div',{class:'card'});const host=el('div',{class:'sub',text:'Loading…'});card.append(host);
+    const CATS=['join_window','devices','security','anomalies','health','liveness'];
+    const render=(n)=>{
+      const s=n.settings||{},cats=s.categories||{};clear(host);host.className='';
+      const en=el('input',{type:'checkbox',checked:s.enabled?true:null,disabled:!ok||null});
+      const enRow=el('div',{class:'chk',style:'align-items:center'},el('label',{class:'sw'},en,el('i')),el('span',null,el('b',{text:'Send Telegram notifications'}),help('notify.enabled',null,'Send Telegram notifications'),el('div',{class:'hint',text:s.enabled?'on — the gateway may connect to api.telegram.org':'off — no outbound connection is made'})));
+      const tok=pwd(n.has_token?'saved — leave empty to keep':'123456789:AAF…');tok.autocomplete='off';
+      const tokState=el('div',{class:'hint'},n.has_token?el('span',{style:'color:var(--ok)',text:'Token saved (encrypted). '}):el('span',{text:'No token saved. '}),n.has_token?el('button',{class:'btn sm text danger',text:'Remove token',disabled:!ok,title:tip,onclick:async()=>{if(!(await confirmDlg('Remove the bot token?',[el('p',{text:'Notifications stop until a new token is entered.'})],'Remove token',true)))return;try{const r=await api('api/notify/token',{},'DELETE');toast('Token removed');render(r);}catch(e){toast(e.message,true);}}}):null);
+      const chat=txt(n.chat_id||'',{placeholder:'-1001234567890'});
+      const boxes={};const catRows=CATS.map(c=>{const[i,row]=chk(c.replace('_',' '),cats[c],(n.categories||{})[c]||null,'notify.cat.'+c);i.disabled=!ok;boxes[c]=i;return row;});
+      const dig=num(s.digest_seconds??30,0,3600);const qs=el('input',{type:'time',value:s.quiet_start||''}),qe=el('input',{type:'time',value:s.quiet_end||''});
+      const[ia,iaRow]=chk('Include device addresses',s.include_addresses,null,'notify.include_addresses');ia.disabled=!ok;
+      const out=el('div',{class:'sub',style:'margin-top:8px'});
+      const save=el('button',{class:'btn primary',text:'Save',disabled:!ok,title:tip,onclick:async()=>{
+        const body={enabled:en.checked,categories:{},digest_seconds:+dig.value||0,include_addresses:ia.checked,quiet_start:qs.value||null,quiet_end:qe.value||null};for(const c of CATS)body.categories[c]=boxes[c].checked;
+        if(tok.value.trim())body.bot_token=tok.value.trim();if(chat.value.trim()&&chat.value.trim()!==(n.chat_id||''))body.chat_id=chat.value.trim();
+        save.disabled=true;try{const r=await api('api/notify',body,'PUT');toast('Notification settings saved');render(r);}catch(e){toast(e.message,true);save.disabled=!ok;}}});
+      const test=el('button',{class:'btn',text:'Send test message',disabled:!ok||!s.enabled||!n.has_token,title:tip||(!s.enabled?'Enable notifications first':!n.has_token?'Save a bot token first':''),onclick:async()=>{test.disabled=true;try{await api('api/notify/test',{});toast('Test message sent');}catch(e){toast(e.message,true);}test.disabled=false;const r=await api('api/notify').catch(()=>null);if(r)render(r);}});
+      const rec=(n.recent||[]).slice().reverse();
+      const hist=rec.length?el('div',{class:'twrap flat'},el('table',{class:'fwtab'},thead(['When','Result','Lines','Preview']),el('tbody',null,...rec.map(r=>el('tr',null,el('td',{class:'sub',text:fmtTs(r.ts)}),el('td',null,el('span',{class:'badge '+(r.ok?'ok':'warn'),text:r.ok?'sent':'failed'}),r.test?' test':''),el('td',{text:String(r.lines||1)}),el('td',{class:'sub',text:r.ok?(r.preview||''):(r.error||'')}))))))
+        :el('div',{class:'sub',text:'Nothing sent yet.'});
+      host.append(enRow,el('div',{class:'fgrid'},fld('Bot token',el('div',null,tok,tokState),null,'notify.bot_token'),fld('Chat id',chat,null,'notify.chat_id')),
+        el('h3',{text:'What to send'}),...catRows,
+        el('div',{class:'fgrid'},fld('Digest (seconds)',dig,'0 = send each event at once','notify.digest_seconds'),el('div',{class:'field'},lab('Quiet hours','notify.quiet'),el('div',{class:'bar',style:'margin:0'},qs,el('span',{class:'sub',text:'to'}),qe))),iaRow,
+        el('div',{class:'cfoot'},el('span',{class:'sub',text:'Applied immediately, no restart. Sent '+(n.sent||0)+', failed '+(n.failed||0)+(n.dropped?', summarised '+n.dropped:'')+'.'}),test,save),
+        el('h3',{text:'Last messages'}),hist,out);
+    };
+    api('api/notify').then(render).catch(e=>{host.textContent=e.message;});
+    return card;
+  },
+  cardEgress(){
+    const card=el('div',{class:'card'});const host=el('div',{class:'sub',text:'Loading…'});
+    card.append(el('p',{class:'sub',style:'margin:0 0 12px'},el('b',{text:'This add-on makes no outbound connection except the ones listed here. '}),'Hosts outside the allow-list are refused before any connection is opened and recorded as a security event.'),host);
+    api('api/egress').then(r=>{clear(host);host.className='';
+      host.append(el('div',{class:'topic'},el('span',{class:'sub',text:'Allow-list'}),el('span',{class:'mono',text:(r.allowed_hosts||[]).join(', ')||'—'}),el('span',{class:'badge '+(r.enabled?'ok':''),text:r.enabled?'enabled':'disabled — everything refused'})));
+      const hs=Object.entries(r.hosts||{});
+      if(!hs.length){host.append(el('div',{class:'empty',text:'No outbound connection has been attempted since start.'}));return;}
+      host.append(el('div',{class:'twrap flat'},el('table',{class:'fwtab'},thead(['Host','Attempts','Refused','Last','Last error']),el('tbody',null,...hs.map(([h,e])=>el('tr',null,el('td',{class:'mono',text:h}),el('td',{text:String(e.count||0)}),el('td',{text:String(e.refused||0)}),el('td',{class:'sub',text:e.last?fmtTs(e.last):'—'}),el('td',{class:'sub',text:e.last_error||'—'})))))));
+    }).catch(e=>{host.textContent=e.message;});
+    return card;
   },
   cardMaint(ok){
     const b=S.bridge||{};const lv=sel(['DEBUG','INFO','WARNING','ERROR'],CFG.log_level||b.log_level||'INFO');

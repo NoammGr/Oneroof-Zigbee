@@ -69,9 +69,10 @@ class EventBus:
 
 class UiApi:
     def __init__(self, gw: Gateway, server: Server, bus: EventBus, log_handler: RingLogHandler, *, acts_as: str,
-                 admin: "Admin | None" = None) -> None:
+                 admin: "Admin | None" = None, notifier: Any = None) -> None:
         self.gw = gw
         self.admin = admin
+        self.notifier = notifier
         self.bus = bus
         self.logs = log_handler
         self.acts_as = acts_as
@@ -136,6 +137,11 @@ class UiApi:
         r("GET", "/api/import/scan", self.import_scan)
         r("POST", "/api/import/preview", self.import_preview)
         r("POST", "/api/import/apply", self.import_apply)
+        r("GET", "/api/notify", self.notify_get)
+        r("PUT", "/api/notify", self.notify_put)
+        r("POST", "/api/notify/test", self.notify_test)
+        r("DELETE", "/api/notify/token", self.notify_token_delete)
+        r("GET", "/api/egress", self.egress_get)
         server.sse("/api/events", lambda req: self.bus.stream())
 
         # hook gateway → bus
@@ -740,6 +746,67 @@ class UiApi:
             raise HttpError(400, str(e)) from e
         refreshed = await self._definitions_changed(before, "definitions_imported", count=len(imported))
         return Response.json({"ok": True, "imported": len(imported), "devices": refreshed, "definitions": self.gw.definitions.all()})
+
+    # -- notifications / egress -------------------------------------------
+
+    def _notifier(self) -> Any:
+        if self.notifier is None:
+            raise HttpError(404, "notifications not available")
+        return self.notifier
+
+    async def notify_get(self, req: Request) -> Response:
+        return Response.json(self._notifier().status())
+
+    async def notify_put(self, req: Request) -> Response:
+        n = self._notifier()
+        self._require_control()
+        b = dict(req.json)
+        token = b.pop("bot_token", None)
+        chat = b.pop("chat_id", None)
+        secret_changes: list[str] = []
+        if token is not None and str(token) != "":
+            token = str(token).strip()
+            if len(token) > 200 or any(c.isspace() for c in token) or ":" not in token:
+                raise HttpError(400, "that does not look like a bot token")
+            n.secrets.update(bot_token=token)
+            secret_changes.append("bot_token")
+        if chat is not None and str(chat) != "":
+            chat = str(chat).strip()
+            if len(chat) > 64 or any(c.isspace() for c in chat):
+                raise HttpError(400, "invalid chat id")
+            n.secrets.update(chat_id=chat)
+            secret_changes.append("chat_id")
+        try:
+            changed = n.apply_settings(b) if b else []
+        except ValueError as e:
+            raise HttpError(400, str(e)) from e
+        if changed or secret_changes:
+            self.gw.audit.event("notify_settings_changed", by=self.who, keys=changed + secret_changes)
+        return Response.json({"ok": True, "changed": changed + secret_changes, **n.status()})
+
+    async def notify_test(self, req: Request) -> Response:
+        n = self._notifier()
+        self._require_control()
+        try:
+            r = await n.send_test()
+        except ValueError as e:
+            raise HttpError(400, str(e)) from e
+        self.gw.audit.event("notify_test", by=self.who, ok=bool(r.get("ok")))
+        return Response.json(r, 200 if r.get("ok") else 502)
+
+    async def notify_token_delete(self, req: Request) -> Response:
+        n = self._notifier()
+        self._require_control()
+        n.secrets.clear_token()
+        self.gw.audit.event("notify_settings_changed", by=self.who, keys=["bot_token_removed"])
+        return Response.json({"ok": True, **n.status()})
+
+    async def egress_get(self, req: Request) -> Response:
+        if self.notifier is None:
+            return Response.json({"enabled": False, "allowed_hosts": [], "hosts": {},
+                                  "policy": "This add-on makes no outbound connection except the ones listed here."})
+        return Response.json({**self.notifier.egress.snapshot(),
+                              "policy": "This add-on makes no outbound connection except the ones listed here."})
 
     # -- map ---------------------------------------------------------------
 

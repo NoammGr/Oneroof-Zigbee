@@ -139,3 +139,13 @@ Dashboard data: use `GET api/devices` (list shape includes `state`, `endpoints[]
 * `GET api/import/scan` → `{folders:[{path, files:{"configuration.yaml":bool,"database.db":bool,"coordinator_backup.json":bool,"state.json":bool}}], roots:[..]}` — previous-setup folders found under the allowed import locations (in the add-on: the read-only Home Assistant config share, e.g. `/homeassistant/zigbee2mqtt`).
 * `POST api/import/preview` and `POST api/import/apply` accept `{"folder": "<path from scan>"}` instead of file contents; the server reads the files itself (403 if the folder is outside the allowed locations).
 * Uploads additionally accept a `"state.json"` key.
+
+## Notifications and outbound connections
+
+| Path | Returns / Body |
+|---|---|
+| `GET api/notify` | `{settings:{enabled, categories:{join_window,devices,security,anomalies,health,liveness}, digest_seconds, include_addresses, quiet_start, quiet_end}, has_token, chat_id, categories:{name: description}, sent, failed, dropped, queued, recent:[{ts, ok, lines, chars, test, preview|error}] (last 20), egress:{enabled, allowed_hosts, hosts}}` — the bot token is never returned |
+| `PUT api/notify` | partial settings (same keys as `settings`) plus optional `bot_token` and `chat_id` — both are stored only when present and non-empty (control-only) → `{ok, changed:[keys], …status}`; 400 with a message on invalid values. Applied live, no restart. Audited as `notify_settings_changed` (key names only). |
+| `POST api/notify/test` | `{}` (control-only) → `{ok, recent:[…]}`; 400 when disabled or no token/chat id, 502 when Telegram refused |
+| `DELETE api/notify/token` | (control-only) removes the stored bot token → `{ok, …status}` |
+| `GET api/egress` | `{enabled, allowed_hosts:[…], hosts:{host:{count, last, refused, last_error}}, policy}` — the ledger of every outbound attempt |

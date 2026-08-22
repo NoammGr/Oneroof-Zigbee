@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import stat
 from collections.abc import AsyncIterator
@@ -645,3 +646,19 @@ def test_acl_deny_publish_with_specific_allow_override() -> None:
     assert not acl.can_publish("ha", "z/lamp") and not acl.can_publish("ha", "z/bridge/devices") and not acl.can_publish("ha", "z/lamp/availability")
     acl.clear("ha")
     assert not acl.can_publish("ha", "anything/else")
+
+
+async def test_login_failures_and_lockouts_are_audited(broker: Broker) -> None:
+    from oneroof_zigbee.security import Audit
+    audit = Audit(None)
+    recs = []
+    audit.subscribe(lambda r: recs.append(r))
+    broker.audit = audit
+    for _ in range(5):
+        with pytest.raises(ConnectRefused):
+            await connect(broker, "ro", "nope")
+    types = [r["type"] for r in recs]
+    assert types.count("auth_failed") >= 4 and "auth_lockout" in types
+    lock = next(r for r in recs if r["type"] == "auth_lockout")
+    assert lock["level"] == "security" and lock["user"] == "ro" and lock["failures"] == 5
+    assert all("nope" not in json.dumps(r) for r in recs), "passwords never audited"

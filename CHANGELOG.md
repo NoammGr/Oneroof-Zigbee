@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.7.0] — 2026-08-22
+
+### Added — Telegram notifications, with a strict outbound policy
+- Settings → **Telegram notifications**: bot token and chat id (token stored encrypted, never shown
+  or logged again), categories to send — join window, devices, security, anomalies, health,
+  liveness — digest interval, quiet hours, optional addresses, a test button and the last sends.
+  Security and anomaly events go immediately; routine events are batched; a hard rate limit applies.
+- One outbound path only: a guarded HTTPS client with a host allow-list (`api.telegram.org`),
+  TLS 1.2+ verified against the system trust store, off until notifications are enabled; every
+  attempt — allowed or refused — is listed under Settings → **Outbound connections**, and refusals are
+  security alerts. Nothing else leaves the network; SECURITY.md documents exactly what is sent.
+- Broker login failures and lockouts are now security records (`auth_failed`, `auth_lockout`), so
+  they show in Activity and can be notified.
+
 ## [1.6.7] — 2026-08-22
 
 ### Added
