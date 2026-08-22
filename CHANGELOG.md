@@ -3,6 +3,37 @@
 All notable changes to OneRoof Zigbee. Versions follow [Semantic Versioning](https://semver.org):
 MAJOR = breaking (re-pairing or config migration needed), MINOR = features, PATCH = fixes.
 
+## [1.1.0] — 2026-08-21
+
+### Added — seamless migration from a previous setup
+- **Legacy layout** (`compat.legacy_layout`): the previous setup's topics `<base>/<friendly name>`, availability
+  payloads and Home Assistant discovery `unique_id`s / device identifiers, so HA
+  keeps the same entities (ids, names, areas, history, automations, dashboards) and other MQTT consumers keep
+  their subscriptions. Supports `<base>/<name>/get` state refresh requests.
+- **Existing broker mode** (`mqtt.external`): the gateway connects to an existing broker instead of starting
+  its own. MQTT control requests are refused in this mode (no authenticated
+  publisher); pairing stays in the UI.
+- The importer reads the previous setup's `mqtt:` section (server, login, base topic, discovery prefix); the import
+  UI offers "Keep using my current MQTT broker" and "Keep Home Assistant entities and topics identical"
+  (both default on). Settings → MQTT broker shows the active mode with one-click "Switch to the built-in TLS
+  broker" and a compat toggle.
+- Add-on: `legacy_layout`, `external_broker*`, `base_topic` options; with `services: mqtt:want` the existing
+  broker login is obtained from the Supervisor automatically.
+
+- Import also reads `state.json` (last known states) so dashboards are populated before devices report;
+  devices imported without `database.db` get a full interview on first contact.
+- Unknown short addresses are resolved with a ZDO IEEE lookup (rate-limited) before being treated as
+  unknown devices, so imported or re-addressed devices are recognised.
+
+### Changed
+- Repository layout follows Home Assistant's add-on repository format: `repository.yaml` and the
+  `oneroof-zigbee/` add-on folder at the root. The add-on builds from the folder alone (installs the gateway
+  from this repository's release tarball), so it works both built locally by the Supervisor and from GHCR.
+
+### Tests
+- End-to-end scenario with a stand-in existing broker and an already-subscribed Home Assistant: identical topics,
+  identical discovery identities, control via the old `/set` topic, network still not openable over MQTT.
+
 ## [1.0.1] — 2026-08-21
 
 ### Fixed
@@ -40,12 +71,12 @@ First release. Zigbee gateway and MQTT broker in one process, written from scrat
 - Dashboard, Devices with detail tabs (About, Controls, State, Clusters, Reporting, Bind, Firmware), Pair,
   Network map, Logs (audit + application), Activity feed, Settings admin console with help on every setting:
   coordinator, Zigbee security, MQTT/TLS, users & access, Home Assistant, backup/restore (encrypted),
-  import from zigbee2mqtt, firmware library, maintenance (log level, restart, key rotation).
+  import of a previous setup, firmware library, maintenance (log level, restart, key rotation).
 - OneRoof design system (shared with OneRoof Bridge), light/dark, phone layout.
 
 ### Migration
-- Import from zigbee2mqtt (`configuration.yaml`, `database.db`, `coordinator_backup.json`) without re-pairing
-  when keeping the same dongle; frame-counter restore when re-forming; UI and CLI (`import-z2m`).
+- Import of a previous setup (`configuration.yaml`, `database.db`, `coordinator_backup.json`) without re-pairing
+  when keeping the same dongle; frame-counter restore when re-forming; UI and CLI (`import`).
 
 ### Firmware (OTA)
 - Local-only OTA server: uploaded images are parsed and verified (manufacturer, image type, version, size,
@@ -53,7 +84,7 @@ First release. Zigbee gateway and MQTT broker in one process, written from scrat
 
 ### Security & operations
 - AES-256-GCM keystore, 0600 files, SHA-256 hash-chained audit log with verification, security alerts on MQTT,
-  encrypted backups, restart from the UI, `passwd` / `pair` / `verify-audit` / `import-z2m` CLI.
+  encrypted backups, restart from the UI, `passwd` / `pair` / `verify-audit` / `import` CLI.
 
 ### Tests
 - 279 tests: byte-exact codecs, coordinator bring-up against a scripted ZNP, broker, UI API, and an end-to-end

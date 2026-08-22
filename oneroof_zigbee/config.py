@@ -125,6 +125,8 @@ class MqttConfig:
     gateway_user: str = "oneroof_zigbee"
     # users allowed to open the join window, remove devices, rotate keys. Explicit, never inferred from ACLs.
     control_users: list[str] = field(default_factory=list)
+    # when set, the built-in broker is NOT started; the gateway connects to this broker instead
+    external: ExternalBrokerConfig | None = None
 
 
 @dataclass
@@ -134,6 +136,25 @@ class UiConfig:
     port: int = 8099
     acts_as: str = "admin"      # the MQTT user the UI acts as; must be in control_users to pair/remove/rotate
     tls: TlsConfig = field(default_factory=lambda: TlsConfig(mode="off"))  # "auto" is forced when listen is not loopback
+
+
+@dataclass
+class ExternalBrokerConfig:
+    """Use an existing broker instead of the built-in one. Chosen by the importer of a previous
+    setup so Home Assistant and other clients need no change."""
+    server: str            # mqtt://host:1883 or mqtts://host:8883
+    user: str | None = None
+    password: str | None = None
+    ca: Path | None = None
+    client_id: str = "oneroof-zigbee"
+
+
+@dataclass
+class CompatConfig:
+    """Legacy layout: after importing a previous setup, keep its topic layout (base/<friendly name>),
+    availability payloads and Home Assistant discovery identities, so existing HA entities, dashboards,
+    automations and other MQTT consumers keep working unchanged."""
+    legacy_layout: bool = False
 
 
 @dataclass
@@ -150,6 +171,7 @@ class Config:
     mqtt: MqttConfig = field(default_factory=MqttConfig)
     homeassistant: HaConfig = field(default_factory=HaConfig)
     ui: UiConfig = field(default_factory=UiConfig)
+    compat: CompatConfig = field(default_factory=CompatConfig)
     log_level: str = "INFO"
 
     @staticmethod
@@ -192,8 +214,17 @@ class Config:
             gateway_user=str(m.get("gateway_user", "oneroof_zigbee")),
             control_users=[str(u) for u in (m.get("control_users") or [])],
         )
+        ext = m.get("external")
+        if isinstance(ext, dict) and ext.get("server"):
+            srv = str(ext["server"])
+            if not srv.startswith(("mqtt://", "mqtts://")):
+                raise ConfigError("mqtt.external.server must start with mqtt:// or mqtts://")
+            mqtt.external = ExternalBrokerConfig(server=srv, user=(str(ext["user"]) if ext.get("user") else None),
+                                                 password=(str(ext["password"]) if ext.get("password") else None),
+                                                 ca=Path(ext["ca"]) if ext.get("ca") else None,
+                                                 client_id=str(ext.get("client_id", "oneroof-zigbee")))
         for u in mqtt.control_users:
-            if u not in users:
+            if u not in users and mqtt.external is None:
                 raise ConfigError(f"mqtt.control_users: {u!r} is not a defined mqtt user")
         if not mqtt.base_topic or any(ch in mqtt.base_topic for ch in "+#"):
             raise ConfigError("mqtt.base_topic invalid")
@@ -216,5 +247,7 @@ class Config:
                               "(set ui.i_know_this_exposes_the_ui_to_the_lan: true to override)")
         if not loopback and not ui.tls.enabled and not u.get("ingress"):
             raise ConfigError("ui.tls cannot be 'off' on a non-loopback address (the UI would be plaintext on the network)")
-        return Config(serial=serial, data_dir=data_dir, zigbee=zig, mqtt=mqtt, homeassistant=ha, ui=ui,
+        comp = raw.get("compat", {}) or {}
+        compat = CompatConfig(legacy_layout=bool(comp.get("legacy_layout", False)))
+        return Config(serial=serial, data_dir=data_dir, zigbee=zig, mqtt=mqtt, homeassistant=ha, ui=ui, compat=compat,
                       log_level=str(raw.get("log_level", "INFO")).upper())

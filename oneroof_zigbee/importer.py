@@ -1,4 +1,7 @@
-"""Import an existing zigbee2mqtt installation so devices do not need re-pairing.
+"""Import a previous setup so devices do not need re-pairing.
+
+The file formats handled are those of the common open-source gateway most people
+migrate from; the parser is defensive and the names below are the files' own.
 
 Inputs (any subset; more is better):
 * configuration.yaml   — advanced.network_key / pan_id / ext_pan_id / channel, devices (names, descriptions)
@@ -35,7 +38,7 @@ from .znp.wire import ieee_int, ieee_str
 
 log = logging.getLogger("oneroof_zigbee.importer")
 
-Z2M_DEFAULT_KEY = bytes.fromhex("01030507090b0d0f00020406080a0c0d")
+WELL_KNOWN_DEFAULT_KEY = bytes.fromhex("01030507090b0d0f00020406080a0c0d")
 
 
 @dataclass
@@ -69,6 +72,19 @@ class ImportedDevice:
     power_source: str | None = None
     endpoints: dict[int, Endpoint] = field(default_factory=dict)
     interviewed: bool = False
+    last_state: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ImportedMqtt:
+    """The previous setup's mqtt: section — lets us keep using the same broker and topics."""
+    server: str | None = None
+    user: str | None = None
+    password: str | None = None
+    ca: str | None = None
+    base_topic: str = "zigbee2mqtt"
+    homeassistant_prefix: str = "homeassistant"
+    homeassistant_enabled: bool = True
 
 
 @dataclass
@@ -76,14 +92,18 @@ class ImportPlan:
     network: ImportedNetwork
     devices: list[ImportedDevice]
     warnings: list[str] = field(default_factory=list)
+    mqtt: ImportedMqtt = field(default_factory=ImportedMqtt)
 
     def summary(self) -> dict[str, Any]:
         n = self.network
         return {
+            "mqtt": {"server": self.mqtt.server, "user": self.mqtt.user, "has_password": bool(self.mqtt.password),
+                     "base_topic": self.mqtt.base_topic, "homeassistant_prefix": self.mqtt.homeassistant_prefix,
+                     "homeassistant_enabled": self.mqtt.homeassistant_enabled},
             "network": {"found": n.complete, "source": n.source, "channel": n.channel,
                         "pan_id": f"{n.pan_id:#06x}" if n.pan_id is not None else None,
                         "ext_pan_id": f"0x{n.ext_pan_id:016x}" if n.ext_pan_id is not None else None,
-                        "frame_counter": n.frame_counter, "key_is_z2m_default": n.network_key == Z2M_DEFAULT_KEY,
+                        "frame_counter": n.frame_counter, "key_is_well_known_default": n.network_key == WELL_KNOWN_DEFAULT_KEY,
                         "coordinator_ieee": ieee_str(n.coordinator_ieee) if n.coordinator_ieee else None},
             "devices": [{"ieee": ieee_str(d.ieee), "friendly_name": d.friendly_name, "model": d.model, "manufacturer": d.manufacturer,
                          "router": d.is_router, "endpoints": len(d.endpoints), "interviewed": d.interviewed} for d in self.devices],
@@ -116,6 +136,25 @@ def _ext_pan(v: Any) -> int | None:
     return None
 
 
+def parse_mqtt_section(raw: dict[str, Any]) -> ImportedMqtt:
+    m = raw.get("mqtt") if isinstance(raw.get("mqtt"), dict) else {}
+    ha = raw.get("homeassistant")
+    out = ImportedMqtt(
+        server=str(m["server"]) if m.get("server") else None,
+        user=str(m["user"]) if m.get("user") else None,
+        password=str(m["password"]) if m.get("password") else None,
+        ca=str(m["ca"]) if m.get("ca") else None,
+        base_topic=str(m.get("base_topic") or "zigbee2mqtt").strip("/"),
+    )
+    if isinstance(ha, dict):
+        out.homeassistant_prefix = str(ha.get("discovery_topic") or "homeassistant")
+        out.homeassistant_enabled = bool(ha.get("enabled", True))
+    elif ha is not None:
+        out.homeassistant_enabled = bool(ha)
+    # HA add-on convention: credentials come from the Supervisor when the section has none
+    return out
+
+
 def parse_configuration_yaml(text: str) -> tuple[ImportedNetwork, dict[int, dict[str, Any]], str | None]:
     """Returns (network, {ieee: {friendly_name, description}}, base_topic)."""
     net = ImportedNetwork(source="configuration.yaml")
@@ -143,11 +182,11 @@ def parse_configuration_yaml(text: str) -> tuple[ImportedNetwork, dict[int, dict
         if isinstance(ch, int) and 11 <= ch <= 26:
             net.channel = ch
     if net.network_key is None and (raw.get("advanced") or {}).get("network_key") is None:
-        net.network_key = Z2M_DEFAULT_KEY
-        net.warnings.append("configuration.yaml has no network_key: zigbee2mqtt used its well-known default key — "
+        net.network_key = WELL_KNOWN_DEFAULT_KEY
+        net.warnings.append("configuration.yaml has no network_key: the previous setup used a well-known default key — "
                             "rotate it soon (Settings → Maintenance) once everything works")
     if net.pan_id is None:
-        net.pan_id = 0x1A62  # zigbee2mqtt default
+        net.pan_id = 0x1A62  # the previous setup's default
     if net.ext_pan_id is None:
         net.ext_pan_id = int.from_bytes(bytes([0xDD, 0xDD, 0xDD, 0xDD, 0xDD, 0xDD, 0xDD, 0xDD]), "little")
     if net.channel is None:
@@ -238,12 +277,33 @@ def parse_coordinator_backup(text: str) -> ImportedNetwork:
 # -------------------------------------------------------------------- plan --
 
 
-def build_plan(*, configuration_yaml: str | None, database_db: str | None, coordinator_backup: str | None) -> ImportPlan:
+def parse_state_json(text: str) -> dict[str, dict[str, Any]]:
+    """state.json: {"<ieee>": {<last state>}} — used to pre-fill device state so dashboards are not empty
+    until devices report. Unknown shapes are ignored."""
+    try:
+        raw = json.loads(text)
+    except ValueError:
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    if isinstance(raw, dict):
+        for k, v in raw.items():
+            if isinstance(v, dict):
+                try:
+                    out[ieee_str(ieee_int(str(k)))] = {kk: vv for kk, vv in v.items() if isinstance(vv, (int, float, str, bool, type(None), dict))}
+                except ValueError:
+                    continue
+    return out
+
+
+def build_plan(*, configuration_yaml: str | None, database_db: str | None, coordinator_backup: str | None,
+               state_json: str | None = None) -> ImportPlan:
     warnings: list[str] = []
     net = ImportedNetwork(source="none")
     names: dict[int, dict[str, Any]] = {}
+    mqtt = ImportedMqtt()
     if configuration_yaml:
         net, names, _ = parse_configuration_yaml(configuration_yaml)
+        mqtt = parse_mqtt_section(yaml.safe_load(configuration_yaml) or {})
     if coordinator_backup:
         bk = parse_coordinator_backup(coordinator_backup)
         if net.network_key and bk.network_key and bk.network_key != net.network_key:
@@ -271,7 +331,15 @@ def build_plan(*, configuration_yaml: str | None, database_db: str | None, coord
     if net.frame_counter is None and net.complete:
         warnings.append("no frame counter (no coordinator_backup.json): fine if you keep the same dongle; a replaced/wiped dongle "
                         "would need the backup so devices accept it")
-    return ImportPlan(network=net, devices=devices, warnings=warnings)
+    states = parse_state_json(state_json) if state_json else {}
+    for d in devices:
+        st = states.get(ieee_str(d.ieee))
+        if st:
+            d.last_state = st
+    if mqtt.server and not mqtt.user:
+        warnings.append("the mqtt: section has no user/password (the add-on got them from the Supervisor); "
+                        "enter the broker login in the import form to keep using that broker")
+    return ImportPlan(network=net, devices=devices, warnings=warnings, mqtt=mqtt)
 
 
 def apply_plan(plan: ImportPlan, registry: Registry, current: NetworkSecrets) -> NetworkSecrets:
@@ -301,7 +369,9 @@ def apply_plan(plan: ImportPlan, registry: Registry, current: NetworkSecrets) ->
         if d.endpoints:
             dev.endpoints = dict(d.endpoints)
         dev.interviewed = bool(d.interviewed and d.endpoints)
+        if d.last_state and not dev.state:
+            dev.state.update({k: v for k, v in d.last_state.items() if k not in ("last_seen", "update", "update_available")})
         dev.available = True
-        dev.context.setdefault("imported_from", "zigbee2mqtt")
+        dev.context.setdefault("imported_from", "previous_setup")
     registry.save()
     return secrets

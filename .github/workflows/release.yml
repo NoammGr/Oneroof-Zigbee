@@ -20,13 +20,13 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - run: pip install -e ".[dev]"
-      - run: ruff check oneroof_zigbee tests addon --select E,F,B --ignore E501,B905
+      - run: ruff check oneroof_zigbee tests oneroof-zigbee --select E,F,B --ignore E501,B905
       - run: pytest -q --timeout=180
       - name: Tag must match the package version
         run: |
           V=$(python -c "import oneroof_zigbee;print(oneroof_zigbee.__version__)")
           [ "v$V" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} != package v$V"; exit 1; }
-          grep -q "version: \"$V\"" addon/oneroof_zigbee/config.yaml || { echo "add-on config.yaml version != $V"; exit 1; }
+          grep -q "version: \"$V\"" oneroof-zigbee/config.yaml || { echo "add-on config.yaml version != $V"; exit 1; }
 
   image:
     needs: verify
@@ -47,13 +47,17 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - id: ver
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
       - name: Build & push ${{ matrix.arch }}
         uses: docker/build-push-action@v6
         with:
-          context: .
-          file: addon/oneroof_zigbee/Dockerfile
+          context: oneroof-zigbee
+          file: oneroof-zigbee/Dockerfile
           platforms: ${{ matrix.platform }}
           push: true
+          build-args: |
+            BUILD_VERSION=${{ steps.ver.outputs.version }}
           tags: |
             ghcr.io/noammgr/oneroof-zigbee-${{ matrix.arch }}:${{ github.ref_name }}
             ghcr.io/noammgr/oneroof-zigbee-${{ matrix.arch }}:latest

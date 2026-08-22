@@ -403,13 +403,13 @@ const HELP={
   'zigbee.permit_join_require_install_code':'Plain join windows are refused; every device must be paired with the install code printed on it. The network key then travels encrypted with a per-device key, so a sniffer present during pairing learns nothing.',
   'zigbee.strict_install_codes':'Replaces the public ZigBeeAlliance09 link key with a random one, so a device can only join with its install code. Strongest setting, but devices that do not print an install code cannot be paired at all.',
   'mqtt.listen':'Interface the broker binds to. 0.0.0.0 = all interfaces (needed when Home Assistant runs elsewhere); 127.0.0.1 keeps it local to this host.',
-  'mqtt.port':'TCP port of the MQTT broker. 8883 is the convention for MQTT over TLS, 1883 for plaintext. Home Assistant connects here — there is no separate Mosquitto.',
+  'mqtt.port':'TCP port of the MQTT broker. 8883 is the convention for MQTT over TLS, 1883 for plaintext. Home Assistant connects here — no separate broker is needed.',
   'mqtt.plaintext_port':'A second, unencrypted listener for legacy devices that cannot do TLS. Passwords and device state cross the network readable; leave empty unless you really need it.',
   'mqtt.base_topic':'Prefix of every device topic, e.g. zigbee/Kitchen plug. Change it only before connecting Home Assistant; discovery and automations reference the full topic.',
   'mqtt.tls.mode':'auto (recommended): the gateway issues its own certificate authority and server certificate; give clients ca.crt once. custom: bring your own certificate and key. off: plaintext — anyone on the network can read credentials and device state; only for loopback testing.',
   'mqtt.tls.cert':'Path to the server certificate (PEM, full chain if an intermediate is involved). Its names must match what clients connect to.',
   'mqtt.tls.key':'Path to the unencrypted private key matching the certificate. Keep it readable by the gateway only; whoever has it can impersonate the broker.',
-  'mqtt.tls.client_ca':'Mutual TLS: clients must present a certificate signed by this CA in addition to a password (Mosquitto\'s "Require client certificate"). Strong, but every client then needs its own certificate.',
+  'mqtt.tls.client_ca':'Mutual TLS: clients must present a certificate signed by this CA in addition to a password ("require client certificate"). Strong, but every client then needs its own certificate.',
   'mqtt.tls.hostnames':'Extra names or IP addresses written into the auto-issued certificate. Add every address clients use (homeassistant.local, 192.168.1.10), otherwise their TLS check fails.',
   'users.name':'MQTT username. Give each client its own user so a leaked credential can be revoked without touching the others.',
   'users.role':'Preset of topic permissions. homeassistant: read everything, set/get devices, no network control. admin: everything. readonly: subscribe only. custom: your own subscribe/publish filters.',
@@ -434,9 +434,12 @@ const HELP={
   'firmware.check':'Asks the device to report its current firmware: manufacturer code, image type and version. Sleepy battery devices answer only when awake, so press a button on them first.',
   'firmware.update':'Arms the chosen image for this device and notifies it. The device pulls the image block by block, verifies it and reboots into it; this can take from minutes to an hour. Downgrades are refused unless allowed in the configuration.',
   'firmware.upload':'A Zigbee OTA file (.ota or .zigbee) as published by the manufacturer. The header must parse and the size must match; compare the SHA-256 shown afterwards with the hash the vendor publishes.',
-  'import.config':'zigbee2mqtt\'s configuration.yaml. It gives the device names and, unless it says GENERATE, the network key, PAN id and channel.',
-  'import.db':'zigbee2mqtt\'s database.db (zigbee-herdsman). It holds models, manufacturers and endpoints, so imported devices need no interview.',
-  'import.backup':'coordinator_backup.json written by zigbee2mqtt. Needed only when the dongle was wiped or replaced: it carries the network key and frame counter into a fresh coordinator.',
+  'import.config':'The previous setup\'s configuration.yaml. It gives the device names and, unless it says GENERATE, the network key, PAN id and channel.',
+  'import.db':'The previous setup\'s database.db. It holds models, manufacturers and endpoints, so imported devices need no interview.',
+  'import.backup':'coordinator_backup.json written by the previous setup. Needed only when the dongle was wiped or replaced: it carries the network key and frame counter into a fresh coordinator.',
+  'import.keep_broker':'Keeps publishing to the broker the previous setup used instead of starting the built-in one, so Home Assistant and other MQTT clients stay connected as they are. Trade-off: transport security is that broker\'s (plaintext on 1883 unless you set up TLS there), and since that broker cannot enforce per-user control rights, MQTT control requests (permit_join, remove, key rotation) are refused — control works from this UI only.',
+  'import.keep_entities':'Keeps the previous base topic, discovery prefix and exact discovery identities (unique ids, device identifiers, topics). Home Assistant sees the same entities with the same entity ids, so dashboards, automations, history and other MQTT clients keep working unchanged. Off = fresh start: HA creates new entities and the old ones become unavailable.',
+  'compat.legacy_layout':'Topics are <base>/<friendly name> and discovery messages use the previous identities, so Home Assistant keeps the entities it already had. Enabled by the import; it can only be switched off here, which makes HA create new entities and leaves the old ones unavailable.',
   state:'Switches the device on or off. toggle flips the current state.',
   power_on_behavior:'What the device does after a power cut: stay off, turn on, toggle or restore the previous state. "previous" is usually what you want for lights.',
   countdown:'Turns the device off automatically after the given number of seconds — handy for a kettle or heater plug.',
@@ -1051,7 +1054,7 @@ views.settings={
     if(ro)h.append(el('div',{class:'notice warn'},el('b',{text:'Managed configuration. '}),'These settings are managed by the Home Assistant add-on configuration (Settings → Add-ons → OneRoof Zigbee → Configuration). Users, backups, restart and the log level can still be changed here.'));
     if(!ok)h.append(el('div',{class:'notice warn'},el('b',{text:'Read-only session. '}),'The UI acts as ',el('span',{class:'mono',text:(S.bridge||{}).ui_user||'?'}),', which is not in control_users; saving is disabled.'));
     this.usersHost=el('div');
-    h.append(el('h2',{text:'Coordinator'}),this.cardCoordinator(ro),el('h2',{text:'Zigbee network & security'}),this.cardZigbee(ro),el('h2',{text:'MQTT broker'}),this.cardMqtt(ro),this.usersHost,el('h2',{text:'Home Assistant & UI'}),this.cardHa(ro),el('h2',{text:'Backup & restore'}),this.cardBackup(ok),el('h2',{text:'Import from zigbee2mqtt'}),this.cardImport(ok),el('h2',{text:'Firmware library'}),this.cardFirmware(ok),el('h2',{text:'Maintenance'}),this.cardMaint(ok));
+    h.append(el('h2',{text:'Coordinator'}),this.cardCoordinator(ro),el('h2',{text:'Zigbee network & security'}),this.cardZigbee(ro),el('h2',{text:'MQTT broker'}),this.cardMqtt(ro),this.usersHost,el('h2',{text:'Home Assistant & UI'}),this.cardHa(ro),el('h2',{text:'Backup & restore'}),this.cardBackup(ok),el('h2',{text:'Import a previous setup'}),this.cardImport(ok),el('h2',{text:'Firmware library'}),this.cardFirmware(ok),el('h2',{text:'Maintenance'}),this.cardMaint(ok));
     this.renderUsers();
   },
   showBanner(){const b=this.banner;if(!b)return;clear(b);const keys=[...this.pending];if(!keys.length){b.classList.add('hidden');return;}b.classList.remove('hidden');b.append(el('div',{class:'grow'},el('b',{text:'Restart required to apply: '}),el('span',{class:'mono',text:keys.join(', ')})),el('button',{class:'btn primary',text:'Restart now',onclick:()=>this.restart()}));},
@@ -1113,12 +1116,33 @@ views.settings={
     const fp=tls.ca_fingerprint_sha256;
     const steps=['Settings → Devices & services → Add integration → MQTT','Broker: '+(ha.host||'this host')+', port '+(ha.port??m.port),ha.tls?'TLS: on — upload the CA certificate (download below) as \'Broker certificate\'':'TLS: off','Username: '+(ha.user||'homeassistant')+' with the password set under Users & access','Discovery prefix '+(ha.discovery_prefix||'homeassistant')+', base topic '+(ha.base_topic||m.base_topic||'zigbee')];
     const hakv=el('dl',{class:'kv',style:'margin:8px 0 4px;font-size:12.5px'});for(const[k,v]of[['Host',ha.host],['Port',ha.port??m.port],['TLS',ha.tls?'on':'off'],['User',ha.user],['Base topic',ha.base_topic||m.base_topic],['Discovery prefix',ha.discovery_prefix]])hakv.append(el('dt',{text:k}),el('dd',{class:'mono',text:v==null||v===''?'—':String(v)}));
-    const hap=el('div',{class:'sub-panel'},el('h3',{text:'Connect Home Assistant'}),el('p',{class:'sub',style:'margin:0 0 6px',text:'OneRoof Zigbee is the MQTT broker. Home Assistant\'s MQTT integration connects here — there is no separate Mosquitto, and no WebSocket listener is needed: HA uses plain MQTT over TCP.'}),hakv,el('ol',{class:'steps'},...steps.map(s=>el('li',{text:s}))),
+    const hap=el('div',{class:'sub-panel'},el('h3',{text:'Connect Home Assistant'}),el('p',{class:'sub',style:'margin:0 0 6px',text:'OneRoof Zigbee is the MQTT broker. Home Assistant\'s MQTT integration connects here directly, and no WebSocket listener is needed: HA uses plain MQTT over TCP.'}),hakv,el('ol',{class:'steps'},...steps.map(s=>el('li',{text:s}))),
       fp?el('div',null,el('div',{class:'bar',style:'margin:10px 0 4px'},el('a',{class:'btn',href:'api/tls/ca',download:'oneroof-ca.pem'},'Download CA certificate')),el('div',{class:'topic'},el('span',{class:'sub',text:'SHA-256'}),el('span',{class:'mono',text:fp}),el('button',{class:'btn sm icon',title:'Copy fingerprint','aria-label':'Copy fingerprint',onclick:()=>copyText(fp)},svg('copy'))))
         :el('p',{class:'sub',style:'margin:8px 0 0',text:'No gateway-issued CA certificate (TLS mode is not auto).'}));
-    return f.card(el('div',{class:'fgrid'},fld('Listen address',ls,null,'mqtt.listen'),fld('Port',pt,null,'mqtt.port'),fld('Base topic',bt,null,'mqtt.base_topic')),
+    return f.card(this.mqttMode(),el('div',{class:'fgrid'},fld('Listen address',ls,null,'mqtt.listen'),fld('Port',pt,null,'mqtt.port'),fld('Base topic',bt,null,'mqtt.base_topic')),
       el('div',{class:'field',style:'max-width:320px'},lab('Additional plaintext port','mqtt.plaintext_port'),pp,el('div',{class:'plain-note',text:'Only for legacy devices that cannot do TLS. Credentials on this port are readable on the network. Leave empty to disable.'})),
       el('div',{class:'field'},lab('TLS','mqtt.tls.mode'),el('div',null,el('div',{class:'seg'},...segBtns))),custom,off,mtRow,ccaF,fld('Extra TLS hostnames',hn,'Comma-separated.','mqtt.tls.hostnames'),hap);
+  },
+  mqttMode(){
+    const ext=CFG.external,cp=CFG.compat||{},ok=can()&&!this.cfg.managed,host=el('div',{id:'mqtt-mode'});
+    if(ext&&typeof ext==='object'){
+      const sw=el('button',{class:'btn',text:'Switch to the built-in TLS broker',disabled:!ok||null,title:ok?'':NOCTL,onclick:async()=>{
+        if(!(await confirmDlg('Switch to the built-in TLS broker?',[el('p',null,'Stops using ',el('span',{class:'mono',text:String(ext.server||'')}),' and starts the built-in TLS broker.'),el('p',{text:'Home Assistant\'s MQTT integration and every other client must then be pointed at this host:'+((CFG.mqtt||{}).port||8883)+' with the CA certificate (download below). Until then they receive no device state.'})],'Switch broker',true)))return;
+        sw.disabled=true;try{const r=await api('api/config',{mqtt:{external:null}});CFG.external=null;toast('Switched to the built-in broker');this.afterSave(r,'mqtt.external');host.replaceWith(this.mqttMode());}catch(e){toast(e.message,true);sw.disabled=false;}}});
+      host.append(el('div',{class:'notice',id:'mqtt-ext'},el('b',{text:'Using external broker '}),el('span',{class:'mono',text:String(ext.server||'?')}),' as ',el('span',{class:'mono',text:String(ext.user||'anonymous')}),' (legacy layout).',
+        el('div',{class:'sub',style:'margin:4px 0 8px',text:'MQTT control requests are refused (control from this UI only). Listen address, port and TLS below apply once the built-in broker is active.'}),sw));
+    }
+    if('legacy_layout'in cp){
+      const on=!!cp.legacy_layout;const row=el('div',{class:'chk',id:'compat-row',style:'align-items:center'});
+      if(on){
+        const i=el('input',{type:'checkbox',checked:true,disabled:!ok||null});i.addEventListener('change',async()=>{if(i.checked)return;i.checked=true;
+          if(!(await confirmDlg('Turn the legacy layout off?',[el('p',{text:'Topics and discovery identities switch to OneRoof\'s own. Home Assistant will create NEW entities for every device; the old ones become unavailable and dashboards and automations must be updated. It can only be turned on again by importing again.'})],'Turn off',true)))return;
+          i.disabled=true;try{const r=await api('api/config',{compat:{legacy_layout:false}});CFG.compat=Object.assign({},cp,{legacy_layout:false});toast('Legacy layout off');this.afterSave(r,'compat.legacy_layout');host.replaceWith(this.mqttMode());}catch(e){toast(e.message,true);i.disabled=false;i.checked=true;}});
+        row.append(el('label',{class:'sw'},i,el('i')),el('span',null,el('b',{text:'Legacy layout (topics + HA identities)'}),help('compat.legacy_layout',null,'Legacy layout'),el('div',{class:'hint',text:'on — same topics and HA entities as before the migration'})));
+      }else row.append(el('span',null,el('b',{text:'Legacy layout (topics + HA identities)'}),help('compat.legacy_layout',null,'Legacy layout'),el('div',{class:'hint',text:'off — enabled by importing a previous setup'})));
+      host.append(row);
+    }
+    return host;
   },
   renderUsers(){
     const h=clear(this.usersHost);const roles=this.cfg.roles||{},ok=can();
@@ -1203,14 +1227,15 @@ views.settings={
   cardImport(ok){
     const tip=ok?'':NOCTL;const fy=el('input',{type:'file',accept:'.yaml,.yml'}),fd=el('input',{type:'file',accept:'.db,.json'}),fb=el('input',{type:'file',accept:'.json'});const out=el('div');let body=null,prev=null;
     const gather=async()=>{const b={};for(const[i,k]of[[fy,'configuration.yaml'],[fd,'database.db'],[fb,'coordinator_backup.json']]){const f=i.files&&i.files[0];if(f)b[k]=await readFile(f);}if(!Object.keys(b).length)throw new Error('Choose at least configuration.yaml');return b;};
-    const apply=el('button',{class:'btn danger primary hidden',disabled:!ok,title:tip});
-    const pv=el('button',{class:'btn primary',text:'Preview',disabled:!ok,title:tip,onclick:async()=>{pv.disabled=true;try{body=await gather();prev=await api('api/import/preview',body);this.importPreview(out,prev);apply.textContent='Import '+(prev.devices||[]).length+' devices';apply.classList.remove('hidden');}catch(e){toast(e.message,true);}pv.disabled=!ok;}});
-    apply.addEventListener('click',async()=>{if(!prev)return;if(!(await confirmDlg('Import from zigbee2mqtt?',[el('p',{text:'This replaces the current network parameters. Existing pairings to THIS gateway (if any) will stop working. Continue?'})],'Import now',true)))return;apply.disabled=true;
-      try{const r=await api('api/import/apply',body);const rr=r.restart_required;const need=Array.isArray(rr)?rr.length>0:!!rr;
-        clear(out).append(el('div',{class:'notice'},el('b',{text:'Imported. '}),r.summary||((r.devices||[]).length+' devices'),r.network_adopted?' Network parameters adopted.':''));if(need)out.append(el('div',{class:'bar'},el('span',{class:'sub',text:'A restart is needed to bring the adopted network up.'}),el('button',{class:'btn primary',text:'Restart now',onclick:()=>this.restart()})));
+    const apply=el('button',{class:'btn danger primary hidden',disabled:!ok,title:tip});let opts=null;
+    const pv=el('button',{class:'btn primary',text:'Preview',disabled:!ok,title:tip,onclick:async()=>{pv.disabled=true;try{body=await gather();prev=await api('api/import/preview',body);this.importPreview(out,prev);opts=this.importCompat(prev);out.append(opts.node);apply.textContent='Import '+(prev.devices||[]).length+' devices';apply.disabled=!ok;apply.classList.remove('hidden');}catch(e){toast(e.message,true);}pv.disabled=!ok;}});
+    apply.addEventListener('click',async()=>{if(!prev)return;const extra=opts?opts.get():{};if(extra===null){toast('Enter the broker login or untick "Keep using my current MQTT broker"',true);return;}
+      if(!(await confirmDlg('Import this setup?',[el('p',{text:'This replaces the current network parameters. Existing pairings to THIS gateway (if any) will stop working. Continue?'})],'Import now',true)))return;apply.disabled=true;
+      try{const r=await api('api/import/apply',Object.assign({},body,extra));const rr=r.restart_required;const need=Array.isArray(rr)?rr.length>0:!!rr;const cp=Array.isArray(r.compat)?r.compat:[];
+        clear(out).append(el('div',{class:'notice'},el('b',{text:'Imported. '}),r.summary||((r.devices||[]).length+' devices'),r.network_adopted?' Network parameters adopted.':'',cp.length?el('div',{class:'sub',style:'margin-top:4px'},'Compatibility applied: ',el('span',{class:'mono',text:cp.join(', ')})):null));if(need)out.append(el('div',{class:'bar'},el('span',{class:'sub',text:'A restart is needed to bring the adopted network up.'}),el('button',{class:'btn primary',text:'Restart now',onclick:()=>this.restart()})));
         toast('Import applied');apply.classList.add('hidden');this.afterSave(r,'import');views.devices.refresh();}
       catch(e){toast(e.message,true);apply.disabled=!ok;}});
-    return el('div',{class:'card'},el('p',{class:'sub',style:'margin:0 0 12px',text:'Bring your existing zigbee2mqtt network over without re-pairing. Keep the same coordinator dongle: the network already lives in it — we adopt its key, PAN and channel and import your device names and models.'}),
+    return el('div',{class:'card'},el('p',{class:'sub',style:'margin:0 0 12px',text:'Bring your existing Zigbee network over without re-pairing. Keep the same coordinator dongle: the network already lives in it — we adopt its key, PAN and channel and import your device names and models.'}),
       el('div',{class:'fgrid'},fld('configuration.yaml',fy,'Required for names; contains the network key.','import.config'),fld('database.db',fd,'Models and endpoints — skips interviews.','import.db'),fld('coordinator_backup.json',fb,'Optional; needed if the dongle was wiped or replaced.','import.backup')),
       el('div',{class:'bar'},pv,apply),out);
   },
@@ -1220,12 +1245,25 @@ views.settings={
     add('Network found',n.found?'yes':'no');add('Source',n.source);add('Channel',n.channel);add('PAN id',typeof n.pan_id==='number'?hex(n.pan_id):n.pan_id,1);add('Extended PAN id',n.ext_pan_id,1);add('Frame counter',n.frame_counter);add('Coordinator',n.coordinator_ieee,1);
     out.append(el('div',{class:'sub-panel',id:'imp-net'},el('h3',{text:'Network'}),kv,
       n.found?null:el('p',{class:'sub',style:'margin:8px 0 0',text:'No network parameters found: devices are imported by name but must be paired again.'}),
-      n.key_is_z2m_default?el('div',{class:'notice danger',style:'margin:10px 0 0'},el('b',{text:'Default network key. '}),'This network uses zigbee2mqtt\'s default key, which is public: anyone in radio range can decrypt your traffic. Once the import works, rotate the key under Maintenance and re-pair the devices.'):null));
+      n.key_is_well_known_default?el('div',{class:'notice danger',style:'margin:10px 0 0'},el('b',{text:'Default network key. '}),'This network uses a well-known default key, which is public: anyone in radio range can decrypt your traffic. Once the import works, rotate the key under Maintenance and re-pair the devices.'):null));
     const ds=p.devices||[];out.append(el('h3',{text:'Devices ('+ds.length+')'}));
     const eps=x=>{const e=x.endpoints;return Array.isArray(e)?e.join(', '):e&&typeof e==='object'?Object.keys(e).join(', '):String(e??'—');};
     if(!ds.length)out.append(el('div',{class:'empty',text:'No devices found in the files.'}));
     else out.append(el('div',{class:'twrap flat'},el('table',{class:'imptab'},thead(['Name','Model','Manufacturer','Type','Endpoints','Interviewed']),el('tbody',null,...ds.map(x=>el('tr',null,el('td',null,el('b',{text:x.friendly_name||x.ieee}),el('div',{class:'sub mono',text:x.ieee})),el('td',{text:x.model||'—'}),el('td',{class:'sub',text:x.manufacturer||'—'}),el('td',{class:'sub',text:x.router?'Router':'End device'}),el('td',{class:'mono',text:eps(x)}),el('td',{text:x.interviewed?'✓':'—'})))))));
     const w=p.warnings||[];if(w.length)out.append(el('div',{class:'notice warn',style:'margin-top:12px'},el('b',{text:'Warnings'}),el('ul',{class:'steps'},...w.map(s=>el('li',{text:s})))));
+  },
+  importCompat(p){
+    const m=p.mqtt||{},hasSrv=!!m.server,needCreds=hasSrv&&(!m.has_password||!m.user);
+    const[kb,kbRow]=chk('Keep using my current MQTT broker',hasSrv,hasSrv?'Server '+m.server+(m.user?', user '+m.user:', no user'):'configuration.yaml has no mqtt server; the built-in broker will be used','import.keep_broker');
+    kb.disabled=!hasSrv;kbRow.classList.add('imp-keep-broker');
+    const bu=txt(m.user||'',{placeholder:'addons',autocomplete:'username'}),bp=pwd('Broker password');bp.autocomplete='current-password';
+    const creds=el('div',{class:'sub-panel',style:'margin-top:0'},el('p',{class:'sub',style:'margin:0 0 4px',text:'The previous setup got this login from the Home Assistant Supervisor; enter your MQTT broker add-on\'s login (Settings → Add-ons → your broker → Configuration → Logins)'}),el('div',{class:'fgrid'},fld('Broker user',bu),fld('Broker password',bp)));
+    const[ke,keRow]=chk('Keep Home Assistant entities and topics identical',true,'Same <base>/<friendly name> topics and the same discovery identities, so entity ids, dashboards, automations and other MQTT clients are unchanged. Base topic: '+(m.base_topic||'—'),'import.keep_entities');
+    keRow.classList.add('imp-keep-entities');
+    const upd=()=>creds.classList.toggle('hidden',!(kb.checked&&needCreds));kb.addEventListener('change',upd);upd();
+    const node=el('div',{class:'sub-panel',id:'imp-compat'},el('h3',{text:'Keep everything working'}),el('p',{class:'sub',style:'margin:0 0 4px',text:'Leave both on for a migration nobody notices: the same broker, the same topics, the same Home Assistant entities. You can switch to the built-in TLS broker later from Settings → MQTT broker.'}),kbRow,creds,keRow);
+    const get=()=>{const o={keep_broker:hasSrv&&kb.checked,keep_entities:ke.checked};if(o.keep_broker&&needCreds){if(!bu.value.trim()||!bp.value)return null;o.broker_user=bu.value.trim();o.broker_password=bp.value;}return o;};
+    return{node,get};
   },
   cardMaint(ok){
     const b=S.bridge||{};const lv=sel(['DEBUG','INFO','WARNING','ERROR'],CFG.log_level||b.log_level||'INFO');

@@ -12,6 +12,7 @@ from typing import Any
 
 from .. import __version__
 from ..devices import Device
+from .topics import Topics
 
 # cluster id → list of (component, object_id, extra config)
 _SENSORS: dict[int, list[tuple[str, str, dict[str, Any]]]] = {
@@ -53,35 +54,44 @@ _IAS_BY_ZONE_TYPE: dict[int, tuple[str, str]] = {
 }
 
 
-def _device_block(dev: Device) -> dict[str, Any]:
+def _device_block(dev: Device, t: Topics) -> dict[str, Any]:
     return {
-        "identifiers": [f"oneroof_zigbee_{dev.ieee_str}"],
+        "identifiers": t.device_identifiers(dev),
         "name": dev.friendly_name,
         "manufacturer": dev.manufacturer or "Zigbee",
         "model": dev.model or "unknown",
         "sw_version": dev.sw_build or None,
-        "via_device": "oneroof_zigbee_bridge",
+        "via_device": t.via_device(),
     }
 
 
-def discovery_messages(dev: Device, base: str, prefix: str) -> list[tuple[str, bytes]]:
+def _topics(base: str, prefix: str, legacy: bool) -> Topics:
+    return Topics(base, prefix, legacy)
+
+
+def discovery_messages(dev: Device, base: str, prefix: str, *, legacy: bool = False) -> list[tuple[str, bytes]]:
     """Return [(topic, payload)] for all entities of a device. Empty payload = remove."""
     out: list[tuple[str, bytes]] = []
-    state_topic = f"{base}/{dev.ieee_str}/state"
-    set_topic = f"{base}/{dev.ieee_str}/set"
-    avail = [{"topic": f"{base}/bridge/state"}, {"topic": f"{base}/{dev.ieee_str}/availability"}]
+    t = _topics(base, prefix, legacy)
+    state_topic = t.state(dev)
+    set_topic = t.set(dev)
+    avail = [{"topic": f"{base}/bridge/state"}, {"topic": t.availability(dev)}]
+    if t.availability_template():
+        for a in avail:
+            a["value_template"] = t.availability_template()
     common = {
         "availability": avail, "availability_mode": "all",
-        "device": _device_block(dev),
+        "device": _device_block(dev, t),
         "origin": {"name": "OneRoof Zigbee", "sw_version": __version__},
         "state_topic": state_topic,
     }
 
     def add(component: str, object_id: str, cfg: dict[str, Any]) -> None:
-        uid = f"oneroof_zigbee_{dev.ieee_str}_{object_id}"
-        payload = {**common, **cfg, "unique_id": uid, "object_id": f"{dev.friendly_name}_{object_id}"}
+        payload = {**common, **cfg, "unique_id": t.unique_id(dev, object_id)}
+        if not legacy:
+            payload["object_id"] = f"{dev.friendly_name}_{object_id}"
         payload = {k: v for k, v in payload.items() if v is not None}
-        out.append((f"{prefix}/{component}/{dev.ieee_str}/{object_id}/config", json.dumps(payload).encode()))
+        out.append((t.discovery_topic(component, dev, object_id), json.dumps(payload).encode()))
 
     seen_in: set[int] = set()
     for ep in dev.endpoints.values():
@@ -140,15 +150,18 @@ def discovery_messages(dev: Device, base: str, prefix: str) -> list[tuple[str, b
     return out
 
 
-def removal_messages(dev: Device, prefix: str) -> list[tuple[str, bytes]]:
+def removal_messages(dev: Device, prefix: str, *, legacy: bool = False) -> list[tuple[str, bytes]]:
     """Blank retained configs so HA deletes the entities."""
-    return [(topic, b"") for topic, _ in discovery_messages(dev, "x", prefix)]
+    return [(topic, b"") for topic, _ in discovery_messages(dev, "x", prefix, legacy=legacy)]
 
 
-def bridge_discovery(base: str, prefix: str) -> list[tuple[str, bytes]]:
-    device = {"identifiers": ["oneroof_zigbee_bridge"], "name": "OneRoof Zigbee bridge", "manufacturer": "OneRoof",
+def bridge_discovery(base: str, prefix: str, *, legacy: bool = False) -> list[tuple[str, bytes]]:
+    device = {"identifiers": [Topics(base, prefix, legacy).bridge_identifier()], "name": "OneRoof Zigbee bridge", "manufacturer": "OneRoof",
               "model": "gateway", "sw_version": __version__}
-    common = {"device": device, "availability": [{"topic": f"{base}/bridge/state"}]}
+    avail_b: dict[str, Any] = {"topic": f"{base}/bridge/state"}
+    if legacy:
+        avail_b["value_template"] = "{{ value_json.state }}"
+    common = {"device": device, "availability": [avail_b]}
     msgs = [
         (f"{prefix}/switch/oneroof_zigbee_bridge/permit_join/config", json.dumps({
             **common, "name": "Permit join", "unique_id": "oneroof_zigbee_bridge_permit_join", "icon": "mdi:human-greeting-proximity",

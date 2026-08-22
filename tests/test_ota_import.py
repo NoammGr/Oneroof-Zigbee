@@ -111,7 +111,7 @@ def test_import_plan_from_z2m_files():
     plan = importer.build_plan(configuration_yaml=Z2M_CONFIG, database_db=Z2M_DB, coordinator_backup=None)
     s = plan.summary()
     assert s["network"]["found"] and s["network"]["channel"] == 11 and s["network"]["pan_id"] == "0x1a62"
-    assert s["network"]["key_is_z2m_default"] is True
+    assert s["network"]["key_is_well_known_default"] is True
     assert len(plan.devices) == 2
     plug = next(d for d in plan.devices if d.model == "TS011F")
     assert plug.friendly_name == "Workshop - Smart Plug" and plug.description == "Garage" and plug.is_router
@@ -132,7 +132,7 @@ def test_import_plan_with_backup_and_apply(tmp_path):
     assert secrets.pan_id == 0x1A62 and secrets.channel == 11 and secrets.frame_counter == 123456 + 100_000
     assert secrets.tc_install_code == current.tc_install_code  # our strict-mode secret is kept
     d = reg.get(0xA4C1380000000001)
-    assert d.friendly_name == "Workshop - Smart Plug" and d.interviewed and d.context["imported_from"] == "zigbee2mqtt"
+    assert d.friendly_name == "Workshop - Smart Plug" and d.interviewed and d.context["imported_from"] == "previous_setup"
     assert reg.by_name("Office sensor").model == "lumi.weather"
 
 
@@ -215,3 +215,47 @@ async def test_activity_feed_and_firmware_routes(ui, tmp_path):  # noqa: F811
     assert s["session"]["file"] == "plug.ota" and s["last_query"]["file_version"] == "0x00000003"
     st, _, _ = await http(server.port, "POST", f"/api/devices/{dev.ieee_str}/update/cancel", {})
     assert st == 200 and json.loads((await http(server.port, "GET", f"/api/devices/{dev.ieee_str}/update"))[2])["armed"] is None
+
+
+def test_import_without_database_uses_state_json_and_names():
+    state = json.dumps({"0xa4c1380000000001": {"state": "ON", "power": 64, "energy": 913.63, "linkquality": 126, "last_seen": "x"}})
+    plan = importer.build_plan(configuration_yaml=Z2M_CONFIG, database_db=None, coordinator_backup=None, state_json=state)
+    plug = next(d for d in plan.devices if d.ieee == 0xA4C1380000000001)
+    assert plug.friendly_name == "Workshop - Smart Plug" and not plug.endpoints and plug.last_state["power"] == 64
+    from oneroof_zigbee.devices import Registry
+    import tempfile
+    from pathlib import Path
+    reg = Registry(Path(tempfile.mkdtemp()) / "d.json")
+    importer.apply_plan(plan, reg, NetworkSecrets.generate(15))
+    d = reg.get(0xA4C1380000000001)
+    assert d.state["power"] == 64 and "last_seen" not in d.state and d.interviewed is False
+
+
+async def test_imported_device_without_endpoints_gets_full_interview(ui, tmp_path):  # noqa: F811
+    fake, gw, server, api = ui
+    from oneroof_zigbee.admin import Admin
+    from oneroof_zigbee.mqtt import Acl, PasswordFile
+    api.admin = Admin(gw.cfg, None, PasswordFile(tmp_path / "p"), Acl(), gw.control_users)
+    st, _, body = await http(server.port, "POST", "/api/import/apply", {"configuration.yaml": Z2M_CONFIG})  # no database.db
+    assert st == 200
+    dev = gw.registry.get(0xA4C1380000000001)
+    assert dev and not dev.endpoints and not dev.interviewed and dev.nwk == 0
+    fake.nwk_to_ieee[0x98C3] = 0xA4C1380000000001  # the network knows it; we don't yet
+    fake.requests.clear()
+    fake.emit_incoming(0x98C3, 0x0006, bytes([0x18, 0x01, 0x0A, 0x00, 0x00, 0x10, 0x01]))
+    for _ in range(100):
+        await asyncio.sleep(0.02)
+        if gw.registry.get(0xA4C1380000000001).interviewed:
+            break
+    d = gw.registry.get(0xA4C1380000000001)
+    assert d.nwk == 0x98C3, "short address learned via ZDO IEEE lookup"
+    assert d.interviewed and d.endpoints[1].in_clusters == [0, 6, 8], "full interview ran on first contact"
+    assert d.friendly_name == "Workshop - Smart Plug"
+    # a genuinely unknown short address is still alerted, and lookups are rate-limited
+    alerts = []
+    gw.audit.subscribe(lambda r: alerts.append(r) if r["level"] == "security" else None)
+    fake.emit_incoming(0x7777, 0x0006, bytes([0x18, 0x01, 0x0A, 0x00, 0x00, 0x10, 0x01]))
+    fake.emit_incoming(0x7777, 0x0006, bytes([0x18, 0x02, 0x0A, 0x00, 0x00, 0x10, 0x01]))
+    await asyncio.sleep(0.2)
+    assert [a["type"] for a in alerts].count("traffic_from_unknown_device") == 2
+    assert sum(1 for f in fake.requests if f.subsystem.name == "ZDO" and f.command == 0x01 and int.from_bytes(f.data[0:2], "little") == 0x7777) == 1

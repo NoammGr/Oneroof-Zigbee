@@ -389,6 +389,19 @@ class Coordinator:
             raise ZnpStatusError(c.zdo_simple_desc_req(nwk, ep), rsp.status)
         return rsp
 
+    async def ieee_lookup(self, nwk: int, timeout: float = 6.0) -> int | None:
+        """Resolve a short address to an IEEE address via ZDO; None if nobody answers."""
+        wait = self.t.wait_for(Subsystem.ZDO, ZdoCmd.IEEE_ADDR_RSP, timeout=timeout,
+                               predicate=lambda f: c.decode_ieee_addr_rsp(f.data).nwk == nwk)
+        task = await self._arm(wait)
+        try:
+            await self.t.request(c.zdo_ieee_addr_req(nwk))
+            rsp = c.decode_ieee_addr_rsp((await task).data)
+        except (ZnpTimeout, ZnpStatusError):
+            task.cancel()
+            return None
+        return rsp.ieee if rsp.status == 0 else None
+
     async def node_descriptor(self, nwk: int, timeout: float = 10.0) -> c.NodeDescRsp:
         wait = self.t.wait_for(Subsystem.ZDO, ZdoCmd.NODE_DESC_RSP, timeout=timeout,
                                predicate=lambda f: c.decode_node_desc_rsp(f.data).nwk_addr == nwk)

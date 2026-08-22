@@ -107,7 +107,7 @@ All POSTs here are **control-only** (403 otherwise). `api/bridge` now also carri
 ## v0.3.1 additions
 * `api/config` → `config.serial` gains `adapter` ("zstack", read-only) and `is_network`; `config.mqtt` gains `plaintext_port` (int|null); response gains `defaults` = `{section: {key: default}}` for "Reset to defaults".
 * `POST api/config` accepts `mqtt.plaintext_port` (null to disable) and `serial.port` values of the form `tcp://host:port`.
-* `mqtt.tls.client_ca` is valid in **every** TLS mode (auto or custom): when set, clients must present a certificate signed by it (mTLS) — the Mosquitto "Require client certificate" equivalent.
+* `mqtt.tls.client_ca` is valid in **every** TLS mode (auto or custom): when set, clients must present a certificate signed by it (mTLS) ("require client certificate").
 
 ## v0.4 — Dashboard, Activity, Firmware, Import
 
@@ -121,7 +121,13 @@ All POSTs here are **control-only** (403 otherwise). `api/bridge` now also carri
 | `POST api/devices/<ieee>/update/check` | `{}` → asks the device to report its firmware (it answers within seconds; poll `update` or watch audit). Works only if `has_ota_client`. |
 | `POST api/devices/<ieee>/update/start` | `{file}` (control-only) → arms the image for this device and notifies it; 400 if manufacturer/type mismatch or not newer |
 | `POST api/devices/<ieee>/update/cancel` | `{}` (control-only) |
-| `POST api/import/preview` | `{ "configuration.yaml"?: text, "database.db"?: text, "coordinator_backup.json"?: text }` (control-only) → `{ok, network:{found, source, channel, pan_id, ext_pan_id, frame_counter, key_is_z2m_default, coordinator_ieee}, devices:[{ieee, friendly_name, model, manufacturer, router, endpoints, interviewed}], warnings:[..]}` |
+| `POST api/import/preview` | `{ "configuration.yaml"?: text, "database.db"?: text, "coordinator_backup.json"?: text }` (control-only) → `{ok, network:{found, source, channel, pan_id, ext_pan_id, frame_counter, key_is_well_known_default, coordinator_ieee}, devices:[{ieee, friendly_name, model, manufacturer, router, endpoints, interviewed}], warnings:[..]}` |
 | `POST api/import/apply` | same body → `{ok, devices, network_adopted, summary, restart_required}` — devices appear immediately; a restart is needed when the network was adopted |
 
 Dashboard data: use `GET api/devices` (list shape includes `state`, `endpoints[].category`, `lqi`, `available`) and per-device `exposes` from `GET api/devices/<ieee>` (cache per device; features don't change unless re-interviewed).
+
+## v0.5 — legacy layout on import
+* `POST api/import/preview` response gains `mqtt: {server, user, has_password, base_topic, homeassistant_prefix, homeassistant_enabled}` read from the previous setup's configuration.yaml.
+* `POST api/import/apply` accepts `keep_broker` (default true: keep using the previous setup's broker, written as `mqtt.external`), `keep_entities` (default true: `compat.legacy_layout` + same base topic + discovery prefix, so Home Assistant entities/topics stay identical), `broker_user` / `broker_password` (required when the add-on got its broker login from the Supervisor and configuration.yaml has none). Response gains `compat: [changed keys]`.
+* `GET api/config` → `config.compat.legacy_layout` (bool) and `config.external` (`{server,user,has_password,ca}` or null). `POST api/config` accepts `compat.legacy_layout` and `mqtt.external` (object, or null to switch back to the built-in broker).
+* `api/bridge` / device `mqtt` block include `legacy_layout`.

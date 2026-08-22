@@ -43,6 +43,7 @@ class FakeZnp:
         self.closed = False
         self.ieee = 0x00124B0011223344
         self.frame_counter = None
+        self.nwk_to_ieee: dict[int, int] = {}  # populated by emit_announce; used for IEEE_ADDR_REQ
         self.on_data_request = None  # optional hook: Frame -> list[Frame] of AREQs to emit
 
     # --- emit AREQ from "the radio" ---
@@ -54,6 +55,7 @@ class FakeZnp:
         self.emit(Frame(FrameType.AREQ, Subsystem.AF, c.AfCmd.INCOMING_MSG, w.bytes()))
 
     def emit_announce(self, ieee: int, nwk: int, caps: int = 0x8E) -> None:
+        self.nwk_to_ieee[nwk] = ieee
         w = Writer().u16(nwk).u16(nwk).ieee(ieee).u8(caps)
         self.emit(Frame(FrameType.AREQ, Subsystem.ZDO, c.ZdoCmd.END_DEVICE_ANNCE_IND, w.bytes()))
 
@@ -147,6 +149,14 @@ class FakeZnp:
                 self.emit(Frame(FrameType.AREQ, Subsystem.ZDO, c.ZdoCmd.UNBIND_RSP, f.data[0:2] + b"\x00"))
             elif cmd == c.ZdoCmd.MGMT_LEAVE_REQ:
                 self._srsp(f, b"\x00")
+            elif cmd == c.ZdoCmd.IEEE_ADDR_REQ:
+                nwk = int.from_bytes(f.data[0:2], "little")
+                self._srsp(f, b"\x00")
+                ieee = self.nwk_to_ieee.get(nwk)
+                if ieee is not None:
+                    self.emit(Frame(FrameType.AREQ, Subsystem.ZDO, c.ZdoCmd.IEEE_ADDR_RSP, Writer().u8(0).ieee(ieee).u16(nwk).u8(0).u8(0).bytes()))
+                else:
+                    self.emit(Frame(FrameType.AREQ, Subsystem.ZDO, c.ZdoCmd.IEEE_ADDR_RSP, Writer().u8(0x81).ieee(0).u16(nwk).bytes()))
             elif cmd == c.ZdoCmd.MGMT_LQI_REQ:
                 nwk = int.from_bytes(f.data[0:2], "little")
                 self._srsp(f, b"\x00")

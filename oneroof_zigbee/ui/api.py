@@ -163,7 +163,6 @@ class UiApi:
                 "requested_by": w.requested_by if w else None}
 
     def _dev_json(self, d: Any, *, detail: bool = False) -> dict[str, Any]:
-        base = self.gw.base
         out = {
             "ieee": d.ieee_str, "friendly_name": d.friendly_name, "description": d.description,
             "manufacturer": d.manufacturer, "model": d.model,
@@ -183,8 +182,8 @@ class UiApi:
             "oui_vendor": vendor_of(d.ieee), "manufacturer_code": d.context.get("manufacturer_code"),
             "hw_version": d.hw_version, "date_code": d.date_code, "zcl_version": d.zcl_version,
             "app_version": d.app_version, "stack_version": d.stack_version,
-            "mqtt": {"state_topic": f"{base}/{d.ieee_str}/state", "set_topic": f"{base}/{d.ieee_str}/set",
-                     "availability_topic": f"{base}/{d.ieee_str}/availability"},
+            "mqtt": {"state_topic": self.gw.topics.state(d), "set_topic": self.gw.topics.set(d),
+                     "availability_topic": self.gw.topics.availability(d), "legacy_layout": self.gw.legacy},
             "endpoints": {str(e.id): {
                 "category": e.category, "profile": e.profile, "device_id": e.device_id,
                 "device_type": describe_endpoint(e.in_clusters, e.out_clusters, e.device_id, e.profile)["device_type"],
@@ -583,7 +582,7 @@ class UiApi:
 
     def _import_files(self, body: dict[str, Any]) -> dict[str, str]:
         files: dict[str, str] = {}
-        for name in ("configuration.yaml", "database.db", "coordinator_backup.json"):
+        for name in ("configuration.yaml", "database.db", "coordinator_backup.json", "state.json"):
             v = body.get(name)
             if isinstance(v, str) and v.strip():
                 if len(v) > 1_500_000:
@@ -604,10 +603,14 @@ class UiApi:
         self._require_control()
         a = self._admin()
         try:
-            result = a.import_apply(self._import_files(req.json), self.gw.registry, self.gw.coord.secrets, self.gw.coord.known_ieee)
+            b = req.json
+            result = a.import_apply(self._import_files(b), self.gw.registry, self.gw.coord.secrets, self.gw.coord.known_ieee,
+                                    keep_broker=bool(b.get("keep_broker", True)), keep_entities=bool(b.get("keep_entities", True)),
+                                    broker_user=(str(b["broker_user"]) if b.get("broker_user") else None),
+                                    broker_password=(str(b["broker_password"]) if b.get("broker_password") else None))
         except ValueError as e:
             raise HttpError(400, str(e)) from e
-        self.gw.audit.security("zigbee2mqtt_import", by=self.who, devices=result["devices"], network_adopted=result["network_adopted"])
+        self.gw.audit.security("previous_setup_import", by=self.who, devices=result["devices"], network_adopted=result["network_adopted"])
         for dev in self.gw.registry.all():
             await self.gw._announce(dev)
             self._on_device_event("renamed", dev)

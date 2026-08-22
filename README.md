@@ -31,7 +31,7 @@ Read [SECURITY.md](SECURITY.md) for the full model, including what this does *no
 * **Built-in MQTT 3.1.1 broker** with users, roles, ACLs, TLS/mTLS, lockout.
 * **Home Assistant** auto-discovery; appears in the HA sidebar via Ingress as an add-on.
 * **Web UI**: Dashboard, Devices (About / Controls / State / Clusters / Reporting / Bind / Firmware), Pair, Map, Logs, Activity, Settings (full admin console with help on every setting).
-* **Migrate from zigbee2mqtt without re-pairing** (same dongle).
+* **Migrate from a previous setup without re-pairing** (same dongle) — same broker, topics and HA entities.
 * **Backups** (encrypted), **OTA** (local, verified), **import**, **restart** — all from the UI.
 
 Not yet: Tuya/Aqara private clusters (child lock, indicator mode …), groups & scenes, Silicon Labs (EZSP) dongles, touchlink.
@@ -40,8 +40,9 @@ Not yet: Tuya/Aqara private clusters (child lock, indicator mode …), groups & 
 
 ### Home Assistant add-on
 
-1. Settings → Add-ons → Add-on store → ⋮ → Repositories → add this repository URL.
-2. Install **OneRoof Zigbee**, set the serial port, start it.
+1. Settings → Add-ons → Add-on store → ⋮ → Repositories → add `https://github.com/NoammGr/Oneroof-Zigbee`.
+2. Install **OneRoof Zigbee** (the first install builds the image on your HA host, a few minutes),
+   set the serial port, start it.
 3. The log shows the MQTT passwords **once** and the CA certificate path.
 4. Settings → Devices & services → Add integration → **MQTT**: broker = the HA host,
    port **8883**, TLS on, user `homeassistant`, upload the CA as *Broker certificate*.
@@ -60,20 +61,34 @@ cp config.example.yaml config.yaml            # set serial.port
 UI: http://127.0.0.1:8099 (loopback only by design; use `ssh -L 8099:localhost:8099 host` from elsewhere).
 MQTT: port 8883, TLS, CA at `data/tls/ca.crt`.
 
-## Migrating from zigbee2mqtt (no re-pairing)
+## Migrating from a previous setup (nothing else changes)
 
-Keep the **same coordinator dongle** — the network lives in its flash.
+Keep the **same coordinator dongle** — the network lives in its flash. Then:
 
-* **UI**: Settings → *Import from zigbee2mqtt* → upload `configuration.yaml`, `database.db`
-  and (optional) `coordinator_backup.json` → Preview → Import → Restart.
-* **CLI**: `oneroof-zigbee import-z2m /path/to/zigbee2mqtt --apply`
+1. Stop your previous gateway add-on (leave your MQTT broker running).
+2. Install OneRoof Zigbee with the same serial port.
+3. Settings → *Import a previous setup* → upload its `configuration.yaml`, `coordinator_backup.json`,
+   and if present `database.db` and `state.json` → Preview → Import → Restart.
 
-We adopt the same network key / PAN / channel so the coordinator simply starts
-instead of re-forming, and import names, models and endpoints so no interview
-is needed. If the dongle was wiped or replaced, `coordinator_backup.json` is
-required: we re-form with the same key and a higher frame counter and devices
-rejoin on their own. If zigbee2mqtt used its public default key, the import
-flags it — rotate it once everything works.
+The import does three things so that **nothing downstream notices**:
+
+* **Same network** — adopts the existing network key / PAN / channel, so the coordinator
+  starts instead of re-forming; device names, models and endpoints are imported, so no
+  interviews run and no device is re-paired.
+* **Same broker** — keeps using your existing MQTT broker (server/login from
+  `configuration.yaml`; the built-in broker stays off until you switch). Home Assistant's
+  MQTT integration, OneRoof Bridge, OneRoof NVR and any dashboard keep their connection as is.
+* **Same topics and entities** — the previous `<base>/<friendly name>` topic layout and the
+  same Home Assistant discovery identities, so HA keeps the *same* entities: entity ids,
+  names, areas, history, automations, Lovelace cards.
+
+Later, from Settings, you can turn on the built-in TLS broker and point clients at it —
+at your pace. If the dongle was wiped or replaced, `coordinator_backup.json` is required:
+we re-form with the same key and a higher frame counter and devices rejoin on their own.
+If the previous setup used a well-known default network key, the import flags it — rotate
+it once everything works (that is the one step that re-pairs devices).
+
+CLI equivalent: `oneroof-zigbee import /path/to/previous/data --apply`.
 
 ## Firmware updates (OTA)
 
@@ -102,10 +117,10 @@ oneroof_zigbee/
   ui/         own HTTP/SSE server, JSON API, single-file web UI
   ha/         Home Assistant discovery
   admin.py    users/roles, config editor, backup/restore, restart
-  importer.py zigbee2mqtt import
+  importer.py import of a previous setup
   ota.py      OTA upgrade server (local, verified)
   gateway.py  orchestration
-addon/        Home Assistant add-on (non-root, Ingress-only UI)
+oneroof-zigbee/  Home Assistant add-on (non-root, Ingress-only UI)
 tests/        unit, integration, end-to-end (stack + real browser)
 docs/         architecture, UI API contract
 ```
@@ -134,4 +149,4 @@ Source-available, see [LICENSE](LICENSE).
 
 Releases are tagged `vX.Y.Z` and listed in [CHANGELOG.md](CHANGELOG.md). Tagging triggers the
 release workflow: tests → add-on images on GHCR (amd64, aarch64) → GitHub Release. The add-on's
-`version` in `addon/oneroof_zigbee/config.yaml` and `oneroof_zigbee.__version__` must match the tag.
+`version` in `oneroof-zigbee/config.yaml` and `oneroof_zigbee.__version__` must match the tag.
