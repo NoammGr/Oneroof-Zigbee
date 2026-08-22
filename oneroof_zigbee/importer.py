@@ -51,6 +51,7 @@ class ImportedNetwork:
     coordinator_ieee: int | None = None
     source: str = ""
     warnings: list[str] = field(default_factory=list)
+    addresses: dict[int, int] = field(default_factory=dict)  # ieee -> short address, from the backup's device table
 
     @property
     def complete(self) -> bool:
@@ -127,7 +128,9 @@ def _key_bytes(v: Any) -> bytes | None:
 
 def _ext_pan(v: Any) -> int | None:
     if isinstance(v, list) and len(v) == 8:
-        return int.from_bytes(bytes(v), "little")
+        # The previous setup lists the extended PAN id most-significant byte first (the same
+        # order as the backup's hex string); the coordinator stores it least-significant first.
+        return int.from_bytes(bytes(v), "big")
     if isinstance(v, str):
         h = re.sub(r"[^0-9a-fA-F]", "", v)
         return int(h, 16) if len(h) == 16 else None
@@ -271,6 +274,16 @@ def parse_coordinator_backup(text: str) -> ImportedNetwork:
             net.coordinator_ieee = ieee_int(ci.replace(":", ""))
         except ValueError:
             pass
+    for rec in b.get("devices") or []:
+        if not isinstance(rec, dict):
+            continue
+        try:
+            ieee = ieee_int(str(rec.get("ieee_address", "")).replace(":", ""))
+            nwk = int(str(rec.get("nwk_address", "")), 16)
+        except ValueError:
+            continue
+        if 0 < nwk < 0xFFF8:
+            net.addresses[ieee] = nwk
     return net
 
 
@@ -313,6 +326,7 @@ def build_plan(*, configuration_yaml: str | None, database_db: str | None, coord
                 setattr(net, f, getattr(bk, f))
         net.frame_counter = bk.frame_counter
         net.coordinator_ieee = bk.coordinator_ieee
+        net.addresses = bk.addresses
         net.source = "coordinator_backup.json" + (" + configuration.yaml" if configuration_yaml else "")
     devices: list[ImportedDevice] = parse_database_db(database_db) if database_db else []
     by_ieee = {d.ieee: d for d in devices}
@@ -324,6 +338,9 @@ def build_plan(*, configuration_yaml: str | None, database_db: str | None, coord
             by_ieee[ieee] = d
         d.friendly_name = meta.get("friendly_name") or d.friendly_name
         d.description = meta.get("description") or d.description
+    for d in devices:
+        if not d.nwk and d.ieee in net.addresses:
+            d.nwk = net.addresses[d.ieee]  # the backup's device table: no lookup needed after the import
     if not devices:
         warnings.append("no devices found (upload database.db and/or configuration.yaml with a devices: section)")
     if not net.complete:
@@ -354,7 +371,13 @@ def apply_plan(plan: ImportPlan, registry: Registry, current: NetworkSecrets) ->
                                  frame_counter=(n.frame_counter or 0) + 100_000)  # margin so devices accept us after a re-form
     taken = {d.friendly_name for d in registry.all()}
     for d in plan.devices:
+        prev = registry.get(d.ieee)
+        # Endpoints recorded while the short address was unknown (0) describe the coordinator, not the device.
+        bogus = prev is not None and prev.nwk == 0 and bool(prev.endpoints)
         dev = registry.add_or_update(d.ieee, d.nwk or 0, is_router=d.is_router)
+        if bogus:
+            dev.endpoints.clear()
+            dev.context.pop("reporting_done", None)
         name = d.friendly_name
         if name and (name not in taken or registry.get(d.ieee) is not None and registry.get(d.ieee).friendly_name == name):
             dev.friendly_name = name
@@ -368,7 +391,9 @@ def apply_plan(plan: ImportPlan, registry: Registry, current: NetworkSecrets) ->
         dev.power_source = d.power_source or dev.power_source
         if d.endpoints:
             dev.endpoints = dict(d.endpoints)
-        dev.interviewed = bool(d.interviewed and d.endpoints)
+            dev.interviewed = bool(d.interviewed)
+        else:
+            dev.interviewed = bool(dev.interviewed and dev.endpoints)  # keep a real interview, never invent one
         if d.last_state and not dev.state:
             dev.state.update({k: v for k, v in d.last_state.items() if k not in ("last_seen", "update", "update_available")})
         dev.available = True

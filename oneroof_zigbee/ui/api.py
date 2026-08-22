@@ -123,6 +123,7 @@ class UiApi:
         r("POST", "/api/devices/<ieee>/update/check", self.fw_check)
         r("POST", "/api/devices/<ieee>/update/start", self.fw_start)
         r("POST", "/api/devices/<ieee>/update/cancel", self.fw_cancel)
+        r("GET", "/api/import/scan", self.import_scan)
         r("POST", "/api/import/preview", self.import_preview)
         r("POST", "/api/import/apply", self.import_apply)
         server.sse("/api/events", lambda req: self.bus.stream())
@@ -581,7 +582,18 @@ class UiApi:
         self.gw.audit.event("firmware_update_cancelled", ieee=dev.ieee_str, by=self.who)
         return Response.json({"ok": True})
 
+    async def import_scan(self, req: Request) -> Response:
+        a = self._admin()
+        return Response.json({"folders": a.import_scan(), "roots": [str(r) for r in self.gw.cfg.import_roots]})
+
     def _import_files(self, body: dict[str, Any]) -> dict[str, str]:
+        if body.get("folder"):
+            try:
+                return self._admin().import_read_folder(str(body["folder"]))
+            except PermissionError as e:
+                raise HttpError(403, str(e)) from e
+            except ValueError as e:
+                raise HttpError(400, str(e)) from e
         files: dict[str, str] = {}
         for name in ("configuration.yaml", "database.db", "coordinator_backup.json", "state.json"):
             v = body.get(name)

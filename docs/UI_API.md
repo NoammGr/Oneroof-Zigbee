@@ -131,3 +131,8 @@ Dashboard data: use `GET api/devices` (list shape includes `state`, `endpoints[]
 * `POST api/import/apply` accepts `keep_broker` (default true: keep using the previous setup's broker, written as `mqtt.external`), `keep_entities` (default true: `compat.legacy_layout` + same base topic + discovery prefix, so Home Assistant entities/topics stay identical), `broker_user` / `broker_password` (required when the add-on got its broker login from the Supervisor and configuration.yaml has none). Response gains `compat: [changed keys]`.
 * `GET api/config` → `config.compat.legacy_layout` (bool) and `config.external` (`{server,user,has_password,ca}` or null). `POST api/config` accepts `compat.legacy_layout` and `mqtt.external` (object, or null to switch back to the built-in broker).
 * `api/bridge` / device `mqtt` block include `legacy_layout`.
+
+## v0.6 — server-side import
+* `GET api/import/scan` → `{folders:[{path, files:{"configuration.yaml":bool,"database.db":bool,"coordinator_backup.json":bool,"state.json":bool}}], roots:[..]}` — previous-setup folders found under the allowed import locations (in the add-on: the read-only Home Assistant config share, e.g. `/homeassistant/zigbee2mqtt`).
+* `POST api/import/preview` and `POST api/import/apply` accept `{"folder": "<path from scan>"}` instead of file contents; the server reads the files itself (403 if the folder is outside the allowed locations).
+* Uploads additionally accept a `"state.json"` key.

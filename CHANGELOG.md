@@ -3,6 +3,49 @@
 All notable changes to One Roof Zigbee. Version numbers are MAJOR.MINOR.PATCH:
 MAJOR = breaking (re-pairing or config migration needed), MINOR = features, PATCH = fixes.
 
+## [1.2.9] — 2026-08-21
+
+### Fixed — import reads the backup's device table
+- `coordinator_backup.json` lists every device with its short network address; the import now uses it,
+  so imported devices are addressable immediately (no lookup, no waiting for a first report).
+  Devices the backup knows but the previous configuration no longer lists are not resurrected.
+- The `ext_pan_id` list in `configuration.yaml` is written most-significant byte first (like the
+  backup's hex string); it was read the other way round, which made the coordinator's stored settings
+  look different and triggered a needless network re-formation on the first import.
+- Re-importing discards endpoints that were recorded at address 0, and keeps a real interview
+  instead of forcing a new one.
+
+## [1.2.8] — 2026-08-21
+
+### Fixed — interviews of imported devices
+- A device imported without its database has no known short address (stored as 0). Address 0 is the
+  coordinator itself, so an interview at that address returned the gateway's *own* endpoint: every
+  device showed the same controls, no model, no state. Interviews now resolve the real address first
+  and refuse to talk to 0; a device that does not answer shows "did not answer the address lookup"
+  and is interviewed when it next reports.
+- At start, devices that were interviewed at address 0 have that bogus data discarded automatically.
+- The registry no longer indexes address 0.
+
+## [1.2.7] — 2026-08-21
+
+### Changed — imported devices come alive at start
+- Right after start, the gateway asks every imported device that has not talked yet for its address
+  (one ZDO broadcast per second). Devices that are awake are interviewed or configured immediately;
+  sleepy ones are still picked up when they next report. Activity shows `imported_devices_lookup`.
+- When the coordinator's stored settings differ from the keystore, the log now names the setting and
+  both values (`coordinator NV … differs`) and Activity records `coordinator_nv_mismatch`.
+- A restored frame counter is set ~1M frames above the saved value, so devices never see a frame
+  counter lower than the one they last accepted.
+
+## [1.2.6] — 2026-08-21
+
+### Added — import without uploading anything
+- The add-on reads a previous setup's files straight from Home Assistant's config share (read-only): the
+  import card shows "Found on this Home Assistant" with the detected folder and which files it holds; one
+  click imports it. Uploads stay as a fallback, now with a fourth slot for `state.json`.
+- When the browser cannot read a chosen file (not downloaded locally, on a share), the real reason is shown
+  and nothing is sent half-empty.
+
 ## [1.2.5] — 2026-08-21
 
 ### Fixed — "UI not built" in the add-on

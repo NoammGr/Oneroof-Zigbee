@@ -259,3 +259,86 @@ async def test_imported_device_without_endpoints_gets_full_interview(ui, tmp_pat
     await asyncio.sleep(0.2)
     assert [a["type"] for a in alerts].count("traffic_from_unknown_device") == 2
     assert sum(1 for f in fake.requests if f.subsystem.name == "ZDO" and f.command == 0x01 and int.from_bytes(f.data[0:2], "little") == 0x7777) == 1
+
+
+async def test_imported_devices_are_located_at_startup(ui, tmp_path):  # noqa: F811
+    """Awake devices answer the start-up address lookup and get interviewed without sending anything first."""
+    fake, gw, server, api = ui
+    from oneroof_zigbee.admin import Admin
+    from oneroof_zigbee.mqtt import Acl, PasswordFile
+    api.admin = Admin(gw.cfg, None, PasswordFile(tmp_path / "p"), Acl(), gw.control_users)
+    st, _, _ = await http(server.port, "POST", "/api/import/apply", {"configuration.yaml": Z2M_CONFIG})
+    assert st == 200
+    fake.nwk_to_ieee[0x98C3] = 0xA4C1380000000001  # mains plug: awake, answers NWK_ADDR_REQ
+    pending = [d for d in gw.registry.all() if d.context.get("imported_from") and not d.context.get("reporting_done")]
+    assert pending
+    orig_sleep = asyncio.sleep
+    task = asyncio.create_task(gw._locate_imported(pending))
+    for _ in range(200):
+        await orig_sleep(0.05)
+        if gw.registry.get(0xA4C1380000000001).interviewed:
+            break
+    task.cancel()
+    d = gw.registry.get(0xA4C1380000000001)
+    assert d.nwk == 0x98C3 and d.interviewed and d.endpoints, "located by ZDO broadcast and interviewed"
+    lookups = [f for f in fake.requests if f.subsystem.name == "ZDO" and f.command == 0x00]
+    assert lookups, "NWK_ADDR_REQ was sent"
+    # devices that stayed silent (sleepy) are untouched and still wait for their first frame
+    others = [x for x in pending if x.ieee != 0xA4C1380000000001]
+    assert all(not x.interviewed for x in others)
+
+
+async def test_manual_interview_never_targets_address_zero(ui, tmp_path):  # noqa: F811
+    """An imported device with an unknown short address is resolved first; address 0 is the coordinator."""
+    fake, gw, server, api = ui
+    from oneroof_zigbee.admin import Admin
+    from oneroof_zigbee.mqtt import Acl, PasswordFile
+    api.admin = Admin(gw.cfg, None, PasswordFile(tmp_path / "p"), Acl(), gw.control_users)
+    st, _, _ = await http(server.port, "POST", "/api/import/apply", {"configuration.yaml": Z2M_CONFIG})
+    assert st == 200
+    ieee = 0xA4C1380000000001
+    dev = gw.registry.get(ieee)
+    assert dev.nwk == 0 and gw.registry.by_nwk(0) is None
+    # nobody answers: the interview fails with a clear reason, no ZDO descriptor request goes to 0x0000
+    fake.requests.clear()
+    st, _, body = await http(server.port, "POST", f"/api/devices/{dev.ieee_str}/interview", {})
+    for _ in range(160):
+        await asyncio.sleep(0.05)  # the lookup waits up to 6 s for an answer
+        if gw.registry.get(ieee).interview_error:
+            break
+    assert "address lookup" in (gw.registry.get(ieee).interview_error or "")
+    assert not [f for f in fake.requests if f.subsystem.name == "ZDO" and f.command in (0x02, 0x05) and f.data[:2] == b"\x00\x00"]
+    assert not gw.registry.get(ieee).interviewed
+    # once the network knows it, the same button works and learns the real address
+    fake.nwk_to_ieee[0x98C3] = ieee
+    st, _, _ = await http(server.port, "POST", f"/api/devices/{dev.ieee_str}/interview", {})
+    for _ in range(100):
+        await asyncio.sleep(0.02)
+        if gw.registry.get(ieee).interviewed:
+            break
+    d = gw.registry.get(ieee)
+    assert d.interviewed and d.nwk == 0x98C3 and d.endpoints[1].in_clusters == [0, 6, 8]
+
+
+BACKUP_WITH_DEVICES = json.dumps({
+    "metadata": {"format": "zigpy/open-coordinator-backup", "version": 1},
+    "coordinator_ieee": "00124b0001020304", "pan_id": "1a62", "extended_pan_id": "a1b2c3d4e5f60718",
+    "channel": 11, "network_key": {"key": "0f1e2d3c4b5a69788796a5b4c3d2e1f0", "frame_counter": 1234567},
+    "devices": [
+        {"nwk_address": "98c3", "ieee_address": "a4c1380000000001", "is_child": False},
+        {"nwk_address": "b821", "ieee_address": "00158d0000000099", "is_child": False},  # not in configuration.yaml
+    ],
+})
+
+
+def test_backup_device_table_gives_short_addresses_and_ext_pan_order():
+    plan = importer.build_plan(configuration_yaml=Z2M_CONFIG, database_db=None, coordinator_backup=BACKUP_WITH_DEVICES)
+    plug = next(d for d in plan.devices if d.ieee == 0xA4C1380000000001)
+    assert plug.nwk == 0x98C3, "address taken from the backup's device table"
+    assert all(d.ieee != 0x00158D0000000099 for d in plan.devices), "devices the previous setup no longer lists are not resurrected"
+    # the coordinator stores the extended PAN id least-significant byte first; the files list it the other way round
+    assert plan.network.ext_pan_id.to_bytes(8, "little").hex() == "1807f6e5d4c3b2a1"
+    cfg_only = importer.build_plan(configuration_yaml=Z2M_CONFIG.replace("[221, 221, 221, 221, 221, 221, 221, 221]",
+                                                                         "[161, 178, 195, 212, 229, 246, 7, 24]"),
+                                   database_db=None, coordinator_backup=None)
+    assert cfg_only.network.ext_pan_id == plan.network.ext_pan_id, "configuration.yaml list and backup string agree"

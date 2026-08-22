@@ -157,7 +157,8 @@ class Registry:
                 dev.nwk = nwk
             for k, v in caps.items():
                 setattr(dev, k, v)
-        self._by_nwk[nwk] = ieee
+        if nwk != 0:  # 0 is the coordinator; an imported device's address is unknown until it talks
+            self._by_nwk[nwk] = ieee
         self.save()
         return dev
 

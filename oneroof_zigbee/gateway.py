@@ -74,6 +74,7 @@ class Gateway:
         self._pending_rsp: dict[tuple[int, int, int], asyncio.Future[zcl.ZclFrame]] = {}
         self._interview_tasks: dict[int, asyncio.Task[None]] = {}
         self._lookup_times: dict[int, float] = {}
+        self._locate_task: asyncio.Task[None] | None = None
         self._started = False
         # optional observers (the UI attaches here); called synchronously, must not raise
         self.on_state_change: Callable[[int, dict[str, Any]], None] | None = None
@@ -89,6 +90,13 @@ class Gateway:
     # ------------------------------------------------------------- start --
 
     async def start(self) -> None:
+        for d in self.registry.all():
+            if d.nwk == 0 and (d.interviewed or d.endpoints):
+                # Interviewed at address 0 = the coordinator's own descriptors; discard them.
+                d.endpoints.clear()
+                d.interviewed = False
+                d.context.pop("reporting_done", None)
+                self.registry.save()
         self.coord.known_ieee.update(d.ieee for d in self.registry.all())
         self.coord.on_aps(self._on_aps)
         self.coord.on_device_joined(self._on_joined)
@@ -114,6 +122,38 @@ class Gateway:
         await self._publish_permit_join()
         self._started = True
         log.info("gateway ready on base topic %r", b)
+        pending = [d for d in self.registry.all()
+                   if d.context.get("imported_from") and not d.context.get("reporting_done")]
+        if pending:
+            self._locate_task = asyncio.create_task(self._locate_imported(pending), name="locate-imported")
+
+    async def _locate_imported(self, devices: list[Device]) -> None:
+        """Imported devices are on our network but have not talked to us yet. Ask each one for its
+        address (a ZDO broadcast it answers itself); whoever answers is awake, so interview or
+        configure it now instead of waiting for its first report. Sleepy devices stay silent and
+        are handled when they next wake (see _on_aps)."""
+        await asyncio.sleep(5.0)  # let routers settle after (re)start
+        self.audit.event("imported_devices_lookup", count=len(devices))
+        for dev in devices:
+            if dev.context.get("reporting_done") or dev.ieee in self._interview_tasks:
+                continue
+            try:
+                nwk = await self.coord.nwk_lookup(dev.ieee)
+            except Exception as e:  # transport hiccup: keep going with the next device
+                log.info("%s: address lookup failed (%s)", dev.ieee_str, e)
+                nwk = None
+            if nwk is None:
+                continue
+            if nwk != dev.nwk:
+                self.registry.add_or_update(dev.ieee, nwk)
+            dev.available = True
+            dev.last_seen = time.time()
+            dev.context["reporting_done"] = True
+            if dev.endpoints:
+                self._interview_tasks[dev.ieee] = asyncio.create_task(self._post_import_setup(dev), name=f"post-import-{dev.ieee_str}")
+            else:
+                self._start_interview(dev)
+            await asyncio.sleep(1.0)  # one broadcast per second keeps the mesh calm
 
     def _load_activity(self) -> None:
         if not self._activity_path or not self._activity_path.exists():
@@ -144,6 +184,8 @@ class Gateway:
         return out
 
     async def stop(self) -> None:
+        if self._locate_task:
+            self._locate_task.cancel()
         for t in self._interview_tasks.values():
             t.cancel()
         await self.broker.publish(f"{self.base}/bridge/state", self.topics.bridge_state_payload(False), retain=True)
@@ -184,7 +226,15 @@ class Gateway:
 
     async def _interview(self, dev: Device) -> None:
         try:
-            self.audit.event("interview_started", ieee=dev.ieee_str)
+            if dev.nwk == 0:
+                # Short address unknown (imported without its database): 0 is the coordinator
+                # itself, so never interview it — resolve the device's real address first.
+                nwk = await self.coord.nwk_lookup(dev.ieee)
+                if nwk is None:
+                    raise ZnpError("device did not answer the address lookup (asleep or out of reach); "
+                                   "it is interviewed automatically when it next reports")
+                self.registry.add_or_update(dev.ieee, nwk)
+            self.audit.event("interview_started", ieee=dev.ieee_str, nwk=f"{dev.nwk:#06x}")
             nd = await self.coord.node_descriptor(dev.nwk)
             if nd.status == 0:
                 dev.context["manufacturer_code"] = nd.manufacturer_code

@@ -160,6 +160,13 @@ class FakeZnp:
                 self.emit(Frame(FrameType.AREQ, Subsystem.ZDO, c.ZdoCmd.UNBIND_RSP, f.data[0:2] + b"\x00"))
             elif cmd == c.ZdoCmd.MGMT_LEAVE_REQ:
                 self._srsp(f, b"\x00")
+            elif cmd == c.ZdoCmd.NWK_ADDR_REQ:
+                ieee = int.from_bytes(f.data[0:8], "little")
+                self._srsp(f, b"\x00")
+                nwk = next((n for n, i in self.nwk_to_ieee.items() if i == ieee), None)
+                if nwk is not None:
+                    self.emit(Frame(FrameType.AREQ, Subsystem.ZDO, c.ZdoCmd.NWK_ADDR_RSP, Writer().u8(0).ieee(ieee).u16(nwk).u8(0).u8(0).bytes()))
+                # silent otherwise, like a sleeping or absent device
             elif cmd == c.ZdoCmd.IEEE_ADDR_REQ:
                 nwk = int.from_bytes(f.data[0:2], "little")
                 self._srsp(f, b"\x00")

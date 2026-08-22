@@ -665,3 +665,26 @@ async def test_17_managed_import_writes_overrides_and_recreates_login(tmp_path_f
     assert pw.verify("nvr-client", "nvr-secret-123")
     assert acl.can_publish("nvr-client", "oneroof/events") and "nvr-client" not in admin.control_users
     assert "legacy_layout" in admin.restart_required
+
+
+async def test_18_server_side_import_from_allowed_folder(tmp_path_factory):
+    from oneroof_zigbee.admin import Admin
+    from oneroof_zigbee.mqtt import Acl, PasswordFile
+    tmp = tmp_path_factory.mktemp("scan")
+    share = tmp / "homeassistant"
+    (share / "zigbee2mqtt").mkdir(parents=True)
+    (share / "zigbee2mqtt" / "configuration.yaml").write_text(Z2M_CONFIG)
+    (share / "zigbee2mqtt" / "database.db").write_text(Z2M_DB)
+    (share / "other").mkdir()
+    (share / "other" / "configuration.yaml").write_text("homeassistant:\n  name: Home\n")  # HA's own config: must not qualify
+    cfg = Config.from_dict({"serial": {"port": "/dev/null"}, "data_dir": str(tmp / "d"), "mqtt": {"tls": "off", "port": 0}, "import_roots": [str(share)]})
+    admin = Admin(cfg, None, PasswordFile(tmp / "p"), Acl(), set(), managed=True)
+    found = admin.import_scan()
+    assert [f["path"] for f in found] == [str(share / "zigbee2mqtt")]
+    assert found[0]["files"]["configuration.yaml"] and found[0]["files"]["database.db"] and not found[0]["files"]["state.json"]
+    files = admin.import_read_folder(str(share / "zigbee2mqtt"))
+    assert set(files) == {"configuration.yaml", "database.db"}
+    with pytest.raises(PermissionError):
+        admin.import_read_folder("/etc")
+    with pytest.raises(PermissionError):
+        admin.import_read_folder(str(share / ".." / "d"))

@@ -294,6 +294,45 @@ class Admin:
 
     # ---------------------------------------------------------------- import --
 
+    IMPORT_FILES = ("configuration.yaml", "database.db", "coordinator_backup.json", "state.json")
+
+    def import_scan(self) -> list[dict[str, Any]]:
+        """Find previous-setup folders under the allowed roots (no upload needed). A folder qualifies
+        when it holds a configuration.yaml with a `serial:` or `devices:` section, or a database.db."""
+        out: list[dict[str, Any]] = []
+        for root in self.cfg.import_roots:
+            if not root.is_dir():
+                continue
+            candidates = [root] + [p for p in root.iterdir() if p.is_dir()] if root.is_dir() else []
+            for folder in candidates:
+                cfgf = folder / "configuration.yaml"
+                if not cfgf.is_file() and not (folder / "database.db").is_file():
+                    continue
+                try:
+                    head = cfgf.read_text(errors="replace")[:20000] if cfgf.is_file() else ""
+                except OSError:
+                    continue
+                if cfgf.is_file() and not any(k in head for k in ("serial:", "devices:", "advanced:", "mqtt:")):
+                    continue
+                files = {n: (folder / n).is_file() for n in self.IMPORT_FILES}
+                out.append({"path": str(folder), "files": files})
+        return out
+
+    def import_read_folder(self, folder: str) -> dict[str, str]:
+        p = Path(folder).resolve()
+        if not any(str(p).startswith(str(r.resolve()) + "/") or p == r.resolve() for r in self.cfg.import_roots if r.exists()):
+            raise PermissionError("folder is outside the allowed import locations")
+        files: dict[str, str] = {}
+        for name in self.IMPORT_FILES:
+            f = p / name
+            if f.is_file():
+                if f.stat().st_size > 1_500_000:
+                    raise ValueError(f"{name} is too large")
+                files[name] = f.read_text(errors="replace")
+        if not files:
+            raise ValueError("no importable files in that folder")
+        return files
+
     def import_preview(self, files: dict[str, str]) -> dict[str, Any]:
         from .importer import build_plan
         plan = build_plan(configuration_yaml=files.get("configuration.yaml"), database_db=files.get("database.db"),

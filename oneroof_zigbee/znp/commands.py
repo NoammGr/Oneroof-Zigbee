@@ -191,6 +191,7 @@ def decode_af_incoming_msg(data: bytes) -> AfIncomingMsg:
 
 
 class ZdoCmd(IntEnum):
+    NWK_ADDR_REQ = 0x00
     IEEE_ADDR_REQ = 0x01
     NODE_DESC_REQ = 0x02
     SIMPLE_DESC_REQ = 0x04
@@ -203,6 +204,7 @@ class ZdoCmd(IntEnum):
     STARTUP_FROM_APP = 0x40
     EXT_NWK_INFO = 0x50
     # indications
+    NWK_ADDR_RSP = 0x80
     IEEE_ADDR_RSP = 0x81
     NODE_DESC_RSP = 0x82
     SIMPLE_DESC_RSP = 0x84
@@ -249,6 +251,11 @@ def zdo_permit_join(seconds: int, dst: int = BROADCAST_ROUTERS_AND_COORD) -> Fra
     mode = ADDR_MODE_BROADCAST if dst == BROADCAST_ROUTERS_AND_COORD else ADDR_MODE_SHORT
     w = Writer().u8(mode).u16(dst).u8(seconds).u8(0)  # tc significance 0
     return Frame(FrameType.SREQ, Subsystem.ZDO, ZdoCmd.MGMT_PERMIT_JOIN_REQ, w.bytes())
+
+
+def zdo_nwk_addr_req(ieee: int) -> Frame:
+    """Ask the network (broadcast) which short address a known IEEE address has now."""
+    return Frame(FrameType.SREQ, Subsystem.ZDO, ZdoCmd.NWK_ADDR_REQ, Writer().ieee(ieee).u8(0).u8(0).bytes())
 
 
 def zdo_ieee_addr_req(nwk: int) -> Frame:

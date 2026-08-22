@@ -33,6 +33,7 @@ from .unpi import Frame, Subsystem
 log = logging.getLogger("oneroof_zigbee.znp.coordinator")
 
 HA_PROFILE = 0x0104
+FRAME_COUNTER_MARGIN = 1 << 20  # ~1M frames of headroom over the saved counter
 GATEWAY_ENDPOINT = 1
 # clusters we advertise on our endpoint so devices bind/report to us
 GATEWAY_IN_CLUSTERS = [0x0000, 0x0003, 0x0006, 0x000A, 0x0019, 0x0500]
@@ -230,7 +231,10 @@ class Coordinator:
         for item, want in checks.items():
             got = await self._nv_read(item)
             if got is None or got[: len(want)] != want:
-                log.info("NV %s differs", item.name)
+                shown = (got[: len(want)].hex() if got else None) if item != NvId.PRECFGKEY else ("<key>" if got else None)
+                log.warning("coordinator NV %s differs: dongle=%s keystore=%s", item.name, shown,
+                            want.hex() if item != NvId.PRECFGKEY else "<key>")
+                self.audit.event("coordinator_nv_mismatch", item=item.name)
                 return False
         on_net = await self._nv_read(NvId.BDBNODEISONANETWORK)
         return bool(on_net and on_net[0] == 1)
@@ -253,9 +257,12 @@ class Coordinator:
         await self._reset()
         await self._apply_runtime_security()
         if s.frame_counter:
+            # The saved counter is from the last backup, the dongle may have sent many frames
+            # since; devices drop anything at or below what they last saw, so jump well ahead.
+            counter = min(s.frame_counter + FRAME_COUNTER_MARGIN, 0xFFFF_FFFF)
             try:
-                await self.t.request(c.appcnf_set_nwk_frame_counter(s.frame_counter))
-                self.audit.event("frame_counter_restored", value=s.frame_counter)
+                await self.t.request(c.appcnf_set_nwk_frame_counter(counter))
+                self.audit.event("frame_counter_restored", value=counter, saved=s.frame_counter)
             except ZnpStatusError as e:
                 log.warning("could not set NWK frame counter (%s); devices from an imported network may ignore us until they rejoin", e)
         # 3. form
@@ -388,6 +395,19 @@ class Coordinator:
         if rsp.status != 0:
             raise ZnpStatusError(c.zdo_simple_desc_req(nwk, ep), rsp.status)
         return rsp
+
+    async def nwk_lookup(self, ieee: int, timeout: float = 6.0) -> int | None:
+        """Resolve an IEEE address to its current short address via ZDO broadcast; None if silent."""
+        wait = self.t.wait_for(Subsystem.ZDO, ZdoCmd.NWK_ADDR_RSP, timeout=timeout,
+                               predicate=lambda f: c.decode_ieee_addr_rsp(f.data).ieee == ieee)
+        task = await self._arm(wait)
+        try:
+            await self.t.request(c.zdo_nwk_addr_req(ieee))
+            rsp = c.decode_ieee_addr_rsp((await task).data)
+        except (ZnpTimeout, ZnpStatusError):
+            task.cancel()
+            return None
+        return rsp.nwk if rsp.status == 0 else None
 
     async def ieee_lookup(self, nwk: int, timeout: float = 6.0) -> int | None:
         """Resolve a short address to an IEEE address via ZDO; None if nobody answers."""
