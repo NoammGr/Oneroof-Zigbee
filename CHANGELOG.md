@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.6.6] — 2026-08-22
+
+### Added — unknown devices on the network can be adopted or evicted
+- A device that holds the network key but is not in the device list (typically paired by the
+  previous setup without being in its configuration) is now identified by its IEEE address, shown on
+  the Pair page under "Unknown devices on the network" with its address, traffic and link quality,
+  and can be **adopted** (registered and interviewed) or **evicted** (told to leave). Alerts
+  `traffic_from_unknown_device` carry the IEEE and are raised once, then at the 10th/100th/1000th
+  frame instead of on every frame; `unknown_device_adopted` / `unknown_device_evicted` are recorded.
+
 ## [1.6.5] — 2026-08-22
 
 ### Fixed — interviews and bindings on real hardware

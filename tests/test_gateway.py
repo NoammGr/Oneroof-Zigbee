@@ -408,3 +408,26 @@ async def test_first_tracked_announce_sweeps_legacy_entity_shapes(tmp_path):
     assert broker.last(f"homeassistant/binary_sensor/{dev.ieee_str}/contact/config"), "real entity published after the sweep"
     assert "discovery_topics" in dev.context
     await t.close()
+
+
+async def test_unknown_device_is_tracked_and_can_be_adopted_or_evicted(tmp_path):
+    fake, coord, broker, gw, t = await make(tmp_path)
+    alerts = []
+    coord.audit.subscribe(lambda r: alerts.append(r) if r["level"] == "security" else None)
+    fake.nwk_to_ieee[0x1791] = 0xA4C1380000000055  # on the network, not in our registry
+    for i in range(3):
+        fake.emit_incoming(0x1791, 0x000A, bytes([0x00, i, 0x00, 0x00, 0x00]))
+        await asyncio.sleep(0.05)
+    unk = gw.list_unknown()
+    assert len(unk) == 1 and unk[0]["ieee"] == "0xa4c1380000000055" and unk[0]["nwk"] == "0x1791" and unk[0]["frames"] >= 1
+    assert [a for a in alerts if a["type"] == "traffic_from_unknown_device" and a.get("ieee") == "0xa4c1380000000055"]
+    dev = await gw.adopt_unknown(0xA4C1380000000055, "ui:admin")
+    assert dev.nwk == 0x1791 and gw.registry.get(0xA4C1380000000055) and not gw.list_unknown()
+    assert any(a["type"] == "unknown_device_adopted" for a in alerts)
+    # evict path
+    fake.nwk_to_ieee[0x057B] = 0xA4C1380000000056
+    fake.emit_incoming(0x057B, 0x000A, bytes([0x00, 1, 0x00, 0x00, 0x00]))
+    await asyncio.sleep(0.1)
+    await gw.evict_unknown(0xA4C1380000000056, "ui:admin")
+    assert not gw.list_unknown() and any(f.subsystem is Subsystem.ZDO and f.command == c.ZdoCmd.MGMT_LEAVE_REQ for f in fake.requests)
+    await t.close()

@@ -34,6 +34,8 @@ Security:
 
 | Path | Body | Effect |
 |---|---|---|
+| `GET api/unknown` | — | unregistered devices heard on the network `{devices:[{ieee,nwk,frames,clusters,lqi,first_seen,last_seen}]}` |
+| `POST api/unknown/<ieee>/adopt` / `…/evict` | `{}` | control-only; register+interview, or send a leave request |
 | `api/permit_join` | `{seconds: 60, ieee?: "0x…", install_code?: "…"}` | open window (seconds 0 = close). Returns `{ok, seconds?, error?}` |
 | `api/devices/<ieee>/set` | any device command, e.g. `{state:"ON", brightness: 200}` | same as MQTT `set` |
 | `api/devices/<ieee>/rename` | `{friendly_name}` | |

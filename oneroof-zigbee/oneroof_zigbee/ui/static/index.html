@@ -439,6 +439,7 @@ const HELP={
   'maintenance.repair':'Fresh network key AND fresh trust-centre seed on the next start. Every device must be paired again. Needed only when the seed may have leaked too (for example the previous setup\'s backup files) — over-the-air rotation alone does not exclude someone who has both.',
   'pair.seconds':'How long the network accepts new devices. The network key is handed to anyone who joins in this window, so keep it just long enough to press the button on the device.',
   'pair.ieee':'The 64-bit address printed on the device or its QR label (16 hex digits). The join window is then opened for this one device only.',
+  'pair.unknown':'A device that is on the network (it holds the network key) but is not in the device list. Adopt registers and interviews it under its address; Evict sends it a leave request. Alerts about it are recorded as traffic_from_unknown_device.',
   'pair.install_code':'Secret printed on the device or its box as a QR code/label. It derives a one-off link key, so the network key is never sent under the well-known default key.',
   'firmware.policy':'The gateway has no update server and never fetches firmware on its own. You upload an OTA file published by the manufacturer; its header is parsed and checked, and it is offered only to devices whose own manufacturer code and image type match it.',
   'firmware.check':'Asks the device to report its current firmware: manufacturer code, image type and version. Sleepy battery devices answer only when awake, so press a button on them first.',
@@ -567,7 +568,7 @@ function connectSSE(){
   on('activity',d=>{views.device.onActivity(d);views.activity.push(d);});
   on('permit_join',d=>{S.pj=Object.assign(S.pj,d);renderHeader();views.pair.tick();});
   on('audit',d=>{views.logs.pushAudit(d);if(d.type&&/join|interview|announce|leave|permit/i.test(d.type))views.pair.feed(d.type,d);});
-  on('security',d=>{d.level=d.level||'security';S.lastSec=d;views.logs.pushAudit(d);views.pair.feed('SECURITY '+(d.type||''),d);renderHeader();toast('Security: '+(d.type||'alert'),true);});
+  on('security',d=>{d.level=d.level||'security';S.lastSec=d;if(S.page==='pair'&&/unknown_device|traffic_from_unknown/.test(d.type||''))views.pair.loadUnknown(!!(S.bridge&&S.bridge.ui_can_control));views.logs.pushAudit(d);views.pair.feed('SECURITY '+(d.type||''),d);renderHeader();toast('Security: '+(d.type||'alert'),true);});
   on('log',d=>views.logs.pushLog(d));
 }
 
@@ -969,6 +970,7 @@ views.pair={
     const b=S.bridge||{};const ok=can();const strict=!!b.strict_install_codes;
     m.append(el('h1',{text:'Pair a device'}),el('p',{class:'lead',text:'The join window is the only moment the network key leaves the coordinator. Use an install code when the device has one; otherwise the window closes after the first device and the key is rotated over the air right after.'}));
     if(!ok)m.append(el('div',{class:'notice warn'},el('b',{text:'This UI cannot open the join window. '}),'The UI acts as MQTT user ',el('span',{class:'mono',text:b.ui_user||'?'}),', which is not listed in control_users. Add it to the config to allow pairing from here.'));
+    this.unknownBox=el('div');m.append(this.unknownBox);this.loadUnknown(ok);
     if(strict)m.append(el('div',{class:'notice'},el('b',{text:'Strict mode is on. '}),'The public ZigBeeAlliance09 link key has been replaced, so only install-code joins can succeed. A plain join window will open but no device can use it.'));
     const seg=el('div',{class:'seg'});for(const s of[15,60,120])seg.append(el('button',{text:s+' s',class:s===this.secs?'active':'',onclick:e=>{this.secs=s;seg.querySelectorAll('button').forEach(x=>x.classList.toggle('active',x===e.target));}}));
     this.ringNum=el('b',{text:'—'});this.ringLab=el('span',{text:'closed'});
@@ -994,6 +996,19 @@ views.pair={
     this.timer=setInterval(()=>{if(S.pj.open&&S.pj.seconds_left>0){S.pj.seconds_left--;if(S.pj.seconds_left<=0)S.pj.open=false;renderHeader();this.tick();}},1000);
   },
   leave(){clearInterval(this.timer);},
+  async loadUnknown(ok){
+    if(!this.unknownBox)return;
+    let list=[];try{list=(await api('api/unknown')).devices||[];}catch(e){}
+    clear(this.unknownBox);if(!list.length)return;
+    const rows=list.map(u=>el('div',{class:'bar',style:'justify-content:space-between;padding:8px 0;border-top:1px solid var(--line)'},
+      el('div',null,el('div',{class:'mono',text:u.ieee}),el('div',{class:'sub',text:'address '+u.nwk+' · '+u.frames+' frame(s) · clusters '+(u.clusters||[]).join(', ')+(u.lqi!=null?' · LQI '+u.lqi:'')+' · last '+rel(u.last_seen)})),
+      el('div',{class:'bar'},
+        el('button',{class:'btn primary',text:'Adopt',disabled:!ok,onclick:async()=>{try{await api('api/unknown/'+u.ieee+'/adopt',{});toast('Adopted '+u.ieee+' — interviewing');this.loadUnknown(ok);}catch(e){toast(e.message,true);}}}),
+        el('button',{class:'btn danger',text:'Evict',disabled:!ok,onclick:async()=>{if(!(await confirmDlg('Evict '+u.ieee+'?',[el('p',{text:'The device is told to leave the network. It keeps working only if it is re-paired.'})],'Evict',true)))return;try{await api('api/unknown/'+u.ieee+'/evict',{});toast('Evicted '+u.ieee);this.loadUnknown(ok);}catch(e){toast(e.message,true);}}}))));
+    this.unknownBox.append(el('div',{class:'notice warn',style:'margin-bottom:14px'},el('b',{text:'Unknown devices on the network. '}),
+      'These devices hold the network key and talk to the coordinator, but the gateway has no record of them — typically devices paired by the previous setup that were not in its configuration. Adopt what is yours; evict anything you do not recognise.',
+      help('pair.unknown',null,'Unknown devices'),...rows));
+  },
   async open(secs,extra){secs=secs===undefined?this.secs:secs;try{const r=await api('api/permit_join',Object.assign({seconds:secs},extra||{}));if(secs===0)toast('Join window closed');else{toast('Join window open for '+(r.seconds||secs)+' s'+(extra?' (install code)':''));S.pj.open=true;S.pj.seconds_left=r.seconds||secs;S.pj.total=S.pj.seconds_left;}renderHeader();this.tick();}catch(e){toast(e.message,true);}},
   tick(){if(S.page!=='pair'||!this.ringArc)return;const C=2*Math.PI*88;const left=S.pj.open?S.pj.seconds_left:0;const tot=Math.max(S.pj.total||left||1,left);this.ringArc.style.strokeDasharray=C;this.ringArc.style.strokeDashoffset=C*(1-left/tot);this.ringNum.textContent=S.pj.open?String(left):'—';this.ringLab.textContent=S.pj.open?'seconds left':'window closed';this.openBtn.textContent=S.pj.open?'Extend to '+this.secs+' s':'Open join window';},
   feed(kind,obj){const line={t:Date.now(),kind,txt:obj?(obj.friendly_name||(obj.device&&obj.device.friendly_name)||obj.ieee||obj.msg||''):''};S.pairFeed.push(line);if(S.pairFeed.length>100)S.pairFeed.shift();if(S.page==='pair')this.renderFeed();},

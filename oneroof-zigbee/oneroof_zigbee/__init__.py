@@ -1,3 +1,3 @@
 """oneroof_zigbee — a from-scratch, security-first Zigbee ⇄ MQTT gateway."""
 
-__version__ = "1.6.5"
+__version__ = "1.6.6"

@@ -78,6 +78,7 @@ class Gateway:
         self._lookup_times: dict[int, float] = {}
         self._locate_task: asyncio.Task[None] | None = None
         self._settled: set[int] = set()  # Tuya devices given their settle read this run
+        self.unknown_devices: dict[int, dict[str, Any]] = {}  # ieee -> what we know about an unregistered device on our network
         self._rotation: Any = None  # KeyRotation, created on first use
         from .monitor import Monitor
         self.monitor = Monitor(lambda t, **f: self.audit.security(t, **f))
@@ -569,9 +570,20 @@ class Gateway:
         if dev is None:
             dev = await self._resolve_unknown_short(m.src_addr)
         if dev is None:
-            # Traffic from a short address we do not know: the firmware
-            # authenticated it (it is on our network), but we have no record.
-            self.audit.security("traffic_from_unknown_device", nwk=f"{m.src_addr:#06x}", cluster=f"{m.cluster:#06x}")
+            # Traffic from a short address we do not know: the firmware authenticated it (it is on
+            # our network), but we have no record. Remember it so the owner can adopt or evict it.
+            known = next((r for r in self.unknown_devices.values() if r.get("nwk") == f"{m.src_addr:#06x}"), None)
+            if known is not None:
+                known["frames"] += 1
+                known["last_seen"] = time.time()
+                known["lqi"] = m.lqi
+                if f"{m.cluster:#06x}" not in known["clusters"]:
+                    known["clusters"].append(f"{m.cluster:#06x}")
+                if known["frames"] in (1, 10, 100, 1000):  # one alert, then decreasingly often
+                    self.audit.security("traffic_from_unknown_device", ieee=known["ieee"], nwk=known["nwk"],
+                                        cluster=f"{m.cluster:#06x}", frames=known["frames"])
+            else:
+                self.audit.security("traffic_from_unknown_device", nwk=f"{m.src_addr:#06x}", cluster=f"{m.cluster:#06x}")
             return
         dev.last_seen = time.time()
         dev.lqi = m.lqi
@@ -800,10 +812,37 @@ class Gateway:
             return None
         dev = self.registry.get(ieee)
         if dev is None:
+            rec = self.unknown_devices.setdefault(ieee, {"ieee": ieee_str(ieee), "first_seen": time.time(), "frames": 0, "clusters": []})
+            rec["nwk"] = f"{nwk:#06x}"
             return None
         self.registry.add_or_update(ieee, nwk)
         self.audit.event("short_address_learned", ieee=dev.ieee_str, nwk=f"{nwk:#06x}")
         return dev
+
+    def list_unknown(self) -> list[dict[str, Any]]:
+        return sorted(self.unknown_devices.values(), key=lambda r: r.get("last_seen", 0), reverse=True)
+
+    async def adopt_unknown(self, ieee: int, who: str) -> Device:
+        """Register a device that is on our network but unknown to us, and interview it."""
+        rec = self.unknown_devices.pop(ieee, None)
+        if rec is None:
+            raise ValueError("no such unknown device")
+        nwk = int(rec["nwk"], 16)
+        dev = self.registry.add_or_update(ieee, nwk)
+        self.coord.known_ieee.add(ieee)
+        dev.available = True
+        dev.last_seen = time.time()
+        self.audit.security("unknown_device_adopted", ieee=dev.ieee_str, nwk=rec["nwk"], by=who)
+        self._emit_device_event("joined", dev)
+        self._start_interview(dev)
+        return dev
+
+    async def evict_unknown(self, ieee: int, who: str) -> None:
+        rec = self.unknown_devices.pop(ieee, None)
+        if rec is None:
+            raise ValueError("no such unknown device")
+        await self.coord.remove_device(int(rec["nwk"], 16), ieee)
+        self.audit.security("unknown_device_evicted", ieee=rec["ieee"], nwk=rec["nwk"], by=who)
 
     async def _default_response(self, dev: Device, m: IncomingAps, frame: zcl.ZclFrame) -> None:
         try:

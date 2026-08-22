@@ -93,6 +93,9 @@ class UiApi:
         r("GET", "/api/logs", self.app_logs)
         r("GET", "/api/map", self.map)
         r("POST", "/api/permit_join", self.permit_join)
+        r("GET", "/api/unknown", self.unknown_list)
+        r("POST", "/api/unknown/<ieee>/adopt", self.unknown_adopt)
+        r("POST", "/api/unknown/<ieee>/evict", self.unknown_evict)
         r("POST", "/api/devices/<ieee>/set", self.dev_set)
         r("POST", "/api/devices/<ieee>/rename", self.dev_rename)
         r("POST", "/api/devices/<ieee>/remove", self.dev_remove)
@@ -281,6 +284,25 @@ class UiApi:
         return Response.json(self._map_cache)
 
     # -- POST --------------------------------------------------------------
+
+    async def unknown_list(self, req: Request) -> Response:
+        return Response.json({"devices": self.gw.list_unknown()})
+
+    async def unknown_adopt(self, req: Request) -> Response:
+        self._require_control()
+        try:
+            dev = await self.gw.adopt_unknown(ieee_int(req.params["ieee"]), self.who)
+        except ValueError as e:
+            raise HttpError(404, str(e)) from e
+        return Response.json({"ok": True, "ieee": dev.ieee_str})
+
+    async def unknown_evict(self, req: Request) -> Response:
+        self._require_control()
+        try:
+            await self.gw.evict_unknown(ieee_int(req.params["ieee"]), self.who)
+        except ValueError as e:
+            raise HttpError(404, str(e)) from e
+        return Response.json({"ok": True})
 
     async def permit_join(self, req: Request) -> Response:
         self._require_control()
