@@ -25,7 +25,16 @@ class SysCmd(IntEnum):
     OSAL_NV_WRITE = 0x09
     OSAL_NV_DELETE = 0x12
     OSAL_NV_LENGTH = 0x13
+    NV_CREATE = 0x30          # extended NV API (Z-Stack 3.x.0): sysId/itemId/subId
+    NV_LENGTH = 0x32
+    NV_READ = 0x33
+    NV_WRITE = 0x34
     RESET_IND = 0x80          # AREQ
+
+
+NV_SYS_ZSTACK = 1
+EXNV_ADDRMGR = 0x0001
+EXNV_NWK_SEC_MATERIAL_TABLE = 0x0007  # entries: frameCounter u32 + extendedPanID[8]; all-FF ext PAN = generic
 
 
 class NvId(IntEnum):
@@ -43,6 +52,7 @@ class NvId(IntEnum):
     CHANLIST = 0x0084
     LOGICAL_TYPE = 0x0087
     ZDO_DIRECT_CB = 0x008F
+    TCLK_SEED = 0x0101  # seed the per-device trust-centre link keys are derived from
     BDBNODEISONANETWORK = 0x0055
 
 
@@ -100,6 +110,16 @@ def nv_write(item: int, value: bytes, offset: int = 0) -> Frame:
 def nv_read(item: int, offset: int = 0) -> Frame:
     w = Writer().u16(item).u8(offset)
     return Frame(FrameType.SREQ, Subsystem.SYS, SysCmd.OSAL_NV_READ, w.bytes())
+
+
+def exnv_read(item: int, sub: int, length: int, offset: int = 0, sys_id: int = NV_SYS_ZSTACK) -> Frame:
+    w = Writer().u8(sys_id).u16(item).u16(sub).u16(offset).u8(length)
+    return Frame(FrameType.SREQ, Subsystem.SYS, SysCmd.NV_READ, w.bytes())
+
+
+def exnv_write(item: int, sub: int, value: bytes, offset: int = 0, sys_id: int = NV_SYS_ZSTACK) -> Frame:
+    w = Writer().u8(sys_id).u16(item).u16(sub).u16(offset).lv(value)
+    return Frame(FrameType.SREQ, Subsystem.SYS, SysCmd.NV_WRITE, w.bytes())
 
 
 def decode_nv_read(data: bytes) -> tuple[int, bytes]:
@@ -204,6 +224,8 @@ class ZdoCmd(IntEnum):
     MGMT_LEAVE_REQ = 0x34
     MGMT_PERMIT_JOIN_REQ = 0x36
     STARTUP_FROM_APP = 0x40
+    EXT_UPDATE_NWK_KEY = 0x4E   # install a network key locally (dst 0x0000) or announce it (dst 0xFFFF)
+    EXT_SWITCH_NWK_KEY = 0x4F   # make the key with that sequence number the active one
     EXT_NWK_INFO = 0x50
     # indications
     NWK_ADDR_RSP = 0x80
@@ -253,6 +275,16 @@ def zdo_permit_join(seconds: int, dst: int = BROADCAST_ROUTERS_AND_COORD) -> Fra
     mode = ADDR_MODE_BROADCAST if dst == BROADCAST_ROUTERS_AND_COORD else ADDR_MODE_SHORT
     w = Writer().u8(mode).u16(dst).u8(seconds).u8(0)  # tc significance 0
     return Frame(FrameType.SREQ, Subsystem.ZDO, ZdoCmd.MGMT_PERMIT_JOIN_REQ, w.bytes())
+
+
+def zdo_ext_update_nwk_key(dst: int, seq: int, key: bytes) -> Frame:
+    if len(key) != 16:
+        raise ValueError("network key must be 16 bytes")
+    return Frame(FrameType.SREQ, Subsystem.ZDO, ZdoCmd.EXT_UPDATE_NWK_KEY, Writer().u16(dst).u8(seq).raw(key).bytes())
+
+
+def zdo_ext_switch_nwk_key(dst: int, seq: int) -> Frame:
+    return Frame(FrameType.SREQ, Subsystem.ZDO, ZdoCmd.EXT_SWITCH_NWK_KEY, Writer().u16(dst).u8(seq).bytes())
 
 
 def zdo_nwk_addr_req(ieee: int) -> Frame:

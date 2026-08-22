@@ -18,7 +18,7 @@ from collections.abc import Awaitable, Callable
 from .unpi import Frame, FrameType, Parser, Subsystem
 
 # Frames whose payload carries key material never reach the log, even at DEBUG.
-_SYS_NV_CMDS = (0x07, 0x08, 0x09)          # OSAL_NV_ITEM_INIT / READ / WRITE
+_SYS_NV_CMDS = (0x07, 0x08, 0x09)          # OSAL_NV_ITEM_INIT / READ / WRITE (the ExNV sec-material table holds counters only)
 _SECRET_NV_ITEMS = {0x003A, 0x003B, 0x0062, 0x0082, 0x0101}  # active/alternate key info, PRECFGKEY, NWKKEY, TCLK table
 _SECRET_APP_CNF = {0x04, 0x07}              # BDB_ADD_INSTALLCODE, BDB_SET_ACTIVE_DEFAULT_CENTRALIZED_KEY
 
@@ -144,6 +144,8 @@ class Transport:
                 self._redact_srsp = item in _SECRET_NV_ITEMS and frame.command == 0x08
             return item in _SECRET_NV_ITEMS
         if frame.subsystem is Subsystem.APP_CNF and frame.command in _SECRET_APP_CNF:
+            return True
+        if frame.subsystem is Subsystem.ZDO and frame.command == 0x4E:  # EXT_UPDATE_NWK_KEY carries the key
             return True
         return False
 

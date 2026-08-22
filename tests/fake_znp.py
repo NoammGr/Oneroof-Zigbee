@@ -43,7 +43,12 @@ class FakeZnp:
         self.closed = False
         self.ieee = 0x00124B0011223344
         self.frame_counter = None
-        self.ignore_set_frame_counter = False  # model firmware that does not keep SET_NWK_FRAME_COUNTER
+        self.ignore_set_frame_counter = False
+        self.active_key = None  # None = whatever PRECFGKEY holds; set to model a radio on another key
+        self.refuse_key_item_writes = False  # True = a firmware whose key items cannot be written at all
+        self.pending_key = None
+        self.has_exnv = True  # Z-Stack 3.x.0: frame counters live in the security material table
+        self.sec_material: list[tuple[int, bytes]] = [(0, b"\xff" * 8)]  # (frameCounter, extPanId LE)  # model firmware that does not keep SET_NWK_FRAME_COUNTER
         self.nwk_to_ieee: dict[int, int] = {}  # populated by emit_announce; used for IEEE_ADDR_REQ
         self.on_data_request = None  # optional hook: Frame -> list[Frame] of AREQs to emit
 
@@ -76,6 +81,23 @@ class FakeZnp:
                 self.emit(Frame(FrameType.AREQ, Subsystem.SYS, c.SysCmd.RESET_IND, bytes(6)))
             elif cmd == c.SysCmd.PING:
                 self._srsp(f, b"\x79\x07")
+            elif cmd == c.SysCmd.NV_READ:  # extended NV API: security material table only
+                item, sub = int.from_bytes(f.data[1:3], "little"), int.from_bytes(f.data[3:5], "little")
+                if not self.has_exnv or item != c.EXNV_NWK_SEC_MATERIAL_TABLE or sub >= len(self.sec_material):
+                    self._srsp(f, b"\x0a")  # NV_BAD_ITEM_LEN / not found
+                else:
+                    counter, pan = self.sec_material[sub]
+                    body = counter.to_bytes(4, "little") + pan
+                    self._srsp(f, b"\x00" + bytes([len(body)]) + body)
+            elif cmd == c.SysCmd.NV_WRITE:
+                item, sub = int.from_bytes(f.data[1:3], "little"), int.from_bytes(f.data[3:5], "little")
+                value = f.data[8:]
+                if not self.has_exnv or item != c.EXNV_NWK_SEC_MATERIAL_TABLE or sub >= len(self.sec_material):
+                    self._srsp(f, b"\x0a")
+                else:
+                    self.sec_material[sub] = (int.from_bytes(value[0:4], "little"), value[4:12])
+                    self.frame_counter = self.sec_material[sub][0]
+                    self._srsp(f, b"\x00")
             elif cmd == c.SysCmd.VERSION:
                 self._srsp(f, bytes([2, 2, 2, 7, 1]) + (20220219).to_bytes(4, "little"))
             elif cmd == c.SysCmd.OSAL_NV_ITEM_INIT:
@@ -88,9 +110,18 @@ class FakeZnp:
                     self._srsp(f, b"\x00")
             elif cmd == c.SysCmd.OSAL_NV_WRITE:
                 item = int.from_bytes(f.data[0:2], "little")
+                if item in (c.NvId.NWK_ACTIVE_KEY_INFO, c.NvId.NWK_ALTERN_KEY_INFO):
+                    # Like the real firmware: the item is seq(1)+key(16) = 17 bytes; any other length
+                    # is refused with NV_OPER_FAILED, and so is everything while refuse_key_item_writes.
+                    if self.refuse_key_item_writes or len(f.data[4:]) != 17:
+                        self._srsp(f, b"\x02")
+                        return
+                    self.nv[item] = f.data[4:]
+                    if item == c.NvId.NWK_ACTIVE_KEY_INFO:
+                        self.active_key = f.data[4:][1:17]
+                    self._srsp(f, b"\x00")
+                    return
                 self.nv[item] = f.data[4:]
-                if item == c.NvId.NWK_ACTIVE_KEY_INFO and len(f.data[4:]) >= 21:
-                    self.frame_counter = int.from_bytes(f.data[4:][17:21], "little")
                 if item == c.NvId.STARTUP_OPTION and f.data[4] == 3:
                     # clear everything on next reset, like the real thing
                     self.nv = {item: f.data[4:]}
@@ -100,8 +131,9 @@ class FakeZnp:
                 item = int.from_bytes(f.data[0:2], "little")
                 if item == c.NvId.BDBNODEISONANETWORK:
                     self._srsp(f, b"\x00\x01" + (b"\x01" if self.formed else b"\x00"))
-                elif item == c.NvId.NWK_ACTIVE_KEY_INFO:
-                    body = b"\x00" + self.nv.get(c.NvId.PRECFGKEY, bytes(16))[:16] + (self.frame_counter or 0).to_bytes(4, "little")
+                elif item in (c.NvId.NWK_ACTIVE_KEY_INFO, c.NvId.NWK_ALTERN_KEY_INFO):
+                    key = self.active_key if self.active_key is not None else self.nv.get(c.NvId.PRECFGKEY, bytes(16))[:16]
+                    body = b"\x00" + key  # 17 bytes: the counter lives in the security material table
                     self._srsp(f, b"\x00" + bytes([len(body)]) + body)
                 elif item in self.nv:
                     v = self.nv[item]
@@ -123,11 +155,18 @@ class FakeZnp:
             if cmd == c.AppCnfCmd.SET_NWK_FRAME_COUNTER:
                 if not self.ignore_set_frame_counter:
                     self.frame_counter = int.from_bytes(f.data[0:4], "little")
+                    self.sec_material = [(self.frame_counter, pan) for _c, pan in self.sec_material]
             if cmd == c.AppCnfCmd.BDB_ADD_INSTALLCODE:
                 self.install_codes.append((int.from_bytes(f.data[1:9], "little"), f.data[9:]))
             self._srsp(f, b"\x00")
             if cmd == c.AppCnfCmd.BDB_START_COMMISSIONING and f.data[0] == c.CommissioningMode.NWK_FORMATION:
                 self.formed = True
+                self.sec_material = [(0, pan) for _c, pan in self.sec_material]
+                self.frame_counter = 0
+                # Like the real firmware: formation always makes up its own network key; PRECFGKEY
+                # and PRECFGKEYS_ENABLE do not change that. Only the key items (17 bytes, written
+                # while stopped) set the key.
+                self.active_key = bytes(b ^ 0x5A for b in self.nv.get(c.NvId.PRECFGKEY, bytes(16))[:16])
                 self.device_state = 9
                 self.emit(Frame(FrameType.AREQ, Subsystem.ZDO, c.ZdoCmd.STATE_CHANGE_IND, bytes([9])))
         elif ss is Subsystem.ZDO:
@@ -182,6 +221,14 @@ class FakeZnp:
                     self.emit(Frame(FrameType.AREQ, Subsystem.ZDO, c.ZdoCmd.IEEE_ADDR_RSP, Writer().u8(0).ieee(ieee).u16(nwk).u8(0).u8(0).bytes()))
                 else:
                     self.emit(Frame(FrameType.AREQ, Subsystem.ZDO, c.ZdoCmd.IEEE_ADDR_RSP, Writer().u8(0x81).ieee(0).u16(nwk).bytes()))
+            elif cmd == c.ZdoCmd.EXT_UPDATE_NWK_KEY:
+                self.pending_key = (f.data[2], f.data[3:19])
+                self._srsp(f, b"\x00")
+            elif cmd == c.ZdoCmd.EXT_SWITCH_NWK_KEY:
+                seq = f.data[2]
+                if self.pending_key and self.pending_key[0] == seq:
+                    self.active_key = self.pending_key[1]
+                self._srsp(f, b"\x00")
             elif cmd == c.ZdoCmd.MGMT_LQI_REQ:
                 nwk = int.from_bytes(f.data[0:2], "little")
                 self._srsp(f, b"\x00")

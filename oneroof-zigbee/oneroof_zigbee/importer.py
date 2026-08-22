@@ -49,6 +49,7 @@ class ImportedNetwork:
     channel: int | None = None
     frame_counter: int | None = None
     coordinator_ieee: int | None = None
+    tclk_seed: bytes | None = None  # stack_specific.zstack.tclk_seed
     source: str = ""
     warnings: list[str] = field(default_factory=list)
     addresses: dict[int, int] = field(default_factory=dict)  # ieee -> short address, from the backup's device table
@@ -268,6 +269,9 @@ def parse_coordinator_backup(text: str) -> ImportedNetwork:
             net.ext_pan_id = int.from_bytes(bytes.fromhex(h), "big")  # zigpy backup prints big-endian
     ch = b.get("channel")
     net.channel = int(ch) if isinstance(ch, int) else None
+    seed = ((b.get("stack_specific") or {}).get("zstack") or {}).get("tclk_seed")
+    if isinstance(seed, str) and len(re.sub(r"[^0-9a-fA-F]", "", seed)) == 32:
+        net.tclk_seed = bytes.fromhex(re.sub(r"[^0-9a-fA-F]", "", seed))
     ci = b.get("coordinator_ieee")
     if isinstance(ci, str):
         try:
@@ -327,6 +331,7 @@ def build_plan(*, configuration_yaml: str | None, database_db: str | None, coord
         net.frame_counter = bk.frame_counter
         net.coordinator_ieee = bk.coordinator_ieee
         net.addresses = bk.addresses
+        net.tclk_seed = bk.tclk_seed
         net.source = "coordinator_backup.json" + (" + configuration.yaml" if configuration_yaml else "")
     devices: list[ImportedDevice] = parse_database_db(database_db) if database_db else []
     by_ieee = {d.ieee: d for d in devices}
@@ -368,7 +373,8 @@ def apply_plan(plan: ImportPlan, registry: Registry, current: NetworkSecrets) ->
         secrets = NetworkSecrets(network_key=n.network_key or current.network_key, pan_id=int(n.pan_id or current.pan_id),
                                  ext_pan_id=int(n.ext_pan_id or current.ext_pan_id), channel=int(n.channel or current.channel),
                                  tc_install_code=current.tc_install_code,
-                                 frame_counter=(n.frame_counter or 0) + 100_000)  # margin so devices accept us after a re-form
+                                 frame_counter=(n.frame_counter or 0) + 100_000,  # margin so devices accept us after a re-form
+                                 tclk_seed=n.tclk_seed)
     taken = {d.friendly_name for d in registry.all()}
     for d in plan.devices:
         prev = registry.get(d.ieee)
@@ -396,6 +402,9 @@ def apply_plan(plan: ImportPlan, registry: Registry, current: NetworkSecrets) ->
             dev.interviewed = bool(dev.interviewed and dev.endpoints)  # keep a real interview, never invent one
         if d.last_state and not dev.state:
             dev.state.update({k: v for k, v in d.last_state.items() if k not in ("last_seen", "update", "update_available")})
+        lq = d.last_state.get("linkquality") if d.last_state else None
+        if dev.lqi is None and isinstance(lq, int) and 0 <= lq <= 255:
+            dev.lqi = lq  # last known link quality until the device talks again
         dev.available = True
         dev.context.setdefault("imported_from", "previous_setup")
     registry.save()

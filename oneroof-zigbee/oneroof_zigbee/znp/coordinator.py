@@ -4,8 +4,10 @@ Security posture applied at every start (not optional):
 
 1. Network key, PAN id, ext PAN id are random per installation (from the
    keystore), never the Z-Stack defaults.
-2. PRECFGKEYS_ENABLE = 0 → the network key is never *assumed* shared; it is
-   only ever transported to a joining device encrypted under a link key.
+2. PRECFGKEYS_ENABLE = 1 only while the network is formed (that is the only
+   way the firmware takes PRECFGKEY as the network key; otherwise it makes
+   up a random one), then 0 again: the key is never *assumed* shared and is
+   transported to a joining device encrypted under a link key.
 3. TC_REQUIRE_KEY_EXCHANGE = 1 → Zigbee 3.0 devices must complete the
    TCLK update after joining or they are kicked off the network.
 4. Rejoin-with-default-TCLK policy disabled → a device that lost the network
@@ -199,8 +201,27 @@ class Coordinator:
 
         await self._register_endpoint()
         await self._force_close_join()
+        await self._verify_active_key()
         if self.secrets.frame_counter:
             await self._ensure_frame_counter(self.secrets.frame_counter + FRAME_COUNTER_MARGIN)
+        asyncio.create_task(self._neighbour_check(), name="neighbour-check")
+
+    async def _neighbour_check(self) -> None:
+        """Ground truth for key/radio health: routers announce themselves every 15 s under the
+        network key; a coordinator that can decrypt them lists them as neighbours."""
+        await asyncio.sleep(45)
+        try:
+            n = await self.neighbors(0x0000)
+        except (ZnpTimeout, ZnpStatusError) as e:
+            log.warning("neighbour table unavailable (%s)", e)
+            return
+        routers = [x for x in n if x.device_type == 1]
+        log.info("coordinator hears %d neighbour(s), %d router(s)%s", len(n), len(routers),
+                 "" if n else " — nothing decrypts: wrong network key, or no router in range")
+        self.audit.event("neighbour_check", neighbours=len(n), routers=len(routers),
+                         lqi=[x.lqi for x in n][:16])
+        if not n:
+            self.audit.security("no_neighbours_heard")
 
     async def _reset(self) -> None:
         reset_ind = await self._arm(self.t.wait_for(Subsystem.SYS, SysCmd.RESET_IND, timeout=8.0))
@@ -255,13 +276,17 @@ class Coordinator:
         await self._reset()
         # 2. configure
         await self._nv_write(NvId.LOGICAL_TYPE, b"\x00")
-        await self._nv_write(NvId.PRECFGKEYS_ENABLE, b"\x00")
+        await self._nv_write(NvId.PRECFGKEYS_ENABLE, b"\x01")  # use PRECFGKEY for the network (see module doc)
         await self._nv_write(NvId.PRECFGKEY, s.network_key)
         await self._nv_write(NvId.ZDO_DIRECT_CB, b"\x01")
         await self._nv_write(NvId.PANID, s.pan_id.to_bytes(2, "little"))
         await self._nv_write(NvId.EXTPANID, s.ext_pan_id.to_bytes(8, "little"))
         await self._nv_write(NvId.APS_USE_EXT_PANID, s.ext_pan_id.to_bytes(8, "little"))
         await self._nv_write(NvId.CHANLIST, (1 << s.channel).to_bytes(4, "little"))
+        if s.tclk_seed:
+            # Imported network: devices hold link keys derived from the previous coordinator's seed.
+            await self._nv_write(NvId.TCLK_SEED, s.tclk_seed)
+            self.audit.event("tclk_seed_restored")
         await self._nv_write(NvId.STARTUP_OPTION, bytes([c.StartupOption.NONE]))
         await self._reset()
         await self._apply_runtime_security()
@@ -280,14 +305,172 @@ class Coordinator:
         coord_up = await self._arm(self._wait_coordinator_state(60.0))
         await self.t.request(c.appcnf_start_commissioning(c.CommissioningMode.NWK_FORMATION))
         await coord_up
+        # The firmware built the network state; now install our key material the way a restore
+        # does — stack stopped, items written, then started. Joining devices must receive the key
+        # (never assume it), so PRECFGKEYS_ENABLE goes back to 0.
+        await self._nv_write(NvId.PRECFGKEYS_ENABLE, b"\x00")
+        await self._reset()
+        await self._write_security_state_stopped()
+        await self._apply_runtime_security()
+        await self._startup()
         self.audit.security("network_formed", channel=s.channel, pan_id=f"{s.pan_id:#06x}")
 
+    async def _verify_active_key(self) -> None:
+        """Compare the key the radio actually uses with the keystore (never printed)."""
+        raw = await self._nv_read(NvId.NWK_ACTIVE_KEY_INFO)
+        if raw is None or len(raw) < 17:
+            log.warning("could not read the active network key item from the coordinator")
+            return
+        same = raw[1:17] == self.secrets.network_key
+        log.info("active network key on the coordinator matches the keystore: %s", "yes" if same else "NO")
+        if not same:
+            self.audit.security("network_key_mismatch")
+            try:
+                await self._repair_active_key(raw)
+            except ZnpStatusError as e:
+                log.warning("key item write refused by the firmware (%s); installing the key through the ZDO key update", e)
+                await self._install_key_via_zdo(raw[0] if raw else 0)
+        if self.secrets.tclk_seed:
+            seed = await self._nv_read(NvId.TCLK_SEED)
+            ok = seed is not None and seed[:16] == self.secrets.tclk_seed
+            log.info("trust-centre link-key seed matches the imported one: %s", "yes" if ok else "NO")
+            if not ok:
+                await self._nv_write(NvId.TCLK_SEED, self.secrets.tclk_seed)
+                self.audit.event("tclk_seed_restored")
+                log.warning("trust-centre link-key seed written from the import; takes effect on the next restart")
+
+    async def _install_key_via_zdo(self, active_seq: int) -> None:
+        """Install the keystore key with the network-key update/switch commands addressed to the
+        coordinator itself (nothing is sent over the air). The key sequence number must stay the one
+        the devices know (the imported network's, normally 0), so the same sequence is tried first."""
+        key = self.secrets.network_key
+        for seq in (active_seq, (active_seq + 1) & 0xFF):
+            done = False
+            for dst in (0x0000, 0xFFFF):  # self first; the broadcast form also installs locally and is
+                try:                       # encrypted under the current key, so nothing usable leaves
+                    await self.t.request(c.zdo_ext_update_nwk_key(dst, seq, key))
+                    await self.t.request(c.zdo_ext_switch_nwk_key(dst, seq))
+                    done = True
+                    break
+                except ZnpStatusError as e:
+                    log.warning("ZDO key update (dst %#06x, sequence %d) refused (%s)", dst, seq, e)
+            if not done:
+                continue
+            raw = await self._nv_read(NvId.NWK_ACTIVE_KEY_INFO)
+            if raw is not None and len(raw) >= 17 and raw[1:17] == key:
+                log.warning("network key installed through the ZDO key update (sequence %d)", seq)
+                self.audit.event("network_key_repaired", method="zdo", seq=seq)
+                return
+            log.info("key item still differs after the ZDO key update with sequence %d", seq)
+            if seq == active_seq:
+                continue
+        self.audit.security("network_key_unrepaired")
+        log.error("network key could not be installed; the neighbour check will show whether routers are heard")
+
+    async def _write_security_state_stopped(self) -> None:
+        """Write key items, frame counter and TC seed into NV right after a reset and BEFORE the
+        network is started — the order the firmware accepts for a restore (writes while the stack
+        runs are refused). Caller resets first and starts the network afterwards."""
+        s = self.secrets
+        counter = (s.frame_counter or 0) + FRAME_COUNTER_MARGIN if s.frame_counter else None
+        for item in (NvId.NWK_ACTIVE_KEY_INFO, NvId.NWK_ALTERN_KEY_INFO):
+            raw = await self._nv_read(item)
+            if raw is None or len(raw) < 17:
+                log.info("key item %s: %s bytes, not written", item.name, None if raw is None else len(raw))
+                continue
+            # Keep the item's exact length: seq(1) + key(16) [+ counter(4) on firmware that has it].
+            value = b"\x00" + s.network_key + raw[17:]
+            if counter is not None and len(raw) >= 21:
+                value = value[:17] + counter.to_bytes(4, "little") + value[21:]
+            try:
+                await self._nv_write(item, value)
+                log.info("key item %s (%d bytes) written", item.name, len(value))
+            except ZnpStatusError as e:
+                log.warning("write of key item %s (%d bytes) refused while stopped (%s)", item.name, len(value), e)
+        legacy = await self._nv_read(NvId.NWKKEY)
+        if legacy is not None and len(legacy) >= 17:
+            try:
+                await self._nv_write(NvId.NWKKEY, b"\x00" + s.network_key + legacy[17:])
+            except ZnpStatusError as e:
+                log.warning("write of NWKKEY refused while stopped (%s)", e)
+        await self._nv_write(NvId.PRECFGKEY, s.network_key)
+        if s.tclk_seed:
+            await self._nv_write(NvId.TCLK_SEED, s.tclk_seed)
+        if counter is not None:
+            try:
+                await self._write_frame_counter_table(counter)
+            except ZnpStatusError as e:
+                log.warning("frame counter table write refused while stopped (%s)", e)
+
+    async def _repair_active_key(self, active_raw: bytes) -> None:
+        """The radio formed the network with a key other than the keystore's (firmware variants
+        generate their own unless the key items are written explicitly). Write the active, alternate
+        and legacy key items with our key, keep the frame counter, restart the network, verify."""
+        s = self.secrets
+        await self._reset()
+        await self._write_security_state_stopped()
+        await self._apply_runtime_security()
+        await self._startup()
+        await self._register_endpoint()
+        raw = await self._nv_read(NvId.NWK_ACTIVE_KEY_INFO)
+        fixed = raw is not None and len(raw) >= 17 and raw[1:17] == s.network_key
+        if fixed:
+            log.warning("active network key rewritten from the keystore and network restarted")
+            self.audit.event("network_key_repaired", method="nv")
+        else:
+            log.warning("key items could not be rewritten; installing the key through the ZDO key update")
+            await self._install_key_via_zdo(raw[0] if raw else 0)
+
+    async def _sec_material(self) -> list[tuple[int, int, bytes]]:
+        """(subId, frameCounter, extPanId LE) entries of the security material table (Z-Stack 3.x.0);
+        empty on firmware without the extended NV API."""
+        out = []
+        for sub in range(8):
+            try:
+                rsp = await self.t.request(c.exnv_read(c.EXNV_NWK_SEC_MATERIAL_TABLE, sub, 12), check_status=False)
+            except ZnpTimeout:
+                break
+            status, value = c.decode_nv_read(rsp.data)
+            if status != 0 or len(value) < 12:
+                break
+            out.append((sub, int.from_bytes(value[0:4], "little"), value[4:12]))
+        return out
+
     async def nwk_frame_counter(self) -> int | None:
-        """The coordinator's outgoing NWK frame counter, read back from the active key item."""
+        """The coordinator's outgoing NWK frame counter. Z-Stack 3.x.0 keeps it in the security
+        material table (entry for our extended PAN id, else the generic all-FF entry); older
+        firmware in the active key item."""
+        ext = self.secrets.ext_pan_id.to_bytes(8, "little")
+        table = await self._sec_material()
+        if table:
+            for _sub, counter, pan in table:
+                if pan == ext:
+                    return counter
+            for _sub, counter, pan in table:
+                if pan == b"\xff" * 8:
+                    return counter
+            return max(counter for _s, counter, _p in table)
         raw = await self._nv_read(NvId.NWK_ACTIVE_KEY_INFO)
         if raw is None or len(raw) < 21:
             return None
         return int.from_bytes(raw[17:21], "little")
+
+    async def _write_frame_counter_table(self, value: int) -> bool:
+        """Write the counter into the security material table entries for our network (and the
+        generic one); False when the firmware has no such table."""
+        ext = self.secrets.ext_pan_id.to_bytes(8, "little")
+        table = await self._sec_material()
+        if not table:
+            return False
+        written = False
+        for sub, _counter, pan in table:
+            if pan in (ext, b"\xff" * 8):
+                await self.t.request(c.exnv_write(c.EXNV_NWK_SEC_MATERIAL_TABLE, sub, value.to_bytes(4, "little") + pan))
+                written = True
+        if not written:  # no entry for us yet: take the first slot
+            sub = table[0][0]
+            await self.t.request(c.exnv_write(c.EXNV_NWK_SEC_MATERIAL_TABLE, sub, value.to_bytes(4, "little") + ext))
+        return True
 
     async def _ensure_frame_counter(self, minimum: int) -> None:
         """Devices drop frames whose NWK counter is below the last one they saw from us, so after an
@@ -309,16 +492,21 @@ class Coordinator:
             log.info("NWK frame counter set to %d", current)
             self.audit.event("frame_counter_verified", value=current)
             return
-        raw = await self._nv_read(NvId.NWK_ACTIVE_KEY_INFO)
-        if raw is None or len(raw) < 21:
-            log.error("cannot read the active key item; frame counter stays at %s — devices may ignore us", current)
+        try:
+            if not await self._write_frame_counter_table(minimum):
+                raw = await self._nv_read(NvId.NWK_ACTIVE_KEY_INFO)
+                if raw is None or len(raw) < 21:
+                    log.error("cannot read the active key item; frame counter stays at %s — devices may ignore us", current)
+                    self.audit.security("frame_counter_unverified", value=current, needed=minimum)
+                    return
+                await self._nv_write(NvId.NWK_ACTIVE_KEY_INFO, raw[:17] + minimum.to_bytes(4, "little") + raw[21:])
+                alt = await self._nv_read(NvId.NWK_ALTERN_KEY_INFO)
+                if alt is not None and len(alt) >= 21:
+                    await self._nv_write(NvId.NWK_ALTERN_KEY_INFO, alt[:17] + minimum.to_bytes(4, "little") + alt[21:])
+        except ZnpStatusError as e:
+            log.error("firmware refuses to write the frame counter (%s); it stays at %s — devices may ignore us", e, current)
             self.audit.security("frame_counter_unverified", value=current, needed=minimum)
             return
-        patched = raw[:17] + minimum.to_bytes(4, "little") + raw[21:]
-        await self._nv_write(NvId.NWK_ACTIVE_KEY_INFO, patched)
-        alt = await self._nv_read(NvId.NWK_ALTERN_KEY_INFO)
-        if alt is not None and len(alt) >= 21:
-            await self._nv_write(NvId.NWK_ALTERN_KEY_INFO, alt[:17] + minimum.to_bytes(4, "little") + alt[21:])
         await self._reset()
         await self._apply_runtime_security()
         await self._startup()

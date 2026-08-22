@@ -1,5 +1,110 @@
 # Changelog
 
+## [1.3.10] — 2026-08-22
+
+### Changed — the restore is now the normal path, and secrets stay out of the log
+- Importing a previous setup and starting the coordinator always goes through the sequence that
+  proved to work on hardware: network formed, then — with the stack stopped — key items written at
+  their exact length, frame counter table and trust-centre seed written, then started and verified
+  (key, seed, counter, and the neighbour check). The simulated firmware in the tests now behaves
+  like the real one (ignores the pre-configured key, 17-byte key items) and an end-to-end restore
+  test guards it.
+- The add-on never prints a generated password any more (Home Assistant receives it through the
+  Supervisor; set your own in Settings → Users & access), and the start-up banner no longer shows
+  manual MQTT instructions.
+- Devices show their last known link quality (kept across restarts and seeded from the imported
+  state) instead of "—" until they next report.
+- Tuya mains devices (`_TZ…`) get the one Basic-cluster read after which they stop reporting every
+  200 ms, at configuration and once per start on their first frame.
+
+## [1.3.9] — 2026-08-22
+
+### Fixed
+- Key items are written with exactly their own length (the counter part is absent on firmware that
+  keeps counters in the security material table; a longer write was refused). The item length is
+  logged.
+- The ZDO network-key update is also tried in its broadcast form when the self-addressed form is
+  refused; it installs the key locally as well, and the broadcast is encrypted under the current key.
+
+## [1.3.8] — 2026-08-22
+
+### Fixed — Home Assistant denied everything right after a restart
+- Users managed in the web UI (and their role permissions) were loaded into the broker's access list
+  only after the coordinator had started, ~10 s after the broker opened its port. Home Assistant
+  reconnects within a second, subscribes once and keeps the denials (`acl: user 'homeassistant'
+  denied subscribe …`). Users are now loaded before the broker accepts any client.
+
+## [1.3.7] — 2026-08-22
+
+### Fixed — the imported key is installed through the network-key update
+- On firmware whose key items are read-only (confirmed: writes refused even with the stack stopped,
+  and 0 neighbours heard), the imported key is now installed with the ZDO network-key update/switch
+  commands addressed to the coordinator itself — the mechanism Zigbee uses for key rotation, nothing
+  is sent over the air. The devices' key sequence number is kept. Result is logged and recorded
+  (`network_key_repaired method=zdo`); the neighbour check 45 s later confirms it.
+
+## [1.3.6] — 2026-08-22
+
+### Fixed — key material is written the way the firmware accepts it
+- Key items, the frame counter and the trust-centre seed are now written into the coordinator
+  **while the stack is stopped** — right after a reset and before the network is started — both when
+  the network is formed for an imported setup and when a repair is needed. Writes while the network
+  runs are refused by the firmware; that is why earlier repairs did not take.
+
+## [1.3.5] — 2026-08-22
+
+### Fixed
+- The frame counter is read from the right extended-NV table (0x0007; 0x0001 is the address manager,
+  whose entries were misread as counters).
+- A key-item mismatch no longer re-forms the network at every start (destructive, and it did not
+  change the verdict on hardware); it is reported and left to the neighbour check.
+
+### Added — neighbour check
+- 45 s after start the coordinator's neighbour table is read and logged (`coordinator hears N
+  neighbour(s), M router(s)`), recorded as `neighbour_check`; an empty table raises
+  `no_neighbours_heard`. Routers announce themselves under the network key, so this is the ground
+  truth for "is the key right and is anyone in range".
+
+## [1.3.4] — 2026-08-22
+
+### Fixed — frame counter read and written where this firmware keeps it
+- On Z-Stack 3.x.0 the live NWK frame counter is kept in the security material table (extended NV
+  API), not in the legacy key item. The gateway now reads the counter from there (entry for our
+  extended PAN id, else the generic entry) and, when the SET command is not kept, writes it there
+  before restarting the network. Routers drop frames from a coordinator whose counter is below the
+  one they remember, which looks exactly like a wrong key.
+
+## [1.3.3] — 2026-08-22
+
+### Fixed — the network is formed on the keystore key
+- Confirmed on hardware: the firmware only takes `PRECFGKEY` as the network key when
+  `PRECFGKEYS_ENABLE` is 1 during formation; with 0 it made up a key of its own, so an imported
+  network was formed on the wrong key and no router ever answered. Formation now enables it for the
+  formation step only and switches it back to 0 afterwards (joining devices still receive the key
+  under a link key, never assume it).
+- A refused direct write to the key items (status 0x02) no longer crashes the gateway: the network is
+  re-formed on the keystore key instead and verified; a refused frame-counter write raises
+  `frame_counter_unverified` instead of failing the start.
+
+## [1.3.2] — 2026-08-22
+
+### Fixed — the radio's active key is repaired, not just reported
+- If the key the radio actually uses differs from the keystore's (some firmware variants form the
+  network on a key of their own unless the key items are written explicitly), the active, alternate
+  and legacy key items are rewritten with the imported key — keeping the frame counter — the network
+  is restarted and the key verified again (`network_key_repaired`). "No route" to every router
+  (`AF … 0xcd`) was the visible symptom.
+
+## [1.3.1] — 2026-08-22
+
+### Fixed — imported network: link-key seed restored, key verified
+- The previous setup's backup carries the trust-centre link-key seed the devices' individual link
+  keys were derived from; the import now keeps it and the coordinator is given it when the network is
+  formed (or at the next start if missing), so every device's link key stays valid.
+- At start the gateway checks that the key the radio actually uses equals the keystore's and that the
+  seed matches (`active network key … matches: yes/NO`, never printing either); a mismatch raises a
+  `network_key_mismatch` alert.
+
 ## [1.3.0] — 2026-08-22
 
 ### Added — device knowledge: models, vendors, private protocols

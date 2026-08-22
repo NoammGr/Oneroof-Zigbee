@@ -41,6 +41,10 @@ async def running(tmp_path, monkeypatch):
         if broker and broker.port:
             break
     assert broker is not None, "broker did not start"
+    for _ in range(500):  # formation now includes stopped-state writes and a second start-up
+        if fake.formed and fake.device_state == 9:
+            break
+        await asyncio.sleep(0.02)
     yield fake, broker, cfg
     task.cancel()
     try:
@@ -187,3 +191,39 @@ def test_config_rejects_bad_adapter_and_same_ports():
         Config.from_dict({"serial": {"port": "x"}, "mqtt": {"port": 8883, "plaintext_port": 8883}})
     c = Config.from_dict({"serial": {"port": "tcp://192.168.1.50:6638"}})
     assert c.serial.is_network
+
+
+async def test_ui_managed_user_has_permissions_the_moment_the_broker_listens(tmp_path, monkeypatch):
+    """Home Assistant reconnects within a second of the port opening and subscribes once; a
+    UI-managed user (users.yaml) must already be in the ACL at that moment."""
+    import yaml
+    fake = FakeZnp()
+
+    async def fake_open_serial(port, baudrate=115200, *, rtscts=False):
+        await asyncio.sleep(0.5)  # the coordinator takes its time; the broker must not wait for it
+        return fake.reader, fake.writer
+
+    monkeypatch.setattr(main_mod, "open_serial", fake_open_serial)
+    cfg = Config.from_dict({"serial": {"port": "fake"}, "data_dir": str(tmp_path),
+                            "mqtt": {"listen": "127.0.0.1", "port": 0, "tls": "off"}})
+    PasswordFile(cfg.mqtt.password_file).set_password("hass", "ha-password-123")
+    (tmp_path / "users.yaml").write_text(yaml.safe_dump({"users": {"hass": {"role": "homeassistant"}}}))
+    main_mod._last_broker = None
+    task = asyncio.create_task(main_mod.run(cfg))
+    broker = None
+    for _ in range(200):
+        await asyncio.sleep(0.02)
+        broker = getattr(main_mod, "_last_broker", None)
+        if broker and broker.port:
+            break
+    assert broker is not None
+    try:
+        assert broker.acl.can_subscribe("hass", "homeassistant/switch/+/config"), "permissions loaded before the port opened"
+        assert broker.acl.can_subscribe("hass", "oneroof/zigbee/bridge/state")
+        assert broker.acl.can_publish("hass", "homeassistant/status")
+    finally:
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass

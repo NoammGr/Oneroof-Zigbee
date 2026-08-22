@@ -55,6 +55,11 @@ async def run(cfg: Config, config_path: Path | None = None, *, managed: bool = F
     for name, u in cfg.mqtt.users.items():
         acl.allow(name, publish=u.publish, subscribe=u.subscribe)
     control_users = {cfg.mqtt.gateway_user, *cfg.mqtt.control_users}
+    # UI-managed users and their permissions must be in the ACL BEFORE the broker accepts clients:
+    # Home Assistant reconnects within a second and subscribes once; a denial then sticks.
+    from .admin import Admin
+    admin = Admin(cfg, config_path, passwords, acl, control_users, managed=managed)  # loads users.yaml into the ACL
+    admin.audit = audit
 
     global _last_broker
     if cfg.mqtt.external is not None:
@@ -92,9 +97,6 @@ async def run(cfg: Config, config_path: Path | None = None, *, managed: bool = F
     coord = Coordinator(transport, secrets, guard, audit, strict_install_codes=cfg.zigbee.strict_install_codes)
     await coord.start()
 
-    from .admin import Admin
-    admin = Admin(cfg, config_path, passwords, acl, control_users, managed=managed)  # also loads users.yaml (UI-managed users)
-    admin.audit = audit
     if managed and isinstance(broker, Broker):
         broker.adopt_login = admin.adopt_login  # adopt Home Assistant's existing broker login (time-boxed)
     if control_users == {cfg.mqtt.gateway_user}:

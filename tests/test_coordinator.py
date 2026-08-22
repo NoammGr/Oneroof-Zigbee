@@ -215,6 +215,7 @@ async def test_frame_counter_is_verified_after_start(firmware_keeps_set):
     from oneroof_zigbee.znp.coordinator import FRAME_COUNTER_MARGIN
     fake = FakeZnp()
     fake.ignore_set_frame_counter = not firmware_keeps_set
+    fake.refuse_key_item_writes = False  # a firmware that allows the direct write
     events = []
     audit = Audit(None)
     audit.subscribe(lambda r: events.append(r))
@@ -228,6 +229,173 @@ async def test_frame_counter_is_verified_after_start(firmware_keeps_set):
     assert fake.frame_counter == want, "coordinator really carries the imported counter"
     verified = [e for e in events if e["type"] == "frame_counter_verified"]
     assert verified and verified[-1]["value"] == want
-    assert (verified[-1].get("method") == "nv") is (not firmware_keeps_set)
     assert not [e for e in events if e["type"] == "frame_counter_unverified"]
+    await t.close()
+
+
+async def test_formation_restores_trust_centre_seed_and_start_verifies_key():
+    import dataclasses
+    fake = FakeZnp()
+    events = []
+    audit = Audit(None)
+    audit.subscribe(lambda r: events.append(r))
+    t = Transport(fake.reader, fake.writer, timeout=2.0)
+    t.start()
+    seed = bytes(range(16))
+    s = dataclasses.replace(NetworkSecrets.generate(channel=15), tclk_seed=seed)
+    coord = Coordinator(t, s, JoinGuard(JoinPolicy(cooldown_seconds=0), audit), audit)
+    await asyncio.wait_for(coord.start(), 10)
+    assert fake.nv[c.NvId.TCLK_SEED] == seed
+    assert "tclk_seed_restored" in [e["type"] for e in events]
+    assert not [e for e in events if e["type"] == "network_key_mismatch"]
+    await t.close()
+    # a radio running another key raises an alert at start
+    fake2 = FakeZnp()
+    alerts = []
+    audit2 = Audit(None)
+    audit2.subscribe(lambda r: alerts.append(r) if r["level"] == "security" else None)
+    t2 = Transport(fake2.reader, fake2.writer, timeout=2.0)
+    t2.start()
+    s2 = NetworkSecrets.generate(channel=15)
+    coord2 = Coordinator(t2, s2, JoinGuard(JoinPolicy(cooldown_seconds=0), audit2), audit2)
+    await asyncio.wait_for(coord2.start(), 10)
+    assert not [a for a in alerts if a["type"] == "network_key_mismatch"]
+    fake2.active_key = bytes(16)  # the radio "really" uses a different key now
+    fake2.refuse_key_item_writes = False  # a firmware that allows the direct write
+    events2 = []
+    audit2.subscribe(lambda r: events2.append(r))
+    await coord2._verify_active_key()
+    assert [a for a in alerts if a["type"] == "network_key_mismatch"]
+    assert "network_key_repaired" in [e["type"] for e in events2]
+    assert fake2.active_key == s2.network_key, "key items rewritten and the radio restarted on the keystore key"
+    assert not [a for a in alerts if a["type"] == "network_key_unrepaired"]
+    await t2.close()
+
+
+async def test_frame_counter_refusal_is_reported_not_fatal():
+    """Firmware that neither keeps SET_NWK_FRAME_COUNTER nor allows writing the key item: the
+    gateway starts anyway and raises an alert instead of crashing."""
+    import dataclasses
+    fake = FakeZnp()
+    fake.ignore_set_frame_counter = True
+    fake.refuse_key_item_writes = True
+    fake.has_exnv = False  # and no security material table either: nothing left to try
+    alerts = []
+    audit = Audit(None)
+    audit.subscribe(lambda r: alerts.append(r) if r["level"] == "security" else None)
+    t = Transport(fake.reader, fake.writer, timeout=2.0)
+    t.start()
+    s = dataclasses.replace(NetworkSecrets.generate(channel=15), frame_counter=44_000_000)
+    coord = Coordinator(t, s, JoinGuard(JoinPolicy(cooldown_seconds=0), audit), audit)
+    await asyncio.wait_for(coord.start(), 10)
+    assert [a for a in alerts if a["type"] == "frame_counter_unverified"]
+    await t.close()
+
+
+async def test_formation_ends_on_the_keystore_key_on_firmware_that_ignores_precfgkey():
+    """Modelled on the real firmware: formation makes up its own key; only a 17-byte key item written
+    while the stack is stopped sets it. The formed network must run on the keystore key and
+    PRECFGKEYS_ENABLE must be 0 afterwards."""
+    fake = FakeZnp()
+    audit = Audit(None)
+    alerts = []
+    audit.subscribe(lambda r: alerts.append(r) if r["level"] == "security" else None)
+    t = Transport(fake.reader, fake.writer, timeout=2.0)
+    t.start()
+    s = NetworkSecrets.generate(channel=15)
+    coord = Coordinator(t, s, JoinGuard(JoinPolicy(cooldown_seconds=0), audit), audit)
+    await asyncio.wait_for(coord.start(), 10)
+    assert fake.active_key == s.network_key
+    assert fake.nv[c.NvId.PRECFGKEYS_ENABLE][:1] == b"\x00", "never assume the key after formation"
+    assert not [a for a in alerts if a["type"] in ("network_key_mismatch", "network_key_unrepaired")]
+    await t.close()
+
+
+async def test_mismatching_key_is_repaired_with_a_length_exact_item_write():
+    fake = FakeZnp()
+    audit = Audit(None)
+    events = []
+    audit.subscribe(lambda r: events.append(r))
+    t = Transport(fake.reader, fake.writer, timeout=2.0)
+    t.start()
+    s = NetworkSecrets.generate(channel=15)
+    coord = Coordinator(t, s, JoinGuard(JoinPolicy(cooldown_seconds=0), audit), audit)
+    await asyncio.wait_for(coord.start(), 10)
+    fake.active_key = bytes(16)  # the radio runs on another key (what a formation with ENABLE=0 produced)
+    await coord._verify_active_key()
+    types = [e["type"] for e in events]
+    assert "network_key_mismatch" in types
+    repaired = [e for e in events if e["type"] == "network_key_repaired"]
+    assert repaired and repaired[-1]["method"] == "nv" and fake.active_key == s.network_key
+    assert "network_key_unrepaired" not in types
+    assert sum(1 for f in fake.requests if f.subsystem.name == "APP_CNF" and f.command == c.AppCnfCmd.BDB_START_COMMISSIONING) == 1
+    await t.close()
+
+
+@pytest.mark.parametrize("firmware_keeps_set", [True, False])
+async def test_frame_counter_via_security_material_table(firmware_keeps_set):
+    """Z-Stack 3.x.0: the counter lives in the security material table; it is read from there and,
+    when the SET command is not kept, written there (key items are not writable)."""
+    import dataclasses
+    from oneroof_zigbee.znp.coordinator import FRAME_COUNTER_MARGIN
+    fake = FakeZnp()
+    fake.ignore_set_frame_counter = not firmware_keeps_set
+    events = []
+    audit = Audit(None)
+    audit.subscribe(lambda r: events.append(r))
+    t = Transport(fake.reader, fake.writer, timeout=2.0)
+    t.start()
+    s = dataclasses.replace(NetworkSecrets.generate(channel=15), frame_counter=44_000_000)
+    coord = Coordinator(t, s, JoinGuard(JoinPolicy(cooldown_seconds=0), audit), audit)
+    await asyncio.wait_for(coord.start(), 10)
+    want = 44_000_000 + FRAME_COUNTER_MARGIN
+    assert fake.sec_material[0][0] == want
+    assert await coord.nwk_frame_counter() == want
+    assert [e for e in events if e["type"] == "frame_counter_verified"]
+    assert not [e for e in events if e["type"] == "frame_counter_unverified"]
+    await t.close()
+
+
+async def test_neighbour_check_reports_ground_truth(monkeypatch):
+    """45 s after start the coordinator's neighbour table is read; routers heard = key works."""
+    fake = FakeZnp()
+    events = []
+    audit = Audit(None)
+    audit.subscribe(lambda r: events.append(r))
+    t = Transport(fake.reader, fake.writer, timeout=2.0)
+    t.start()
+    s = NetworkSecrets.generate(channel=15)
+    coord = Coordinator(t, s, JoinGuard(JoinPolicy(cooldown_seconds=0), audit), audit)
+    real_sleep = asyncio.sleep
+    monkeypatch.setattr(asyncio, "sleep", lambda d: real_sleep(0 if d >= 45 else d))
+    await asyncio.wait_for(coord.start(), 10)
+    for _ in range(50):
+        await real_sleep(0.02)
+        if any(e["type"] == "neighbour_check" for e in events):
+            break
+    chk = next(e for e in events if e["type"] == "neighbour_check")
+    assert chk["neighbours"] == 1 and chk["routers"] == 1 and chk["lqi"] == [180]
+    assert not [e for e in events if e["type"] == "no_neighbours_heard"]
+    await t.close()
+
+
+async def test_import_restore_end_to_end_on_hostile_firmware():
+    """An imported network (key, counter, seed) ends up on the radio: formation, stopped-state writes,
+    counter table, seed — then verified at start and the neighbour check reads real neighbours."""
+    import dataclasses
+    fake = FakeZnp()
+    events = []
+    audit = Audit(None)
+    audit.subscribe(lambda r: events.append(r))
+    t = Transport(fake.reader, fake.writer, timeout=2.0)
+    t.start()
+    s = dataclasses.replace(NetworkSecrets.generate(channel=11), frame_counter=44_000_000, tclk_seed=bytes(range(16)))
+    coord = Coordinator(t, s, JoinGuard(JoinPolicy(cooldown_seconds=0), audit), audit)
+    await asyncio.wait_for(coord.start(), 10)
+    assert fake.active_key == s.network_key, "radio on the imported key"
+    assert fake.nv[c.NvId.TCLK_SEED] == s.tclk_seed, "trust-centre seed restored"
+    assert fake.sec_material[0][0] >= 44_000_000, "frame counter above the imported one"
+    types = [e["type"] for e in events]
+    assert "network_formed" in types and "frame_counter_verified" in types
+    assert "network_key_mismatch" not in types, "no mismatch after formation: the write during formation took"
     await t.close()

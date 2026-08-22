@@ -366,3 +366,17 @@ async def test_imported_devices_with_known_addresses_are_interviewed_directly(ui
     assert d.interviewed and d.endpoints[1].in_clusters == [0, 6, 8]
     assert not [f for f in fake.requests if f.subsystem.name == "ZDO" and f.command == 0x00 and f.data[:8] == (0xA4C1380000000001).to_bytes(8, "little")], \
         "no NWK_ADDR_REQ for a device whose address is known"
+
+
+def test_backup_trust_centre_seed_is_imported_into_the_secrets():
+    raw = json.loads(BACKUP_WITH_DEVICES)
+    raw["stack_specific"] = {"zstack": {"tclk_seed": "00112233445566778899aabbccddeeff"}}
+    plan = importer.build_plan(configuration_yaml=Z2M_CONFIG, database_db=None, coordinator_backup=json.dumps(raw))
+    assert plan.network.tclk_seed == bytes.fromhex("00112233445566778899aabbccddeeff")
+    from oneroof_zigbee.devices import Registry
+    import tempfile
+    from pathlib import Path
+    reg = Registry(Path(tempfile.mkdtemp()) / "d.json")
+    secrets = importer.apply_plan(plan, reg, NetworkSecrets.generate(15))
+    assert secrets.tclk_seed == plan.network.tclk_seed
+    assert NetworkSecrets.from_json(secrets.to_json()).tclk_seed == secrets.tclk_seed, "survives the keystore round trip"

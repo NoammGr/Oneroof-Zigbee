@@ -76,6 +76,7 @@ class Gateway:
         self._interview_tasks: dict[int, asyncio.Task[None]] = {}
         self._lookup_times: dict[int, float] = {}
         self._locate_task: asyncio.Task[None] | None = None
+        self._settled: set[int] = set()  # Tuya devices given their settle read this run
         self._timers: dict[tuple[int, str], asyncio.Task[None]] = {}
         self._started = False
         # optional observers (the UI attaches here); called synchronously, must not raise
@@ -290,6 +291,7 @@ class Gateway:
             dev.interviewed = True
             dev.last_seen = time.time()
             self.registry.save()
+            await self._vendor_settle(dev)
             self.audit.event("interview_done", ieee=dev.ieee_str, manufacturer=dev.manufacturer, model=dev.model,
                              endpoints={str(e.id): e.category for e in dev.endpoints.values()})
             await self._announce(dev)
@@ -323,6 +325,7 @@ class Gateway:
                     if cluster in _REPORTING and self._may_bind(policy, cluster):
                         await self._setup_reporting(dev, ep.id, cluster)
             self.registry.save()
+            await self._vendor_settle(dev)
             self.audit.event("imported_device_configured", ieee=dev.ieee_str)
             await self._announce(dev)
         except (ZnpError, asyncio.TimeoutError) as e:
@@ -341,6 +344,21 @@ class Gateway:
             await self.coord.send_aps(dev.nwk, ep, vz.TUYA_CLUSTER, gc.build_cluster_command(self._next_seq(), vz.TUYA_CMD_QUERY, b"", disable_default_response=True), wait_confirm=False)
         except (ZnpError, asyncio.TimeoutError) as e:
             log.info("%s: datapoint query failed: %s", dev.ieee_str, e)
+
+    _TUYA_SETTLE_ATTRS = [0x0004, 0x0000, 0x0001, 0x0005, 0x0007, 0xFFFE]
+
+    async def _vendor_settle(self, dev: Device) -> None:
+        """Vendor-specific one-off after configuration. Tuya mains devices keep reporting a Basic
+        cluster attribute every 200 ms until the coordinator has read this attribute set once."""
+        if not str(dev.manufacturer or "").startswith("_TZ"):
+            return
+        prim = dev.primary_endpoint()
+        ep = next((e.id for e in dev.endpoints.values() if 0x0000 in e.in_clusters), prim.id if prim else 1)
+        try:
+            await self.read_attributes(dev, ep, 0x0000, self._TUYA_SETTLE_ATTRS)
+            self._settled.add(dev.ieee)
+        except (ZnpError, asyncio.TimeoutError) as e:
+            log.info("%s: Tuya settle read failed (%s)", dev.ieee_str, e)
 
     async def _setup_reporting(self, dev: Device, ep: int, cluster: int) -> None:
         try:
@@ -449,6 +467,10 @@ class Gateway:
             return
         dev.last_seen = time.time()
         dev.lqi = m.lqi
+        if (str(dev.manufacturer or "").startswith("_TZ") and dev.ieee not in self._settled
+                and dev.ieee not in self._interview_tasks and dev.context.get("reporting_done")):
+            self._settled.add(dev.ieee)  # once per device per start (the device forgets it on its own power cycle)
+            asyncio.create_task(self._vendor_settle(dev), name=f"settle-{dev.ieee_str}")
         if dev.context.get("imported_from") and not dev.context.get("reporting_done") and dev.ieee not in self._interview_tasks:
             dev.context["reporting_done"] = True  # set first so a burst of frames schedules it once
             if dev.endpoints:

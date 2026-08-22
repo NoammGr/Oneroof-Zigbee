@@ -179,12 +179,9 @@ def ensure_password(cfg: Config, user: str, purpose: str, role: str, control: bo
         return None
     pw = secrets.token_urlsafe(24)
     Admin(cfg, CONFIG, pf, Acl(), set(), managed=True).upsert_user(user, role=role, password=pw, control=control, subscribe=None, publish=None)
-    # Shown ONCE in the add-on log.  Never written anywhere else in plaintext.
-    print("=" * 72)
-    print(f"MQTT credentials — {purpose}  (user: {user})")
-    print(f"password: {pw}")
-    print("This is the only time it is shown. Change it any time in the web UI → Settings → Users & access.")
-    print("=" * 72, flush=True)
+    # Never printed: Home Assistant receives the service login through the Supervisor; a person
+    # sets their own under web UI → Settings → Users & access.
+    print(f"Created MQTT user {user!r} {purpose}. Set your own password in the web UI → Settings → Users & access.", flush=True)
     return pw
 
 
@@ -290,10 +287,8 @@ async def main_async() -> int:
     if ca.exists():
         from oneroof_zigbee.security.tls import fingerprint
         host = os.environ.get("HOSTNAME", "")
-        print(f"MQTT TLS: CA certificate at {ca}  (SHA-256 {fingerprint(ca)})")
-        print(f"Home Assistant → Settings → Integrations → MQTT → Configure: broker = {host or '<this add-on hostname>'}, "
-              "port 8883, TLS on, user homeassistant; Advanced → upload this CA as 'Broker certificate'. "
-              "(No host port is needed inside Home Assistant.)", flush=True)
+        print(f"MQTT TLS: CA certificate at {ca}  (SHA-256 {fingerprint(ca)}) — for clients outside Home Assistant; "
+              f"inside, the broker is {host or '<this add-on hostname>'}:1883 and Home Assistant is connected automatically.", flush=True)
     hb = asyncio.create_task(heartbeat())
     try:
         try:

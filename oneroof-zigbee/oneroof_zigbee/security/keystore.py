@@ -43,6 +43,7 @@ class NetworkSecrets:
     channel: int
     tc_install_code: bytes  # 16 random bytes + CRC16: strict-mode replacement for the public TC link key
     frame_counter: int = 0
+    tclk_seed: bytes | None = None  # trust-centre link-key seed of an imported network (devices' link keys derive from it)
 
     @property
     def tc_link_key(self) -> bytes:
@@ -63,6 +64,7 @@ class NetworkSecrets:
         d = asdict(self)
         d["network_key"] = self.network_key.hex()
         d["tc_install_code"] = self.tc_install_code.hex()
+        d["tclk_seed"] = self.tclk_seed.hex() if self.tclk_seed else None
         return json.dumps(d).encode()
 
     @staticmethod
@@ -70,6 +72,8 @@ class NetworkSecrets:
         d = json.loads(raw)
         d["network_key"] = bytes.fromhex(d["network_key"])
         d["tc_install_code"] = bytes.fromhex(d["tc_install_code"])
+        if d.get("tclk_seed"):
+            d["tclk_seed"] = bytes.fromhex(d["tclk_seed"])
         return NetworkSecrets(**d)
 
     def __repr__(self) -> str:  # never leak keys through logging/repr
