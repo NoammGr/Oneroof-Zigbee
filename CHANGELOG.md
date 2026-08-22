@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.7] — 2026-08-22
+
+### Added
+- Settings → MQTT broker: **Copy CA certificate** puts the broker's CA text on the clipboard, so a
+  client outside Home Assistant (One Roof NVR and others) can be given TLS by pasting it into its
+  settings — no file transfer; the SHA-256 fingerprint shown next to it lets you compare.
+
 ## [1.6.6] — 2026-08-22
 
 ### Added — unknown devices on the network can be adopted or evicted

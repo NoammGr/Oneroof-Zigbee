@@ -32,8 +32,8 @@ Requires a TI CC2652/CC1352 coordinator (Sonoff ZBDongle-P, SMLIGHT, ZigStar, �
   builds its accessories from the device descriptions on `<base>/bridge/devices`. After updating this
   add-on, restart Bridge once so it re-reads the list.
 * **NVR** runs outside Home Assistant, so it needs a way in: in this add-on's **Network** section map
-  host port **1883** (plain MQTT on your LAN; or 8883 with the CA from `tls/ca.crt` if the NVR supports
-  TLS), create a user for it under web UI → Settings → Users & access (role *client*), and enter host,
-  port, user and password in the NVR's `mqtt:` section. Bridge then receives the NVR's events through
-  the same broker.
+  host port **8883** (TLS; or 1883 plain if the client cannot do TLS), create a user for it under
+  web UI → Settings → Users & access (role *client*), then in the NVR's MQTT settings: host, port
+  8883, user, password, TLS on, and paste the CA certificate copied from web UI → Settings → MQTT
+  broker → *Copy CA certificate*. Bridge then receives the NVR's events through the same broker.
 
