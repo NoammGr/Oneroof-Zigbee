@@ -599,3 +599,27 @@ def test_legacy_identities_for_aqara_h1_switch_tuya_smoke_and_motion():
     u = uids(motion)
     assert "0x00158d0000000002_illuminance_zigbee2mqtt" in u and "0x00158d0000000002_occupancy_zigbee2mqtt" in u
     assert not any(k in x for x in u for k in ("alarm_1", "tamper", "battery_low")), "no spurious IAS entities on Aqara motion"
+
+
+def test_discovery_payloads_never_contain_nulls():
+    """Home Assistant rejects a discovery message outright when a field is null (e.g.
+    device.sw_version); every payload for every fixture model must be null-free."""
+    import json
+    from oneroof_zigbee.ha.discovery import discovery_messages
+
+    def walk(o, path="$"):
+        if isinstance(o, dict):
+            for k, v in o.items():
+                assert v is not None, f"null at {path}.{k}"
+                walk(v, f"{path}.{k}")
+        elif isinstance(o, list):
+            for i, v in enumerate(o):
+                walk(v, f"{path}[{i}]")
+
+    for case in CASES:
+        _id, manu, model, eps, power, router, ctx, *_ = case
+        dev = mk(manu, model, eps, power=power, router=router, ctx=ctx)
+        dev.sw_build = None  # the common state right after an import
+        for legacy in (True, False):
+            for topic, payload in discovery_messages(dev, "zigbee2mqtt", "homeassistant", legacy=legacy):
+                walk(json.loads(payload), topic)

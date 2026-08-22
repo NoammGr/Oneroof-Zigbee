@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.5.3] — 2026-08-22
+
+### Fixed — Home Assistant rejected every discovery message
+- Discovery payloads carried `device.sw_version: null` for devices whose firmware build is unknown
+  (the normal state after an import). Home Assistant validates strictly and dropped the whole message
+  (`string value is None … data['device']['sw_version']`), so no entity was ever (re)created from
+  our discovery. Null fields are never emitted any more; a test scans every payload of every fixture
+  model.
+
 ## [1.5.2] — 2026-08-22
 
 ### Fixed — imported devices stayed "unavailable" in Home Assistant

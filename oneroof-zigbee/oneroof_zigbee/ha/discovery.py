@@ -54,14 +54,26 @@ _ICONS = {"action": "mdi:gesture-double-tap", "linkquality": "mdi:signal", "powe
 
 
 def _device_block(dev: Device, t: Topics) -> dict[str, Any]:
-    return {
+    block = {
         "identifiers": t.device_identifiers(dev),
         "name": dev.friendly_name,
         "manufacturer": dev.manufacturer or "Zigbee",
         "model": dev.model or "unknown",
-        "sw_version": dev.sw_build or None,
         "via_device": t.via_device(),
     }
+    if dev.sw_build:
+        block["sw_version"] = str(dev.sw_build)  # Home Assistant rejects the whole message on a null here
+    return block
+
+
+def _strip_nulls(obj: Any) -> Any:
+    """Home Assistant validates discovery payloads strictly: a null where a string is expected
+    rejects the entire entity. Never emit null values."""
+    if isinstance(obj, dict):
+        return {k: _strip_nulls(v) for k, v in obj.items() if v is not None}
+    if isinstance(obj, list):
+        return [_strip_nulls(v) for v in obj if v is not None]
+    return obj
 
 
 def _topics(base: str, prefix: str, legacy: bool) -> Topics:
@@ -100,7 +112,7 @@ def discovery_messages(dev: Device, base: str, prefix: str, *, legacy: bool = Fa
         if not legacy:
             payload["object_id"] = f"{dev.friendly_name}_{object_id}"
         payload = {k: v for k, v in payload.items() if v is not None}
-        out.append((t.discovery_topic(component, dev, object_id), json.dumps(payload).encode()))
+        out.append((t.discovery_topic(component, dev, object_id), json.dumps(_strip_nulls(payload)).encode()))
 
     feats = features_for(dev)
     by_ep: dict[int, dict[str, dict[str, Any]]] = {}
