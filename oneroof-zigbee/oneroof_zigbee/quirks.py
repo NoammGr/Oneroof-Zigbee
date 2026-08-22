@@ -204,6 +204,12 @@ _DP_COVER = (
     Dp(3, "position", "Position", access="r", unit="%", icon="arrows", category="control", min=0, max=100),
 )
 _DP_COVER_BATTERY = _DP_COVER + (Dp(13, "battery", "Battery", unit="%", icon="battery", category="diagnostic", min=0, max=100),)
+_DP_SMOKE = (
+    Dp(1, "smoke", "Smoke", type="binary", values={0: "true", 1: "false"}, icon="shield", dtype=vz.TUYA_ENUM),  # 0 = alarm
+    Dp(14, "battery_low", "Battery low", type="binary", values={0: "true", 1: "false", 2: "false"}, icon="battery", category="diagnostic", dtype=vz.TUYA_ENUM),
+    Dp(15, "battery", "Battery", unit="%", icon="battery", category="diagnostic", min=0, max=100),
+    Dp(101, "test", "Self-test", type="binary", values={0: "false", 1: "true"}, icon="shield", category="diagnostic", dtype=vz.TUYA_BOOL),
+)
 _DP_PRESENCE_RADAR = (
     Dp(1, "presence", "Presence", type="binary", values={0: "false", 1: "true"}, icon="hand", dtype=vz.TUYA_BOOL),
     Dp(2, "radar_sensitivity", "Radar sensitivity", access="rw", icon="sliders", category="config", min=0, max=9, step=1),
@@ -235,6 +241,7 @@ QUIRKS: tuple[Quirk, ...] = (
                  lumi_tags={0x64: ("contact", lambda v: not bool(v))}, description="Door/window sensor; contact via the On/Off attribute"),
     _lumi_sensor("Contact sensor", ("lumi.magnet.ac01", "lumi.magnet.acn001"), lumi_tags={0x64: ("contact", lambda v: not bool(v))}),
     _lumi_sensor("Motion sensor", ("lumi.sensor_motion", "lumi.sensor_motion.aq2"), illuminance_linear=True,
+                 remove=_SENSOR_CONTROLS + ("alarm_1", "tamper", "battery_low"),
                  lumi_tags={0x64: ("occupancy", bool), 0x65: ("illuminance_lux", 1)}),
     _lumi_sensor("Motion sensor", ("lumi.motion.ac02", "lumi.motion.agl04", "lumi.motion.ac01"), illuminance_linear=True),
     _lumi_sensor("Temperature/humidity/pressure sensor", "lumi.weather",
@@ -261,11 +268,13 @@ QUIRKS: tuple[Quirk, ...] = (
        add=(_device_temperature(), _power_outage_count(), _numeric_sensor("power", "Power", "Instantaneous active power", "W", cluster=0x000C, icon="bolt"),
             _numeric_sensor("energy", "Energy", "Total consumed energy", "kWh", cluster=0x000C, icon="bolt"))),
     _q(_AQ, "Wall switch (1 gang)", "switch", "LUMI", ("lumi.switch.b1naus01", "lumi.switch.b1laus01", "lumi.switch.l1aeu1", "lumi.switch.n1aeu1",
-                                                       "lumi.switch.b1nacn02", "lumi.switch.b1lacn02", "lumi.ctrl_neutral1", "lumi.ctrl_ln1", "lumi.ctrl_ln1.aq1"),
+                                                       "lumi.switch.b1nacn02", "lumi.switch.b1lacn02", "lumi.ctrl_neutral1", "lumi.ctrl_ln1", "lumi.ctrl_ln1.aq1",
+                                                       "lumi.switch.b1lc04", "lumi.switch.b1nc01", "lumi.switch.l1acn1"),
        remove=_AQARA_MAINS_REMOVE, multistate={41: "", 42: "", 51: ""}, add=(_device_temperature(), _power_outage_count(), _action(("single", "double", "hold"))),
        actions=("single", "double", "hold")),
     _q(_AQ, "Wall switch (2 gang)", "switch", "LUMI", ("lumi.switch.b2naus01", "lumi.switch.b2laus01", "lumi.switch.l2aeu1", "lumi.switch.n2aeu1",
-                                                       "lumi.switch.b2nacn02", "lumi.switch.b2lacn02", "lumi.ctrl_neutral2", "lumi.ctrl_ln2", "lumi.ctrl_ln2.aq1"),
+                                                       "lumi.switch.b2nacn02", "lumi.switch.b2lacn02", "lumi.ctrl_neutral2", "lumi.ctrl_ln2", "lumi.ctrl_ln2.aq1",
+                                                       "lumi.switch.b2lc04", "lumi.switch.b2nc01", "lumi.switch.l2acn1"),
        remove=_AQARA_MAINS_REMOVE, gangs=("left", "right"), gang_labels=("Left", "Right"), multistate={41: "left", 42: "right", 51: "both"},
        add=(_device_temperature(), _power_outage_count(), _action(_LUMI_TWO_BUTTON_ACTIONS)), actions=_LUMI_TWO_BUTTON_ACTIONS),
     _q(_AQ, "Wall switch (3 gang)", "switch", "LUMI", ("lumi.switch.n3acn3", "lumi.switch.l3acn3"),
@@ -299,6 +308,9 @@ QUIRKS: tuple[Quirk, ...] = (
     _q("Tuya", "Bulb (colour temperature)", "light", ("_TZ3000_*", "_TZ3210_*"), ("TS0502B", "TS0502A")),
     _q("Tuya", "Bulb (colour)", "light", ("_TZ3000_*", "_TZ3210_*"), ("TS0503B", "TS0503A", "TS0504B", "TS0504A", "TS0505B", "TS0505A")),
     _q("Tuya", "Curtain module", "cover", ("_TZ3000_*", "_TZ3210_*"), ("TS130F",), remove=("state", "power_on_behavior", "countdown")),
+    _q("Tuya", "Smoke detector", "sensor", ("_TZE200_rccxox8p", "_TZE200_ntcy3xu1", "_TZE200_m9skfctm", "_TZE200_dq1mfjug", "_TZE200_vzekyi4c",
+                                            "_TZE204_ntcy3xu1", "_TZE200_e2bedvo9", "_TZE200_aycxwiau"), "TS0601",
+       remove=_SENSOR_CONTROLS, dps=_DP_SMOKE, bind=(), description="Smoke alarm reported through datapoints"),
     _q("Tuya", "Temperature/humidity sensor", "sensor", ("_TZE200_bjawzodf", "_TZE200_zl1kmjqx"), "TS0601", remove=_SENSOR_CONTROLS, dps=_DP_TEMP_HUM_DIV10, bind=()),
     _q("Tuya", "Temperature/humidity sensor", "sensor", ("_TZE200_locansqn", "_TZE200_bq5c8xfe", "_TZE200_qoy0ekbd", "_TZE200_znbl8dj5", "_TZE200_a8sdabtg",
                                                          "_TZE200_qyflbnbj", "_TZE200_utkemkbs", "_TZE204_qyflbnbj", "_TZE204_yjjdcqsq", "_TZE200_yjjdcqsq"),

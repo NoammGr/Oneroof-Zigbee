@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.4.5] — 2026-08-22
+
+### Fixed — entity identities for common models
+- Aqara H1 wall switches (`lumi.switch.b1lc04/b2lc04`, `b1nc01/b2nc01`, `l1acn1/l2acn1`) are wall
+  switches, not remotes: `switch_left`/`switch_right` entities are published again with the previous
+  identities, plus device temperature, power-outage count and button actions.
+- Tuya smoke detectors (`TS0601`, `_TZE200_rccxox8p` and siblings): smoke, battery, battery-low and
+  self-test from datapoints.
+- Aqara motion sensors no longer get spurious IAS alarm/tamper/battery-low entities; illuminance uses
+  the previous layout's `illuminance` object id.
+
 ## [1.4.4] — 2026-08-22
 
 ### Added — security requirements

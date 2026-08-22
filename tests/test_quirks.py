@@ -63,7 +63,7 @@ CASES = [
     ("aqara_magnet_onoff_server", "LUMI", "lumi.sensor_magnet", {1: ([0x0000, 0x0003, 0x0006, 0xFFFF], [0x0019], 0x5F01)}, "battery", False, None,
      "Contact sensor", "sensor", {"contact", "battery"}, {"state", "power_on_behavior", "countdown"}, {"contact": ("binary_sensor", "door")}),
     ("aqara_motion", "LUMI", "lumi.sensor_motion.aq2", {1: ([0x0000, 0x0003, 0x0400, 0x0406, 0xFFFF], [0x0000, 0x0019], 0x0107)}, "battery", False, None,
-     "Motion sensor", "sensor", {"occupancy", "illuminance_lux", "battery"}, {"state"}, {"occupancy": ("binary_sensor", "motion"), "illuminance_lux": ("sensor", "illuminance")}),
+     "Motion sensor", "sensor", {"occupancy", "illuminance_lux", "battery"}, {"state"}, {"occupancy": ("binary_sensor", "motion"), "illuminance": ("sensor", "illuminance")}),
     ("aqara_weather", "LUMI", "lumi.weather", {1: ([0x0000, 0x0001, 0x0003, 0x0402, 0x0403, 0x0405, 0xFFFF], [0x0000, 0x0004, 0xFFFF], 0x5F01)}, "battery", False, None,
      "Temperature/humidity/pressure sensor", "sensor", {"temperature", "humidity", "pressure", "battery", "voltage"}, {"state", "identify"},
      {"temperature": ("sensor", "temperature"), "humidity": ("sensor", "humidity"), "pressure": ("sensor", "pressure")}),
@@ -567,3 +567,35 @@ async def test_gateway_lock_command(tmp_path):
     lock = json.loads(broker.last(f"homeassistant/lock/{dev.ieee_str}/lock/config"))
     assert lock["payload_lock"] == '{"state": "LOCK"}' and lock["state_locked"] == "LOCK"
     await t.close()
+
+
+def test_legacy_identities_for_aqara_h1_switch_tuya_smoke_and_motion():
+    """Entity identities the previous layout used for these models must be reproduced exactly,
+    or Home Assistant creates new entities and dashboards break."""
+    import json
+    from oneroof_zigbee.devices import Device, Endpoint
+    from oneroof_zigbee.ha.discovery import discovery_messages
+
+    def uids(dev):
+        return {json.loads(p)["unique_id"] for _t, p in discovery_messages(dev, "zigbee2mqtt", "homeassistant", legacy=True)}
+
+    sw = Device(ieee=0x54EF440000000001, nwk=0x2345, friendly_name="Room switch", manufacturer="LUMI", model="lumi.switch.b2lc04")
+    sw.endpoints[1] = Endpoint(1, 0x0104, 0x0100, [0, 3, 4, 5, 6, 0xFCC0], [], "switch")
+    sw.endpoints[2] = Endpoint(2, 0x0104, 0x0100, [4, 5, 6], [], "switch")
+    sw.interviewed = True
+    assert sw.kind == "Wall switch (2 gang)"
+    assert {"0x54ef440000000001_switch_left_zigbee2mqtt", "0x54ef440000000001_switch_right_zigbee2mqtt",
+            "0x54ef440000000001_device_temperature_zigbee2mqtt"} <= uids(sw)
+
+    smoke = Device(ieee=0xA4C1380000000002, nwk=0x4567, friendly_name="Smoke", manufacturer="_TZE200_rccxox8p", model="TS0601")
+    smoke.endpoints[1] = Endpoint(1, 0x0104, 0x0051, [0, 4, 5, 0xEF00], [0x19, 0xA], "sensor")
+    smoke.interviewed = True
+    assert smoke.kind == "Smoke detector"
+    assert {"0xa4c1380000000002_smoke_zigbee2mqtt", "0xa4c1380000000002_battery_zigbee2mqtt"} <= uids(smoke)
+
+    motion = Device(ieee=0x00158D0000000002, nwk=0x3457, friendly_name="Stairs", manufacturer="LUMI", model="lumi.sensor_motion.aq2")
+    motion.endpoints[1] = Endpoint(1, 0x0104, 0x0107, [0, 0xFFFF, 0x406, 0x400, 0x500, 1, 3], [0, 0x19], "sensor")
+    motion.interviewed = True
+    u = uids(motion)
+    assert "0x00158d0000000002_illuminance_zigbee2mqtt" in u and "0x00158d0000000002_occupancy_zigbee2mqtt" in u
+    assert not any(k in x for x in u for k in ("alarm_1", "tamper", "battery_low")), "no spurious IAS entities on Aqara motion"

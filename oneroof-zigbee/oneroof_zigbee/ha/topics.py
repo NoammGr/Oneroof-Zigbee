@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from ..devices import Device
 
 # our object ids → legacy-layout object ids where they differ
-_Z2M_OBJECT = {"voltage_ac": "voltage", "light": "light", "switch": "switch"}
+_Z2M_OBJECT = {"voltage_ac": "voltage", "light": "light", "switch": "switch", "illuminance_lux": "illuminance"}
 
 
 @dataclass(frozen=True)
