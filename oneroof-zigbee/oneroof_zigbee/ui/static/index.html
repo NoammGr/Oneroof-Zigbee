@@ -1017,7 +1017,7 @@ views.pair={
     let list=[];try{list=(await api('api/unknown')).devices||[];}catch(e){}
     clear(this.unknownBox);if(!list.length)return;
     const rows=list.map(u=>el('div',{class:'bar',style:'justify-content:space-between;padding:8px 0;border-top:1px solid var(--line)'},
-      el('div',null,el('div',{class:'mono',text:u.ieee}),el('div',{class:'sub',text:'address '+u.nwk+' · '+u.frames+' frame(s) · clusters '+(u.clusters||[]).join(', ')+(u.lqi!=null?' · LQI '+u.lqi:'')+' · last '+rel(u.last_seen)})),
+      el('div',null,el('div',null,el('span',{class:'mono',text:u.ieee}),u.vendor?el('span',{class:'sub',text:'  '+u.vendor}):null),el('div',{class:'sub',text:'address '+u.nwk+' · '+u.frames+' frame(s) · clusters '+(u.clusters||[]).join(', ')+(u.lqi!=null?' · LQI '+u.lqi:'')+' · last '+rel(u.last_seen)})),
       el('div',{class:'bar'},
         el('button',{class:'btn primary',text:'Adopt',disabled:!ok,onclick:async()=>{try{await api('api/unknown/'+u.ieee+'/adopt',{});toast('Adopted '+u.ieee+' — interviewing');this.loadUnknown(ok);}catch(e){toast(e.message,true);}}}),
         el('button',{class:'btn danger',text:'Evict',disabled:!ok,onclick:async()=>{if(!(await confirmDlg('Evict '+u.ieee+'?',[el('p',{text:'The device is told to leave the network. It keeps working only if it is re-paired.'})],'Evict',true)))return;try{await api('api/unknown/'+u.ieee+'/evict',{});toast('Evicted '+u.ieee);this.loadUnknown(ok);}catch(e){toast(e.message,true);}}}))));

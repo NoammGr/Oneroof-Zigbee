@@ -7,7 +7,7 @@ OUI: dict[int, str] = {
     0x00124B: "Texas Instruments", 0x001788: "Signify (Philips Hue)",
     0x000D6F: "Silicon Labs (Ember)", 0x90FD9F: "Silicon Labs", 0x842E14: "Silicon Labs", 0x8CF681: "Silicon Labs",
     0x04CF8C: "Xiaomi / Aqara (Lumi)", 0x54EF44: "Aqara (Lumi)", 0x00158D: "Xiaomi / Aqara (Lumi)",
-    0xA4C138: "Telink Semiconductor", 0x3C6A2C: "Telink Semiconductor", 0x847127: "Telink Semiconductor",
+    0xA4C138: "Telink Semiconductor (Tuya devices)", 0x3C6A2C: "Telink Semiconductor", 0x847127: "Telink Semiconductor",
     0x000B57: "IKEA (Silicon Labs module)", 0xCCCCCC: "IKEA", 0x5C0272: "IKEA", 0x7CB03E: "IKEA", 0xF4B3B1: "IKEA",
     0x14B457: "Legrand / Netatmo", 0x0015BC: "Develco Products", 0x0022A3: "Develco Products",
     0x00137A: "Innr / Sengled", 0xB0CE18: "Sengled", 0x0024B5: "Sengled",

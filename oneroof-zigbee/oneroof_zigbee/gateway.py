@@ -594,8 +594,9 @@ class Gateway:
                 if f"{m.cluster:#06x}" not in known["clusters"]:
                     known["clusters"].append(f"{m.cluster:#06x}")
                 if known["frames"] in (1, 10, 100, 1000):  # one alert, then decreasingly often
-                    self.audit.security("traffic_from_unknown_device", ieee=known["ieee"], nwk=known["nwk"],
-                                        cluster=f"{m.cluster:#06x}", frames=known["frames"])
+                    self.audit.security("traffic_from_unknown_device", ieee=known["ieee"], nwk=known["nwk"], vendor=known.get("vendor"),
+                                        cluster=f"{m.cluster:#06x}", frames=known["frames"],
+                                        hint="see Pair → Unknown devices to adopt or evict")
             else:
                 self.audit.security("traffic_from_unknown_device", nwk=f"{m.src_addr:#06x}", cluster=f"{m.cluster:#06x}")
             return
@@ -826,7 +827,9 @@ class Gateway:
             return None
         dev = self.registry.get(ieee)
         if dev is None:
-            rec = self.unknown_devices.setdefault(ieee, {"ieee": ieee_str(ieee), "first_seen": time.time(), "frames": 0, "clusters": []})
+            from .oui import vendor_of
+            rec = self.unknown_devices.setdefault(ieee, {"ieee": ieee_str(ieee), "vendor": vendor_of(ieee), "first_seen": time.time(),
+                                                         "frames": 0, "clusters": []})
             rec["nwk"] = f"{nwk:#06x}"
             return None
         self.registry.add_or_update(ieee, nwk)

@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.7.2] — 2026-08-22
+
+### Changed
+- Unknown-device alerts and the Pair page list show the vendor derived from the address block
+  (e.g. Tuya devices) and point to Pair → Unknown devices to adopt or evict.
+
 ## [1.7.1] — 2026-08-22
 
 ### Changed

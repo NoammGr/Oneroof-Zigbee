@@ -303,7 +303,7 @@ async def test_07_rename_describe_bind_reporting_read(stack):
     bind_req = [f for f in s.fake.requests if f.subsystem.name == "ZDO" and f.command == 0x21][-1]
     assert int.from_bytes(bind_req.data[14:22], "little") == SENS_IEEE, "bind destination is the other device, not the coordinator"
     st, d_json = await api(s, "GET", f"/api/devices/{ieee}")
-    assert d_json["friendly_name"] == "Garage plug" and d_json["description"] == "Behind the workbench" and d_json["oui_vendor"] == "Telink Semiconductor"
+    assert d_json["friendly_name"] == "Garage plug" and d_json["description"] == "Behind the workbench" and d_json["oui_vendor"] == "Telink Semiconductor (Tuya devices)"
     assert {f["key"] for f in d_json["exposes"]} >= {"state", "power_on_behavior", "countdown", "power", "energy", "identify"}
 
 
