@@ -56,7 +56,9 @@ def test_sensors_and_description_shape():
     d = desc["definition"]
     assert d["vendor"] and d["model"] == "lumi.sensor_magnet.aq2" and d["description"] == "Contact sensor"
     props = {e["property"]: e for e in d["exposes"] if "property" in e}
-    assert props["contact"]["type"] == "binary" and props["contact"]["access"] == ACCESS_STATE and props["contact"]["value_on"] is True
+    # contact: true = closed, so the ACTIVE (open) value is false — the polarity bridges rely on
+    assert props["contact"]["type"] == "binary" and props["contact"]["access"] == ACCESS_STATE
+    assert props["contact"]["value_on"] is False and props["contact"]["value_off"] is True
     assert props["battery"]["type"] == "numeric" and props["battery"]["unit"] == "%"
     assert "linkquality" in props
     # nothing settable on a sensor

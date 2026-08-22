@@ -128,6 +128,11 @@ def exposes_for(dev: Device) -> list[dict[str, Any]]:
         if typ == "binary":
             if key == "child_lock":
                 out.append(_binary(f, "LOCK", "UNLOCK", None))
+            elif f["base"] == "contact":
+                # Contact is the one sensor defined "backwards": the value is true when CLOSED, so
+                # the alarm/active state (open) is value_on=false — exactly what the previous setup
+                # declared and what Apple Home bridges key their polarity on.
+                out.append(_binary(f, False, True))
             elif f["access"] == "r":
                 out.append(_binary(f))
             else:

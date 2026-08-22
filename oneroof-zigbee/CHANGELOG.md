@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.6.3] — 2026-08-22
+
+### Fixed — door sensors showed the opposite state in Apple Home
+- In the device descriptions on `bridge/devices`, `contact` now declares `value_on: false`: the
+  value is true when the door is *closed*, so the active (open) state is false — the convention the
+  previous setup used and that bridges key their polarity on. Home Assistant was already right
+  (`door` class template); Apple Home via One Roof Bridge showed open for closed.
+
 ## [1.6.2] — 2026-08-22
 
 ### Fixed — phantom entities from earlier descriptions

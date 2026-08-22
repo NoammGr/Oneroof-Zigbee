@@ -468,7 +468,7 @@ async def test_gateway_aqara_report_publishes_contact_and_battery(tmp_path):
     assert state["contact"] is True and "state" not in state
     disc = json.loads(broker.last(f"homeassistant/binary_sensor/{dev.ieee_str}/contact/config"))
     assert disc["device_class"] == "door"
-    assert broker.last(f"homeassistant/switch/{dev.ieee_str}/switch/config") is None
+    assert not broker.last(f"homeassistant/switch/{dev.ieee_str}/switch/config")  # absent, or blanked by the sweep
     assert json.loads(broker.last("oneroof/zigbee/bridge/devices"))[0]["kind"] == "Contact sensor"
     await t.close()
 
