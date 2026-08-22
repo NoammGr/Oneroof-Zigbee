@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.6.0] — 2026-08-22
+
+### Added — device descriptions for the other One Roof apps
+- `<base>/bridge/devices` now carries, for every device, the *exposes* description the previous
+  setup published (`ieee_address`, `type`, `supported`, `definition.vendor/model/description/exposes`
+  with light/switch/lock/cover/climate composites and binary/numeric/enum features, access bits,
+  per-gang endpoints), derived from our own feature format. One Roof Bridge builds its Apple Home
+  accessories from it and One Roof NVR reads the same list — both connect through the MQTT service
+  the add-on registers with the Supervisor, so no credentials are typed anywhere.
+
 ## [1.5.7] — 2026-08-22
 
 ### Changed

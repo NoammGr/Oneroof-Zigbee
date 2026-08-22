@@ -848,10 +848,18 @@ class Gateway:
             "strict_install_codes": self.coord.strict, "device_count": len(devs),
         }
         await self.broker.publish(f"{self.base}/bridge/info", json.dumps(info).encode(), retain=True)
-        devices = [{"ieee": d.ieee_str, "friendly_name": d.friendly_name, "manufacturer": d.manufacturer, "model": d.model,
-                    "vendor": d.vendor, "kind": d.kind, "category": d.category,
-                    "interviewed": d.interviewed, "router": d.is_router,
-                    "endpoints": {str(e.id): e.category for e in d.endpoints.values()}} for d in devs]
+        from .ha.exposes import device_description
+        devices = []
+        for d in devs:
+            entry = {"ieee": d.ieee_str, "friendly_name": d.friendly_name, "manufacturer": d.manufacturer, "model": d.model,
+                     "vendor": d.vendor, "kind": d.kind, "category": d.category,
+                     "interviewed": d.interviewed, "router": d.is_router,
+                     "endpoints": {str(e.id): e.category for e in d.endpoints.values()}}
+            try:
+                entry.update(device_description(d))  # the exposes description other One Roof apps build on
+            except Exception:
+                log.exception("exposes for %s", d.ieee_str)
+            devices.append(entry)
         await self.broker.publish(f"{self.base}/bridge/devices", json.dumps(devices).encode(), retain=True)
 
     async def _announce(self, dev: Device) -> None:
