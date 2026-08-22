@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.6.4] — 2026-08-22
+
+### Changed
+- A failed interview is retried on contact at most every 10 minutes (a chatty device used to trigger
+  a descriptor request on every frame).
+- A device whose model is known and whose values are flowing no longer shows "not interviewed" in
+  the State column; the About badge says "descriptors not read yet · retried when the device is
+  awake" with the reason on hover. Battery sensors sleep too fast for descriptor requests and work
+  fully without them.
+
 ## [1.6.3] — 2026-08-22
 
 ### Fixed — door sensors showed the opposite state in Apple Home

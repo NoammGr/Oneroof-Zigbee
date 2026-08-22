@@ -410,7 +410,8 @@ class Gateway:
         except Exception as e:
             log.warning("interview of %s failed: %s", dev.ieee_str, e)
             dev.interview_error = str(e)
-            dev.context.pop("reporting_done", None)  # try again when the device next talks
+            dev.context.pop("reporting_done", None)  # try again when the device next talks …
+            dev.context["interview_retry_at"] = time.time() + 600  # … but not before 10 minutes have passed
             self.audit.event("interview_failed", ieee=dev.ieee_str, error=str(e))
             self.registry.save()
         finally:
@@ -583,7 +584,8 @@ class Gateway:
                 and dev.ieee not in self._interview_tasks and dev.context.get("reporting_done")):
             self._settled.add(dev.ieee)  # once per device per start (the device forgets it on its own power cycle)
             asyncio.create_task(self._vendor_settle(dev), name=f"settle-{dev.ieee_str}")
-        if dev.context.get("imported_from") and not dev.context.get("reporting_done") and dev.ieee not in self._interview_tasks:
+        if (dev.context.get("imported_from") and not dev.context.get("reporting_done") and dev.ieee not in self._interview_tasks
+                and time.time() >= dev.context.get("interview_retry_at", 0)):
             dev.context["reporting_done"] = True  # set first so a burst of frames schedules it once
             if dev.endpoints and dev.interviewed:
                 self._interview_tasks[dev.ieee] = asyncio.create_task(self._post_import_setup(dev), name=f"post-import-{dev.ieee_str}")

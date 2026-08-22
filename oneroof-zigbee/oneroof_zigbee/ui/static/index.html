@@ -617,7 +617,7 @@ views.devices={
       el('td',{class:'sub'},el('div',{text:d.kind||'—'}),el('div',{class:'mute',text:(d.vendor?d.vendor+' · ':'')+(d.is_router?'Router':'End device')})),lqi,seenTd,stateTd,ctl,
       el('td',{onclick:stop},this.menu(d,ok)));
     tr.addEventListener('click',()=>{location.hash='#device/'+encodeURIComponent(d.ieee);});
-    const upd=()=>{clear(lqi).append(el('span',{class:'lqi'},el('i',{style:'width:'+Math.min(100,(d.lqi||0)/255*100)+'%'})),String(d.lqi??'—'));seenTd.textContent=rel(d.last_seen);stateTd.textContent=d.interviewed===false?(d.interview_error?'not interviewed · '+(stateSummary(d.state)||'no state yet'):'interviewing…'):stateSummary(d.state);avail.className='dot'+(d.available?' on':'');};
+    const upd=()=>{clear(lqi).append(el('span',{class:'lqi'},el('i',{style:'width:'+Math.min(100,(d.lqi||0)/255*100)+'%'})),String(d.lqi??'—'));seenTd.textContent=rel(d.last_seen);stateTd.textContent=d.interviewed===false?(d.interview_error?((d.model&&stateSummary(d.state))?stateSummary(d.state):'not interviewed · '+(stateSummary(d.state)||'no state yet')):'interviewing…'):stateSummary(d.state);avail.className='dot'+(d.available?' on':'');};
     upd();this.rows.set(d.ieee,{tr,upd,ctl,d});return tr;
   },
   controls(d,cl){
@@ -760,7 +760,7 @@ views.device={
       el('span',{class:'badge',text:d.kind||(d.is_router?'Router':'End device')}),
       el('span',{class:'badge',text:d.is_router?'Router':'End device'}),
       el('span',{class:'badge'},svg(/batt/i.test(d.power_source||'')?'battery':'bolt'),powerLabel(d.power_source)),
-      d.interviewed?el('span',{class:'badge ok',text:'✓ interviewed'}):el('span',{class:'badge danger',text:d.interview_error?'interview failed: '+d.interview_error:'not interviewed'}),
+      d.interviewed?el('span',{class:'badge ok',text:'✓ interviewed'}):el('span',{class:(d.model&&d.interview_error)?'badge':'badge danger',title:d.interview_error||'',text:d.interview_error?((d.model?'descriptors not read yet':'interview failed')+' · retried when the device is awake'):'not interviewed'}),
       el('span',{class:'badge'+(d.available?' ok':'')},el('i',{class:'dot'+(d.available?' on':'')}),d.available?'online':'offline'));
     const acts=el('div',{class:'acts'},
       el('button',{class:'btn',onclick:async()=>{try{await api(dpath(d,'/identify'),{});toast('Identify sent');}catch(e){toast(e.message,true);}}},svg('sun'),'Identify'),
