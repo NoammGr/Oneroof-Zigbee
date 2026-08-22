@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.7.1] — 2026-08-22
+
+### Changed
+- Activity/Logs rows show the device's name (linked to its page) next to every record that carries
+  an address.
+- A battery device with known model knowledge that answers one descriptor request and then sleeps is
+  considered described ("described by model knowledge") instead of failing its interview forever —
+  its features come from the model table anyway. Mains devices and unknown models still report a
+  real failure.
+
 ## [1.7.0] — 2026-08-22
 
 ### Added — Telegram notifications, with a strict outbound policy

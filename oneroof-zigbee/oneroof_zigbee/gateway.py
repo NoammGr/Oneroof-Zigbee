@@ -409,6 +409,20 @@ class Gateway:
         except asyncio.CancelledError:
             raise
         except Exception as e:
+            sleepy = not (dev.is_router or dev.rx_on_when_idle)
+            known = bool(dev.model) and quirks.describe(dev).quirk is not None
+            if sleepy and known and isinstance(e, (ZnpError, asyncio.TimeoutError)):
+                # A battery device answers one request and sleeps again; its features come from model
+                # knowledge, so the descriptors add nothing. Consider it described and stop retrying.
+                dev.interviewed = True
+                dev.interview_error = None
+                dev.context["described_by"] = "model"
+                self.audit.event("interview_done", ieee=dev.ieee_str, manufacturer=dev.manufacturer, model=dev.model,
+                                 described_by="model knowledge", note=f"descriptors not read ({e})")
+                self.registry.save()
+                await self._announce(dev)
+                self._emit_device_event("interviewed", dev)
+                return
             log.warning("interview of %s failed: %s", dev.ieee_str, e)
             dev.interview_error = str(e)
             dev.context.pop("reporting_done", None)  # try again when the device next talks …

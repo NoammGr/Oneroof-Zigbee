@@ -431,3 +431,28 @@ async def test_unknown_device_is_tracked_and_can_be_adopted_or_evicted(tmp_path)
     await gw.evict_unknown(0xA4C1380000000056, "ui:admin")
     assert not gw.list_unknown() and any(f.subsystem is Subsystem.ZDO and f.command == c.ZdoCmd.MGMT_LEAVE_REQ for f in fake.requests)
     await t.close()
+
+
+async def test_sleepy_known_model_counts_as_described_when_descriptors_time_out(tmp_path, monkeypatch):
+    from oneroof_zigbee.znp import ZnpTimeout
+    fake, coord, broker, gw, t = await make(tmp_path)
+    dev = gw.registry.add_or_update(0x00158D0000000031, 0x3131, is_router=False)
+    dev.manufacturer, dev.model = "LUMI", "lumi.sensor_motion.aq2"
+    dev.interviewed = False
+    events = []
+    coord.audit.subscribe(lambda r: events.append(r))
+
+    async def sleepy(*a, **k):
+        raise ZnpTimeout("no ZDO:0x85 within 10.0s")
+    monkeypatch.setattr(coord, "node_descriptor", sleepy)
+    await gw._interview(dev)
+    assert dev.interviewed and dev.interview_error is None and dev.context["described_by"] == "model"
+    done = [e for e in events if e["type"] == "interview_done"]
+    assert done and done[-1]["described_by"] == "model knowledge"
+    assert not [e for e in events if e["type"] == "interview_failed"]
+    # a mains device with an unknown model still fails honestly
+    plug = gw.registry.add_or_update(0x00158D0000000032, 0x3232, is_router=True)
+    plug.interviewed = False
+    await gw._interview(plug)
+    assert not plug.interviewed and plug.interview_error
+    await t.close()
