@@ -30,7 +30,7 @@ from ..security import Audit, JoinGuard, NetworkSecrets, derive_link_key
 from . import commands as c
 from .commands import AfCmd, NvId, SysCmd, ZdoCmd
 from .transport import Transport, ZnpStatusError, ZnpTimeout
-from .unpi import Frame, Subsystem
+from .unpi import Frame, FrameType, Subsystem
 
 log = logging.getLogger("oneroof_zigbee.znp.coordinator")
 
@@ -109,6 +109,7 @@ class Coordinator:
         self.t.on(Subsystem.ZDO, ZdoCmd.TC_DEV_IND, self._on_tc_dev)
         self.t.on(Subsystem.ZDO, ZdoCmd.LEAVE_IND, self._on_leave)
         self.t.on(Subsystem.ZDO, ZdoCmd.PERMIT_JOIN_IND, self._on_permit_ind)
+        self.t.on(Subsystem.ZDO, ZdoCmd.MSG_CB_INCOMING, self._on_zdo_forwarded)
         self.t.on(Subsystem.SYS, SysCmd.RESET_IND, lambda f: log.warning("coordinator reset indication %s", f.data.hex()))
 
     async def _on_incoming(self, f: Frame) -> None:
@@ -125,6 +126,19 @@ class Coordinator:
         fut = self._pending_confirms.pop(d.trans_id, None)
         if fut and not fut.done():
             fut.set_result(d.status)
+
+    def _on_zdo_forwarded(self, f: Frame) -> None:
+        """Firmware that forwards ZDO responses only through the message callback (after
+        MSG_CB_REGISTER) delivers them in a generic envelope; re-issue the classic indication so
+        the waiters in node_descriptor()/active_endpoints()/bind()/… see them."""
+        d = c.decode_msg_cb_incoming(f.data)
+        if d is None:
+            return
+        src, cluster, payload = d
+        mt = c.ZDO_RSP_CLUSTER_TO_MT.get(cluster)
+        if mt is None:
+            return
+        self.t.inject(Frame(FrameType.AREQ, Subsystem.ZDO, mt, src.to_bytes(2, "little") + payload))
 
     async def _on_announce(self, f: Frame) -> None:
         a = c.decode_end_device_annce(f.data)
@@ -209,6 +223,7 @@ class Coordinator:
                                 keystore_pan_id=f"{self.secrets.pan_id:#06x}", keystore_channel=self.secrets.channel)
 
         await self._register_endpoint()
+        await self._register_zdo_callbacks()
         await self._force_close_join()
         await self._verify_active_key()
         if self.secrets.frame_counter:
@@ -577,6 +592,14 @@ class Coordinator:
             di = c.decode_device_info((await self.t.request(c.util_get_device_info())).data)
             if di.device_state != c.DeviceState.ZB_COORD:
                 raise
+
+    async def _register_zdo_callbacks(self) -> None:
+        """Ask for all ZDO messages to be forwarded: some firmware builds deliver device-level
+        responses (node/simple descriptors, bind, active endpoints) only this way."""
+        try:
+            await self.t.request(c.zdo_msg_cb_register(0xFFFF))
+        except ZnpStatusError as e:
+            log.info("ZDO message callback registration refused (%s); relying on direct indications", e)
 
     async def _register_endpoint(self) -> None:
         try:

@@ -5,7 +5,7 @@ import pytest
 from oneroof_zigbee.security import Audit, JoinGuard, JoinPolicy, JoinPolicyError, NetworkSecrets, parse_install_code
 from oneroof_zigbee.znp import Coordinator, Transport
 from oneroof_zigbee.znp import commands as c
-from oneroof_zigbee.znp.unpi import Subsystem
+from oneroof_zigbee.znp.unpi import Frame, FrameType, Subsystem
 from oneroof_zigbee.znp.wire import Writer
 from tests.fake_znp import FakeZnp
 
@@ -398,4 +398,34 @@ async def test_import_restore_end_to_end_on_hostile_firmware():
     types = [e["type"] for e in events]
     assert "network_formed" in types and "frame_counter_verified" in types
     assert "network_key_mismatch" not in types, "no mismatch after formation: the write during formation took"
+    await t.close()
+
+
+async def test_forwarded_zdo_responses_satisfy_the_waiters():
+    """Firmware that only forwards ZDO responses through the message callback: the generic
+    envelope is converted to the classic indication and node_descriptor()/bind() complete."""
+    fake = FakeZnp()
+    fake.requests.clear()
+    t = Transport(fake.reader, fake.writer, timeout=2.0)
+    t.start()
+    audit = Audit(None)
+    coord = Coordinator(t, NetworkSecrets.generate(channel=15), JoinGuard(JoinPolicy(cooldown_seconds=0), audit), audit)
+    await asyncio.wait_for(coord.start(), 10)
+    assert any(f.subsystem is Subsystem.ZDO and f.command == c.ZdoCmd.MSG_CB_REGISTER and f.data == b"\xff\xff" for f in fake.requests), "registered for all ZDO messages"
+
+    async def answer_via_callback(cluster, payload, delay=0.05):
+        await asyncio.sleep(delay)
+        env = Writer().u16(0x1234).u8(0).u16(cluster).u8(0).u8(7).u16(0).raw(payload).bytes()
+        fake.emit(Frame(FrameType.AREQ, Subsystem.ZDO, c.ZdoCmd.MSG_CB_INCOMING, env))
+
+    # Node_Desc_rsp: status 0, nwk 0x1234, then a descriptor (router, manufacturer 0x1037)
+    desc = bytes([0x01, 0x40, 0x8E]) + (0x1037).to_bytes(2, "little") + bytes([0x7F]) + (0x0064).to_bytes(2, "little") + bytes(5)
+    task = asyncio.create_task(answer_via_callback(0x8002, b"\x00" + (0x1234).to_bytes(2, "little") + desc))
+    nd = await coord.node_descriptor(0x1234, timeout=2.0)
+    await task
+    assert nd.status == 0 and nd.manufacturer_code == 0x1037
+    # Bind_rsp: status 0
+    task = asyncio.create_task(answer_via_callback(0x8021, b"\x00"))
+    assert await coord.bind(0x1234, 0x00158D0000000099, 1, 0x0006, timeout=2.0) == 0
+    await task
     await t.close()

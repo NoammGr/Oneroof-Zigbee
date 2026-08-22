@@ -175,6 +175,10 @@ class Transport:
             if self._pending and not self._pending[1].done():
                 self._pending[1].set_exception(ZnpError("transport closed"))
 
+    def inject(self, frame: Frame) -> None:
+        """Deliver a synthesized indication to listeners/waiters as if it had been received."""
+        self._deliver(frame)
+
     def _dispatch(self, frame: Frame) -> None:
         redact = False
         if frame.type is FrameType.SRSP and frame.subsystem is Subsystem.SYS and frame.command == 0x08:
@@ -194,6 +198,9 @@ class Transport:
             else:
                 log.warning("unsolicited SRSP %s:%#04x", frame.subsystem.name, frame.command)
             return
+        self._deliver(frame)
+
+    def _deliver(self, frame: Frame) -> None:
         for cb in list(self._listeners.get((frame.subsystem, frame.command), ())) + list(self._any_listeners):
             try:
                 res = cb(frame)

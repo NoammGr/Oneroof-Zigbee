@@ -223,6 +223,7 @@ class ZdoCmd(IntEnum):
     MGMT_LQI_REQ = 0x31
     MGMT_LEAVE_REQ = 0x34
     MGMT_PERMIT_JOIN_REQ = 0x36
+    MSG_CB_REGISTER = 0x3E      # ask the firmware to forward ZDO messages of a cluster (0xFFFF = all)
     STARTUP_FROM_APP = 0x40
     EXT_UPDATE_NWK_KEY = 0x4E   # install a network key locally (dst 0x0000) or announce it (dst 0xFFFF)
     EXT_SWITCH_NWK_KEY = 0x4F   # make the key with that sequence number the active one
@@ -239,6 +240,7 @@ class ZdoCmd(IntEnum):
     MGMT_LEAVE_RSP = 0xB4
     MGMT_PERMIT_JOIN_RSP = 0xB6
     STATE_CHANGE_IND = 0xC0
+    MSG_CB_INCOMING = 0xFF      # a forwarded ZDO message (after MSG_CB_REGISTER)
     END_DEVICE_ANNCE_IND = 0xC1
     SRC_RTG_IND = 0xC4
     LEAVE_IND = 0xC9
@@ -285,6 +287,32 @@ def zdo_ext_update_nwk_key(dst: int, seq: int, key: bytes) -> Frame:
 
 def zdo_ext_switch_nwk_key(dst: int, seq: int) -> Frame:
     return Frame(FrameType.SREQ, Subsystem.ZDO, ZdoCmd.EXT_SWITCH_NWK_KEY, Writer().u16(dst).u8(seq).bytes())
+
+
+def zdo_msg_cb_register(cluster: int = 0xFFFF) -> Frame:
+    return Frame(FrameType.SREQ, Subsystem.ZDO, ZdoCmd.MSG_CB_REGISTER, Writer().u16(cluster).bytes())
+
+
+# ZDO response clusters whose forwarded ("MSG_CB_INCOMING") form is re-issued as the classic MT
+# indication, so one set of decoders/waiters serves both delivery paths. Device announcements and
+# leaves are deliberately NOT converted (they already arrive as their own indications).
+ZDO_RSP_CLUSTER_TO_MT = {0x8000: 0x80, 0x8001: 0x81, 0x8002: 0x82, 0x8004: 0x84, 0x8005: 0x85,
+                         0x8021: 0xA1, 0x8022: 0xA2, 0x8031: 0xB1, 0x8036: 0xB6}
+
+
+def decode_msg_cb_incoming(data: bytes) -> tuple[int, int, bytes] | None:
+    """(src_addr, cluster, zdo_payload) of a forwarded ZDO message; None if too short.
+    Layout: SrcAddr u16, WasBroadcast u8, ClusterId u16, SecurityUse u8, SeqNum u8, MacDstAddr u16, Data."""
+    if len(data) < 9:
+        return None
+    r = Reader(data)
+    src = r.u16()
+    r.u8()
+    cluster = r.u16()
+    r.u8()
+    r.u8()
+    r.u16()
+    return src, cluster, data[9:]
 
 
 def zdo_nwk_addr_req(ieee: int) -> Frame:

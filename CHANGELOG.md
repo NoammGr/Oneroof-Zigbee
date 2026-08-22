@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.6.5] — 2026-08-22
+
+### Fixed — interviews and bindings on real hardware
+- Device-level ZDO responses (node/simple descriptors, active endpoints, bind/unbind) are forwarded by
+  this firmware generation only after the host registers for ZDO messages, and then in a generic
+  envelope. The gateway now registers at start and converts forwarded responses into the classic
+  indications, so interviews complete, bindings succeed and devices report by themselves instead of
+  relying on polling. (Management responses such as the neighbour table were unaffected, which is
+  why the network checks worked while every interview timed out.)
+
 ## [1.6.4] — 2026-08-22
 
 ### Changed

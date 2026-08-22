@@ -49,13 +49,25 @@ class FakeZnp:
         self.pending_key = None
         self.key_deliveries: list[tuple[int, int]] = []
         self.active_seq = 0
+        self.forward_zdo = True  # the firmware in the field forwards ZDO responses only via the message callback
         self.has_exnv = True  # Z-Stack 3.x.0: frame counters live in the security material table
         self.sec_material: list[tuple[int, bytes]] = [(0, b"\xff" * 8)]  # (frameCounter, extPanId LE)  # model firmware that does not keep SET_NWK_FRAME_COUNTER
         self.nwk_to_ieee: dict[int, int] = {}  # populated by emit_announce; used for IEEE_ADDR_REQ
         self.on_data_request = None  # optional hook: Frame -> list[Frame] of AREQs to emit
 
     # --- emit AREQ from "the radio" ---
+    # MT ids of ZDO responses that the real firmware delivers only through the message callback
+    _FORWARDED = {0x80: 0x8000, 0x81: 0x8001, 0x82: 0x8002, 0x84: 0x8004, 0x85: 0x8005, 0xA1: 0x8021, 0xA2: 0x8022,
+                  0xB1: 0x8031, 0xB6: 0x8036}
+
     def emit(self, frame: Frame) -> None:
+        if (self.forward_zdo and frame.type is FrameType.AREQ and frame.subsystem is Subsystem.ZDO
+                and frame.command in self._FORWARDED):
+            # Like the hardware: no classic indication, only the generic ZDO message envelope
+            # (SrcAddr, WasBroadcast, ClusterId, SecurityUse, SeqNum, MacDstAddr, Data).
+            src = frame.data[0:2]
+            env = src + b"\x00" + self._FORWARDED[frame.command].to_bytes(2, "little") + b"\x00\x07" + b"\x00\x00" + frame.data[2:]
+            frame = Frame(FrameType.AREQ, Subsystem.ZDO, c.ZdoCmd.MSG_CB_INCOMING, env)
         self.reader.feed_data(frame.encode())
 
     def emit_incoming(self, src: int, cluster: int, payload: bytes, src_ep: int = 1, seq: int = 1, lqi: int = 200) -> None:
