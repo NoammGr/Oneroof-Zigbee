@@ -1,8 +1,13 @@
 """Home Assistant MQTT discovery payloads.
 
-Entities are derived from the clusters each endpoint exposes — no per-model
-database.  Each (device, cluster) becomes one or more HA entities with a
-stable `unique_id` so renaming in HA survives restarts.
+Entities are derived from the device's *features* (``features.features_for``:
+clusters corrected by the model-knowledge layer), so a contact sensor that
+reports through the On/Off cluster becomes a ``binary_sensor`` with device
+class ``door`` and not a ``switch``.  Each feature becomes one HA entity with
+a stable ``unique_id`` so renaming in HA survives restarts; in the legacy
+layout the object ids and payload keys are the ones the previous setup used
+(``contact``, ``occupancy``, ``battery``, ``action``, ``state_l1``…), which is
+what keeps entity ids after an import.
 """
 
 from __future__ import annotations
@@ -12,46 +17,40 @@ from typing import Any
 
 from .. import __version__
 from ..devices import Device
+from ..features import features_for
 from .topics import Topics
 
-# cluster id → list of (component, object_id, extra config)
-_SENSORS: dict[int, list[tuple[str, str, dict[str, Any]]]] = {
-    0x0001: [
-        ("sensor", "battery", {"device_class": "battery", "unit_of_measurement": "%", "state_class": "measurement",
-                               "value_template": "{{ value_json.battery }}", "entity_category": "diagnostic"}),
-        ("sensor", "voltage", {"device_class": "voltage", "unit_of_measurement": "V", "state_class": "measurement",
-                               "value_template": "{{ value_json.voltage }}", "entity_category": "diagnostic", "enabled_by_default": False}),
-    ],
-    0x0402: [("sensor", "temperature", {"device_class": "temperature", "unit_of_measurement": "°C", "state_class": "measurement",
-                                       "value_template": "{{ value_json.temperature }}"})],
-    0x0403: [("sensor", "pressure", {"device_class": "pressure", "unit_of_measurement": "hPa", "state_class": "measurement",
-                                    "value_template": "{{ value_json.pressure }}"})],
-    0x0405: [("sensor", "humidity", {"device_class": "humidity", "unit_of_measurement": "%", "state_class": "measurement",
-                                    "value_template": "{{ value_json.humidity }}"})],
-    0x0400: [("sensor", "illuminance", {"device_class": "illuminance", "unit_of_measurement": "lx", "state_class": "measurement",
-                                       "value_template": "{{ value_json.illuminance_lux }}"})],
-    0x0406: [("binary_sensor", "occupancy", {"device_class": "occupancy", "value_template": "{{ value_json.occupancy }}",
-                                            "payload_on": True, "payload_off": False})],
-    0x0B04: [
-        ("sensor", "power", {"device_class": "power", "unit_of_measurement": "W", "state_class": "measurement",
-                             "value_template": "{{ value_json.power }}"}),
-        ("sensor", "voltage_ac", {"device_class": "voltage", "unit_of_measurement": "V", "state_class": "measurement",
-                                  "value_template": "{{ value_json.voltage }}"}),
-        ("sensor", "current", {"device_class": "current", "unit_of_measurement": "A", "state_class": "measurement",
-                               "value_template": "{{ value_json.current }}"}),
-    ],
-    0x0702: [("sensor", "energy", {"device_class": "energy", "unit_of_measurement": "kWh", "state_class": "total_increasing",
-                                  "value_template": "{{ value_json.energy }}"})],
+# state key → (device_class, unit, state_class, entity_category)
+_SENSOR_META: dict[str, tuple[str | None, str | None, str | None, str | None]] = {
+    "battery": ("battery", "%", "measurement", "diagnostic"),
+    "voltage": ("voltage", "V", "measurement", None),
+    "device_temperature": ("temperature", "°C", "measurement", "diagnostic"),
+    "power_outage_count": (None, None, "total_increasing", "diagnostic"),
+    "temperature": ("temperature", "°C", "measurement", None),
+    "local_temperature": ("temperature", "°C", "measurement", None),
+    "humidity": ("humidity", "%", "measurement", None),
+    "pressure": ("pressure", "hPa", "measurement", None),
+    "illuminance_lux": ("illuminance", "lx", "measurement", None),
+    "illuminance": ("illuminance", "lx", "measurement", None),
+    "power": ("power", "W", "measurement", None),
+    "energy": ("energy", "kWh", "total_increasing", None),
+    "current": ("current", "A", "measurement", None),
+    "co2": ("carbon_dioxide", "ppm", "measurement", None),
+    "pm25": ("pm25", "µg/m³", "measurement", None),
+    "voc": ("volatile_organic_compounds_parts", "ppb", "measurement", None),
+    "target_distance": ("distance", "m", "measurement", None),
+    "linkquality": (None, "lqi", "measurement", "diagnostic"),
+    "position": (None, "%", "measurement", None),
 }
 
-_IAS_BY_ZONE_TYPE: dict[int, tuple[str, str]] = {
-    0x0015: ("contact", "door"),          # contact switch → HA "door" (inverted below)
-    0x000D: ("occupancy", "motion"),
-    0x002A: ("water_leak", "moisture"),
-    0x0028: ("smoke", "smoke"),
-    0x002B: ("carbon_monoxide", "carbon_monoxide"),
-    0x002D: ("vibration", "vibration"),
+_BINARY_CLASS: dict[str, str | None] = {
+    "contact": "door", "occupancy": "motion", "presence": "occupancy", "water_leak": "moisture", "smoke": "smoke",
+    "carbon_monoxide": "carbon_monoxide", "gas": "gas", "vibration": "vibration", "tamper": "tamper", "battery_low": "battery",
+    "emergency": "safety", "glass_break": "sound", "alarm_1": None, "alarm_2": None, "window_open": "window",
 }
+
+_ICONS = {"action": "mdi:gesture-double-tap", "linkquality": "mdi:signal", "power_outage_count": "mdi:counter", "power_on_behavior": "mdi:power-settings",
+          "indicator_mode": "mdi:led-on", "preset": "mdi:tune", "lock_state": "mdi:lock"}
 
 
 def _device_block(dev: Device, t: Topics) -> dict[str, Any]:
@@ -67,6 +66,12 @@ def _device_block(dev: Device, t: Topics) -> dict[str, Any]:
 
 def _topics(base: str, prefix: str, legacy: bool) -> Topics:
     return Topics(base, prefix, legacy)
+
+
+def _suffix(f: dict[str, Any]) -> str:
+    """Object-id suffix for a feature: the gang name or endpoint suffix it carries."""
+    key, base = f["key"], f["base"]
+    return key[len(base):] if key.startswith(base) and key != base else ""
 
 
 def discovery_messages(dev: Device, base: str, prefix: str, *, legacy: bool = False) -> list[tuple[str, bytes]]:
@@ -85,68 +90,127 @@ def discovery_messages(dev: Device, base: str, prefix: str, *, legacy: bool = Fa
         "origin": {"name": "OneRoof Zigbee", "sw_version": __version__},
         "state_topic": state_topic,
     }
+    done: set[str] = set()
 
     def add(component: str, object_id: str, cfg: dict[str, Any]) -> None:
+        if object_id in done:
+            return
+        done.add(object_id)
         payload = {**common, **cfg, "unique_id": t.unique_id(dev, object_id)}
         if not legacy:
             payload["object_id"] = f"{dev.friendly_name}_{object_id}"
         payload = {k: v for k, v in payload.items() if v is not None}
         out.append((t.discovery_topic(component, dev, object_id), json.dumps(payload).encode()))
 
-    seen_in: set[int] = set()
-    for ep in dev.endpoints.values():
-        ins = set(ep.in_clusters)
-        seen_in |= ins
-        suffix = "" if len(dev.endpoints) == 1 else f"_{ep.id}"
+    feats = features_for(dev)
+    by_ep: dict[int, dict[str, dict[str, Any]]] = {}
+    for f in feats:
+        by_ep.setdefault(f["endpoint"], {})[f["base"]] = f
+    handled: set[str] = set()
 
-        if 0x0006 in ins and (0x0008 in ins or 0x0300 in ins):
-            cfg: dict[str, Any] = {
-                "name": None, "schema": "json", "command_topic": set_topic, "brightness": 0x0008 in ins,
-                "supported_color_modes": (["xy", "color_temp"] if 0x0300 in ins else ["brightness"]),
-            }
-            add("light", f"light{suffix}", cfg)
-        elif 0x0006 in ins:
-            comp = "switch"
-            add(comp, f"switch{suffix}", {"name": None, "command_topic": set_topic,
-                                          "value_template": "{{ value_json.state }}",
-                                          "payload_on": '{"state": "ON"}', "payload_off": '{"state": "OFF"}',
-                                          "state_on": "ON", "state_off": "OFF"})
-        if 0x0102 in ins:
-            add("cover", f"cover{suffix}", {"name": None, "command_topic": set_topic,
-                                            "payload_open": '{"state": "OPEN"}', "payload_close": '{"state": "CLOSE"}',
-                                            "payload_stop": '{"state": "STOP"}',
-                                            "position_topic": state_topic, "position_template": "{{ value_json.position }}",
-                                            "set_position_topic": set_topic, "set_position_template": '{"position": {{ position }} }'})
-        if 0x0201 in ins:
-            add("climate", f"climate{suffix}", {"name": None, "current_temperature_topic": state_topic,
-                                                "current_temperature_template": "{{ value_json.local_temperature }}",
-                                                "temperature_state_topic": state_topic,
-                                                "temperature_state_template": "{{ value_json.heating_setpoint }}",
-                                                "temperature_command_topic": set_topic,
-                                                "temperature_command_template": '{"heating_setpoint": {{ value }} }',
-                                                "mode_state_topic": state_topic, "mode_state_template": "{{ value_json.system_mode }}",
-                                                "mode_command_topic": set_topic, "mode_command_template": '{"system_mode": "{{ value }}" }',
-                                                "modes": ["off", "heat", "auto"], "temp_step": 0.5})
-        if 0x0500 in ins:
-            zone_type = dev.context.get("zone_type")
-            key, dclass = _IAS_BY_ZONE_TYPE.get(zone_type, ("alarm_1", None)) if zone_type is not None else ("alarm_1", None)
-            cfg = {"value_template": f"{{{{ value_json.{key} }}}}", "payload_on": True, "payload_off": False}
-            if key == "contact":  # our "contact": true == closed; HA door: on == open
-                cfg = {"value_template": "{{ not value_json.contact }}", "payload_on": True, "payload_off": False}
-            if dclass:
-                cfg["device_class"] = dclass
-            add("binary_sensor", f"{key}{suffix}", cfg)
-            add("binary_sensor", f"tamper{suffix}", {"device_class": "tamper", "value_template": "{{ value_json.tamper }}",
-                                                     "payload_on": True, "payload_off": False, "entity_category": "diagnostic"})
-        for cluster, entities in _SENSORS.items():
-            if cluster in ins:
-                for comp, obj, cfg in entities:
-                    add(comp, f"{obj}{suffix}", dict(cfg))
+    # -- composite entities (one per endpoint) ------------------------------------------------
+    for _ep, bases in by_ep.items():
+        st = bases.get("state")
+        if st and st["cluster"] == 0x0006 and st["access"] == "rw":
+            sfx = _suffix(st)
+            br, ct, col = bases.get("brightness"), bases.get("color_temp"), bases.get("color")
+            if br or ct or col:
+                cfg: dict[str, Any] = {"name": None, "schema": "json", "command_topic": set_topic, "brightness": bool(br),
+                                       "supported_color_modes": (["xy", "color_temp"] if ct or col else ["brightness"])}
+                if ct:
+                    cfg["min_mireds"], cfg["max_mireds"] = ct.get("min", 153), ct.get("max", 500)
+                add("light", f"light{sfx}", cfg)
+                handled |= {x["key"] for x in (st, br, ct, col) if x}
+            else:
+                add("switch", f"switch{sfx}", {"name": None if not sfx else st["name"], "command_topic": set_topic,
+                                               "value_template": f"{{{{ value_json.{st['key']} }}}}",
+                                               "payload_on": json.dumps({st["key"]: "ON"}), "payload_off": json.dumps({st["key"]: "OFF"}),
+                                               "state_on": "ON", "state_off": "OFF"})
+                handled.add(st["key"])
+        elif st and st["cluster"] == 0x0101:
+            add("lock", f"lock{_suffix(st)}", {"name": None, "command_topic": set_topic, "value_template": f"{{{{ value_json.{st['key']} }}}}",
+                                               "payload_lock": json.dumps({st["key"]: "LOCK"}), "payload_unlock": json.dumps({st["key"]: "UNLOCK"}),
+                                               "state_locked": "LOCK", "state_unlocked": "UNLOCK"})
+            handled.add(st["key"])
+        pos, cov = bases.get("position"), bases.get("cover")
+        if cov or (pos and pos["access"] == "rw"):
+            sfx = _suffix(pos or cov)
+            cfg = {"name": None, "command_topic": set_topic}
+            if cov:
+                cfg.update({"payload_open": '{"state": "OPEN"}', "payload_close": '{"state": "CLOSE"}', "payload_stop": '{"state": "STOP"}'})
+            if pos:
+                cfg.update({"position_topic": state_topic, "position_template": f"{{{{ value_json.{pos['key']} }}}}"})
+                if pos["access"] == "rw":
+                    cfg.update({"set_position_topic": set_topic, "set_position_template": '{"%s": {{ position }} }' % pos["key"]})
+            add("cover", f"cover{sfx}", cfg)
+            handled |= {x["key"] for x in (pos, cov) if x}
+        lt, sp = bases.get("local_temperature"), bases.get("current_heating_setpoint")
+        if sp:
+            sfx = _suffix(sp)
+            mode, preset = bases.get("system_mode"), bases.get("preset")
+            cfg = {"name": None, "temperature_state_topic": state_topic, "temperature_state_template": f"{{{{ value_json.{sp['key']} }}}}",
+                   "temperature_command_topic": set_topic, "temperature_command_template": '{"%s": {{ value }} }' % sp["key"],
+                   "min_temp": sp.get("min", 5), "max_temp": sp.get("max", 30), "temp_step": sp.get("step", 0.5), "temperature_unit": "C"}
+            if lt:
+                cfg.update({"current_temperature_topic": state_topic, "current_temperature_template": f"{{{{ value_json.{lt['key']} }}}}"})
+            if mode and mode["access"] == "rw":
+                cfg.update({"mode_state_topic": state_topic, "mode_state_template": f"{{{{ value_json.{mode['key']} }}}}",
+                            "mode_command_topic": set_topic, "mode_command_template": '{"%s": "{{ value }}" }' % mode["key"],
+                            "modes": [m for m in mode.get("values", []) if m in ("off", "heat", "cool", "auto")]})
+                handled.add(mode["key"])
+            else:
+                cfg["modes"] = ["heat"]
+            if preset and preset["access"] == "rw":
+                cfg.update({"preset_mode_state_topic": state_topic, "preset_mode_value_template": f"{{{{ value_json.{preset['key']} }}}}",
+                            "preset_mode_command_topic": set_topic, "preset_mode_command_template": '{"%s": "{{ value }}" }' % preset["key"],
+                            "preset_modes": preset.get("values", [])})
+                handled.add(preset["key"])
+            add("climate", f"climate{sfx}", cfg)
+            handled |= {x["key"] for x in (lt, sp) if x}
 
-    # diagnostics every device gets
-    add("sensor", "linkquality", {"name": "Link quality", "unit_of_measurement": "lqi", "state_class": "measurement",
-                                  "value_template": "{{ value_json.linkquality }}", "entity_category": "diagnostic",
-                                  "icon": "mdi:signal"})
+    # -- one entity per remaining feature ------------------------------------------------------
+    for f in feats:
+        key, typ, acc = f["key"], f["type"], f["access"]
+        if key in handled or typ == "action" or typ == "composite":
+            continue
+        tmpl = f"{{{{ value_json.{key} }}}}"
+        diag = "diagnostic" if f["category"] == "diagnostic" else ("config" if f["category"] == "config" else None)
+        if typ == "binary" and acc == "r":
+            cfg = {"name": f["name"], "value_template": tmpl, "payload_on": True, "payload_off": False, "entity_category": diag}
+            if f["base"] == "contact":  # our contact: true == closed; HA door: on == open
+                cfg["value_template"] = f"{{{{ not value_json.{key} }}}}"
+            dc = _BINARY_CLASS.get(f["base"])
+            if dc:
+                cfg["device_class"] = dc
+            add("binary_sensor", key, cfg)
+        elif typ == "binary" and key == "child_lock":
+            add("lock", key, {"name": f["name"], "command_topic": set_topic, "value_template": tmpl, "entity_category": "config",
+                              "payload_lock": json.dumps({key: "LOCK"}), "payload_unlock": json.dumps({key: "UNLOCK"}),
+                              "state_locked": "LOCK", "state_unlocked": "UNLOCK"})
+        elif typ == "binary":
+            on, off = f.get("value_on", "ON"), f.get("value_off", "OFF")
+            add("switch", key, {"name": f["name"], "command_topic": set_topic, "value_template": tmpl, "entity_category": diag,
+                                "payload_on": json.dumps({key: on}), "payload_off": json.dumps({key: off}), "state_on": on, "state_off": off})
+        elif typ == "numeric" and acc == "r":
+            dc, unit, sc, ec = _SENSOR_META.get(f["base"], (None, f.get("unit"), "measurement", None))
+            if f["base"] == "voltage" and f.get("unit") == "mV":
+                unit = "mV"
+            add("sensor", key, {"name": f["name"], "value_template": tmpl, "device_class": dc, "unit_of_measurement": unit or f.get("unit"),
+                                "state_class": sc, "entity_category": diag or ec, "icon": _ICONS.get(f["base"]),
+                                "enabled_by_default": False if f["base"] in ("voltage", "device_temperature", "power_outage_count") and f["category"] == "diagnostic" else None})
+        elif typ == "numeric":
+            dc, unit, _sc, _ec = _SENSOR_META.get(f["base"], (None, f.get("unit"), None, None))
+            add("number", key, {"name": f["name"], "command_topic": set_topic, "value_template": tmpl, "command_template": '{"%s": {{ value }} }' % key,
+                                "min": f.get("min"), "max": f.get("max"), "step": f.get("step"), "unit_of_measurement": unit or f.get("unit"),
+                                "device_class": dc, "entity_category": diag, "mode": "slider" if f.get("max") is not None else "box"})
+        elif typ == "enum" and acc == "r":
+            add("sensor", key, {"name": f["name"], "value_template": tmpl, "icon": _ICONS.get(f["base"]), "entity_category": diag,
+                                "enabled_by_default": True})
+        elif typ == "enum":
+            add("select", key, {"name": f["name"], "command_topic": set_topic, "value_template": tmpl, "command_template": '{"%s": "{{ value }}" }' % key,
+                                "options": f.get("values", []), "entity_category": diag, "icon": _ICONS.get(f["base"])})
+        elif typ == "text" and acc == "r":
+            add("sensor", key, {"name": f["name"], "value_template": tmpl, "entity_category": diag})
     return out
 
 

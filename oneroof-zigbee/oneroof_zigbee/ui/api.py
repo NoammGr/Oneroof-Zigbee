@@ -166,7 +166,7 @@ class UiApi:
     def _dev_json(self, d: Any, *, detail: bool = False) -> dict[str, Any]:
         out = {
             "ieee": d.ieee_str, "friendly_name": d.friendly_name, "description": d.description,
-            "manufacturer": d.manufacturer, "model": d.model,
+            "manufacturer": d.manufacturer, "model": d.model, "vendor": d.vendor, "kind": d.kind, "category": d.category,
             "sw_build": d.sw_build, "power_source": d.power_source, "is_router": d.is_router, "interviewed": d.interviewed,
             "interview_error": d.interview_error, "available": d.available, "lqi": d.lqi, "last_seen": d.last_seen,
             "joined_at": d.joined_at, "nwk": f"{d.nwk:#06x}", "nwk_decimal": d.nwk,

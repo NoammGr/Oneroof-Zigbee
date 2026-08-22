@@ -20,13 +20,14 @@ from pathlib import Path
 from collections.abc import Callable
 from typing import Any
 
-from . import zcl
+from . import quirks, zcl
 from .config import Config
 from .devices import Device, Registry
 from .ha import Topics, bridge_discovery, discovery_messages, removal_messages
 from .mqtt import Broker
 from .security import Audit, InstallCodeError, JoinPolicyError, parse_install_code
 from .zcl import global_commands as gc
+from .zcl import vendor as vz
 from .znp import Coordinator, IncomingAps, JoinedDevice, ZnpError
 from .znp.wire import ieee_int, ieee_str
 
@@ -75,6 +76,7 @@ class Gateway:
         self._interview_tasks: dict[int, asyncio.Task[None]] = {}
         self._lookup_times: dict[int, float] = {}
         self._locate_task: asyncio.Task[None] | None = None
+        self._timers: dict[tuple[int, str], asyncio.Task[None]] = {}
         self._started = False
         # optional observers (the UI attaches here); called synchronously, must not raise
         self.on_state_change: Callable[[int, dict[str, Any]], None] | None = None
@@ -193,6 +195,8 @@ class Gateway:
             self._locate_task.cancel()
         for t in self._interview_tasks.values():
             t.cancel()
+        for t in self._timers.values():
+            t.cancel()
         await self.broker.publish(f"{self.base}/bridge/state", self.topics.bridge_state_payload(False), retain=True)
 
     # ------------------------------------------------------------ events --
@@ -268,6 +272,7 @@ class Gateway:
             dev.stack_version = attrs.get("stack_version", dev.stack_version)
             dev.interview_error = None
 
+            policy = quirks.binding_policy(dev)  # None = default clusters, () = the model rejects binds
             for ep in dev.endpoints.values():
                 for cluster in ep.in_clusters:
                     if cluster == 0x0500:
@@ -275,11 +280,13 @@ class Gateway:
                     if cluster in _READ_ON_JOIN:
                         try:
                             state = await self.read_attributes(dev, ep.id, cluster, _READ_ON_JOIN[cluster])
-                            self._apply_changes(dev, state)
+                            self._apply_changes(dev, quirks.translate_state(dev, ep.id, state))
                         except (ZnpError, asyncio.TimeoutError):
                             log.info("%s: read %s failed (sleepy device?)", dev.ieee_str, zcl.cluster_name(cluster))
-                    if cluster in _REPORTING:
+                    if cluster in _REPORTING and self._may_bind(policy, cluster):
                         await self._setup_reporting(dev, ep.id, cluster)
+                if vz.TUYA_CLUSTER in ep.in_clusters:
+                    await self._tuya_query(dev, ep.id)
             dev.interviewed = True
             dev.last_seen = time.time()
             self.registry.save()
@@ -310,9 +317,10 @@ class Gateway:
                     attrs = await self.read_attributes(dev, prim.id, 0x0000, _BASIC_ATTRS)
                     dev.manufacturer = attrs.get("manufacturer_name") or dev.manufacturer
                     dev.model = attrs.get("model_id") or dev.model
+            policy = quirks.binding_policy(dev)
             for ep in dev.endpoints.values():
                 for cluster in ep.in_clusters:
-                    if cluster in _REPORTING:
+                    if cluster in _REPORTING and self._may_bind(policy, cluster):
                         await self._setup_reporting(dev, ep.id, cluster)
             self.registry.save()
             self.audit.event("imported_device_configured", ieee=dev.ieee_str)
@@ -322,6 +330,17 @@ class Gateway:
             log.info("%s: post-import setup deferred: %s", dev.ieee_str, e)
         finally:
             self._interview_tasks.pop(dev.ieee, None)
+
+    @staticmethod
+    def _may_bind(policy: tuple[int, ...] | None, cluster: int) -> bool:
+        return policy is None or cluster in policy
+
+    async def _tuya_query(self, dev: Device, ep: int) -> None:
+        """Ask a Tuya datapoint device to report every datapoint (dataQuery)."""
+        try:
+            await self.coord.send_aps(dev.nwk, ep, vz.TUYA_CLUSTER, gc.build_cluster_command(self._next_seq(), vz.TUYA_CMD_QUERY, b"", disable_default_response=True), wait_confirm=False)
+        except (ZnpError, asyncio.TimeoutError) as e:
+            log.info("%s: datapoint query failed: %s", dev.ieee_str, e)
 
     async def _setup_reporting(self, dev: Device, ep: int, cluster: int) -> None:
         try:
@@ -397,9 +416,17 @@ class Gateway:
         seq = self._next_seq()
         rsp = await self._request(dev, ep, cluster, gc.build_read_attributes(seq, attrs), seq, gc.CMD_READ_ATTRIBUTES_RSP)
         decoded = gc.decode_global_command(rsp)
-        pairs = [(r.attr, r.value) for r in decoded.records if r.status == gc.STATUS_SUCCESS]
+        return self._decode_records(dev, ep, cluster, [r for r in decoded.records if r.status == gc.STATUS_SUCCESS])
+
+    def _decode_records(self, dev: Device, ep: int, cluster: int, records: list[Any]) -> dict[str, Any]:
+        """Vendor-private attributes first (Aqara reports, Tuya private attrs), the standard cluster decoders for the rest."""
+        pairs = [(r.attr, r.value) for r in records]
         self._track_raw(dev, cluster, pairs)
-        return zcl.decode_attributes(cluster, pairs, dev.context)
+        state, used = quirks.decode_vendor_attributes(dev, ep, cluster, [(r.attr, getattr(r, "dtype", None), r.value, getattr(r, "raw", None)) for r in records])
+        rest = [(a, v) for a, v in pairs if a not in used]
+        if rest:
+            state = {**zcl.decode_attributes(cluster, rest, dev.context), **state}
+        return state
 
     def _track_raw(self, dev: Device, cluster: int, pairs: list[tuple[int, Any]]) -> None:
         c = zcl.get_cluster(cluster)
@@ -447,9 +474,8 @@ class Gateway:
         if frame.frame_type == zcl.FRAME_TYPE_GLOBAL:
             if frame.command in (gc.CMD_REPORT_ATTRIBUTES, gc.CMD_READ_ATTRIBUTES_RSP):
                 decoded = gc.decode_global_command(frame)
-                pairs = [(r.attr, r.value) for r in decoded.records if getattr(r, "status", 0) == 0]
-                self._track_raw(dev, m.cluster, pairs)
-                changed = zcl.decode_attributes(m.cluster, pairs, dev.context)
+                changed = self._decode_records(dev, m.src_ep, m.cluster, [r for r in decoded.records if getattr(r, "status", 0) == 0])
+                changed = quirks.translate_state(dev, m.src_ep, changed)
         elif m.cluster == 0x0019 and frame.direction == zcl.DIRECTION_CLIENT_TO_SERVER:
             rsp = self.ota.handle(dev.ieee, dev.nwk, m.src_ep, frame.command, frame.payload)
             if rsp is not None:
@@ -458,6 +484,10 @@ class Gateway:
                                                disable_default_response=True)
                 asyncio.create_task(self.coord.send_aps(dev.nwk, m.src_ep, 0x0019, out, wait_confirm=False))
             return
+        elif m.cluster == vz.TUYA_CLUSTER and frame.direction == zcl.DIRECTION_SERVER_TO_CLIENT:
+            changed = quirks.decode_tuya_report(dev, frame.command, frame.payload)
+            if not frame.disable_default_response:
+                asyncio.create_task(self._default_response(dev, m, frame))
         else:
             changed = zcl.decode_cluster_command(m.cluster, frame.command, frame.direction, frame.payload, dev.context)
             if m.cluster == 0x0500 and changed.get("command") == "zone_enroll_request":
@@ -465,9 +495,48 @@ class Gateway:
             if not frame.disable_default_response and frame.direction == zcl.DIRECTION_SERVER_TO_CLIENT:
                 asyncio.create_task(self._default_response(dev, m, frame))
             changed = {k: v for k, v in changed.items() if k not in ("command", "cluster") and not k.startswith("zone_")}
+            if frame.direction == zcl.DIRECTION_CLIENT_TO_SERVER or m.cluster in (0xFC00, 0xFC80):
+                # the device acts as a *client*: a remote, button or motion sensor sending commands to us
+                changed.update(self._remote_event(dev, m, frame))
+            changed = quirks.translate_state(dev, m.src_ep, changed)
         if changed:
             self._apply_changes(dev, changed)
             await self._publish_state(dev)
+            if changed.get("action"):
+                # an action is an event, not a state: publish it once more cleared so HA's sensor resets
+                dev.state["action"] = ""
+                await self._publish_state(dev)
+
+    def _remote_event(self, dev: Device, m: IncomingAps, frame: zcl.ZclFrame) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        info = quirks.describe(dev)
+        action = quirks.remote_action(dev, m.src_ep, m.cluster, frame.command, frame.payload, frame.manufacturer)
+        if info.quirk and info.quirk.on_off_as == "occupancy" and m.cluster == 0x0006 and frame.command in (0x01, 0x42):
+            # on-with-timed-off from a motion sensor: occupied now, clear after on_time (1/10 s)
+            out["occupancy"] = True
+            secs = int.from_bytes(frame.payload[1:3], "little") / 10 if frame.command == 0x42 and len(frame.payload) >= 3 else 60
+            self._schedule_clear(dev, "occupancy", max(1.0, min(secs, 3600.0)))
+            return out
+        if action and (info.category == "remote" or any(f["base"] == "action" for f in self._features(dev))):
+            out["action"] = action
+        return out
+
+    def _features(self, dev: Device) -> list[dict[str, Any]]:
+        from .features import features_for
+        return features_for(dev)
+
+    def _schedule_clear(self, dev: Device, key: str, secs: float) -> None:
+        old = self._timers.pop((dev.ieee, key), None)
+        if old:
+            old.cancel()
+
+        async def clear() -> None:
+            await asyncio.sleep(secs)
+            self._timers.pop((dev.ieee, key), None)
+            self._apply_changes(dev, {key: False})
+            await self._publish_state(dev)
+
+        self._timers[(dev.ieee, key)] = asyncio.create_task(clear(), name=f"clear-{key}-{dev.ieee_str}")
 
     def _apply_changes(self, dev: Device, changed: dict[str, Any]) -> None:
         now = time.time()
@@ -557,6 +626,7 @@ class Gateway:
         }
         await self.broker.publish(f"{self.base}/bridge/info", json.dumps(info).encode(), retain=True)
         devices = [{"ieee": d.ieee_str, "friendly_name": d.friendly_name, "manufacturer": d.manufacturer, "model": d.model,
+                    "vendor": d.vendor, "kind": d.kind, "category": d.category,
                     "interviewed": d.interviewed, "router": d.is_router,
                     "endpoints": {str(e.id): e.category for e in d.endpoints.values()}} for d in devs]
         await self.broker.publish(f"{self.base}/bridge/devices", json.dumps(devices).encode(), retain=True)
@@ -619,60 +689,108 @@ class Gateway:
             body = {}
         if isinstance(body, dict) and "state" in body and dev.primary_endpoint() and 0x0006 in dev.primary_endpoint().in_clusters:
             try:
-                state = await self.read_attributes(dev, dev.primary_endpoint().id, 0x0006, [0x0000])
-                self._apply_changes(dev, state)
+                ep = dev.primary_endpoint().id
+                state = await self.read_attributes(dev, ep, 0x0006, [0x0000])
+                self._apply_changes(dev, quirks.translate_state(dev, ep, state))
             except (ZnpError, asyncio.TimeoutError):
                 pass
         await self._publish_state(dev)
 
     async def apply_command(self, dev: Device, cmd: dict[str, Any]) -> None:
+        """Apply a JSON command. Keys are feature keys (``state``, ``state_l2``, ``brightness``, ``child_lock`` …);
+        each is routed to the endpoint its feature lives on."""
         ep_obj = dev.primary_endpoint()
         if ep_obj is None:
             raise ZnpError("device not interviewed yet")
-        ep = int(cmd.get("endpoint", ep_obj.id))
-        ins = set(dev.endpoints[ep].in_clusters) if ep in dev.endpoints else set()
+        feats = self._features(dev)
+        by_key = {f["key"]: f for f in feats}
+        forced_ep = int(cmd["endpoint"]) if "endpoint" in cmd else None
+        per_ep: dict[int, dict[str, Any]] = {}
+        for k, v in cmd.items():
+            if k in ("endpoint", "transition"):
+                continue
+            if k == "heating_setpoint":  # accepted alias of the published key
+                k = "current_heating_setpoint"
+            f = by_key.get(k)
+            if f is not None and f.get("base"):
+                ep = forced_ep if forced_ep is not None else (f["endpoint"] or ep_obj.id)
+                per_ep.setdefault(ep, {})[f["base"]] = v
+                if f["cluster"] == vz.TUYA_CLUSTER:
+                    per_ep[ep].setdefault("__dp__", {})[k] = v
+            else:
+                per_ep.setdefault(forced_ep if forced_ep is not None else ep_obj.id, {})[k] = v
         transition = int(float(cmd.get("transition", 0)) * 10)
+        for ep, body in per_ep.items():
+            await self._apply_command_ep(dev, ep, body, transition)
+        await self._publish_state(dev)
+
+    async def _apply_command_ep(self, dev: Device, ep: int, cmd: dict[str, Any], transition: int) -> None:
+        ins = set(dev.endpoints[ep].in_clusters) if ep in dev.endpoints else set()
+        feats = {f["base"]: f for f in self._features(dev) if f["endpoint"] == ep}
+        dps: dict[str, Any] = cmd.pop("__dp__", {})
+
+        def key_of(base: str) -> str:
+            f = feats.get(base)
+            return f["key"] if f else base
 
         async def send(cluster: int, name: str, params: dict[str, Any]) -> None:
             cid, body = zcl.encode_command(cluster, name, params)
             await self.coord.send_aps(dev.nwk, ep, cluster, gc.build_cluster_command(self._next_seq(), cid, body))
 
+        # Tuya datapoint devices: every writable dp feature goes through setData
+        tuya_cover = vz.TUYA_CLUSTER in ins and feats.get("cover", {}).get("cluster") == vz.TUYA_CLUSTER
         state = cmd.get("state")
+        if tuya_cover and isinstance(state, str) and state.upper() in ("OPEN", "CLOSE", "STOP"):
+            dps["cover"] = state.upper()
+            cmd.pop("state")
+        for key, value in dps.items():
+            payload = quirks.encode_tuya_command(dev, key, value, self._next_seq() & 0xFFFF)
+            if payload is None:
+                raise ValueError(f"{key} is not writable on this device")
+            await self.coord.send_aps(dev.nwk, ep, vz.TUYA_CLUSTER, gc.build_cluster_command(self._next_seq(), vz.TUYA_CMD_SET_DATA, payload))
+            if key != "cover":
+                self._apply_changes(dev, {key: value})
+        if dps:
+            return
+
         if isinstance(state, str):
             s = state.upper()
             if 0x0102 in ins and s in ("OPEN", "CLOSE", "STOP"):
                 await send(0x0102, {"OPEN": "up_open", "CLOSE": "down_close", "STOP": "stop"}[s], {})
+            elif 0x0101 in ins and s in ("LOCK", "UNLOCK") and 0x0006 not in ins:
+                await send(0x0101, "lock_door" if s == "LOCK" else "unlock_door", {"pin_code": b""})
+                self._apply_changes(dev, {key_of("state"): s})
             elif s in ("ON", "OFF", "TOGGLE") and 0x0006 in ins:
                 if s == "ON" and "brightness" in cmd and 0x0008 in ins:
                     pass  # handled by brightness below with on_off
                 else:
                     await send(0x0006, s.lower(), {})
                     if s != "TOGGLE":
-                        self._apply_changes(dev, {"state": s})
+                        self._apply_changes(dev, {key_of("state"): s})
         if "brightness" in cmd and 0x0008 in ins:
             level = max(0, min(254, int(cmd["brightness"])))
             await send(0x0008, "move_to_level_with_on_off", {"level": level, "transition_time": transition})
-            self._apply_changes(dev, {"brightness": level, "state": "ON" if level > 0 else "OFF"})
+            self._apply_changes(dev, {key_of("brightness"): level, key_of("state"): "ON" if level > 0 else "OFF"})
         if "color_temp" in cmd and 0x0300 in ins:
             await send(0x0300, "move_to_color_temp", {"color_temp": int(cmd["color_temp"]), "transition_time": transition})
-            self._apply_changes(dev, {"color_temp": int(cmd["color_temp"])})
+            self._apply_changes(dev, {key_of("color_temp"): int(cmd["color_temp"])})
         if isinstance(cmd.get("color"), dict) and 0x0300 in ins:
             col = cmd["color"]
             if "x" in col and "y" in col:
                 await send(0x0300, "move_to_color", {"x": float(col["x"]), "y": float(col["y"]), "transition_time": transition})
-                self._apply_changes(dev, {"color": {"x": float(col["x"]), "y": float(col["y"])}})
+                self._apply_changes(dev, {key_of("color"): {"x": float(col["x"]), "y": float(col["y"])}})
             elif "h" in col and "s" in col:
                 await send(0x0300, "move_to_hue_and_saturation", {"hue": int(col["h"] * 254 / 360), "saturation": int(col["s"] * 254 / 100), "transition_time": transition})
         if "position" in cmd and 0x0102 in ins:
             pos = max(0, min(100, int(cmd["position"])))
             await send(0x0102, "go_to_lift_percentage", {"percentage": 100 - pos})
-        if "heating_setpoint" in cmd and 0x0201 in ins:
-            await self._write_attr(dev, ep, 0x0201, 0x0012, zcl.DataType.int16, int(round(float(cmd["heating_setpoint"]) * 100)))
-            self._apply_changes(dev, {"heating_setpoint": float(cmd["heating_setpoint"])})
+        if "current_heating_setpoint" in cmd and 0x0201 in ins:
+            await self._write_attr(dev, ep, 0x0201, 0x0012, zcl.DataType.int16, int(round(float(cmd["current_heating_setpoint"]) * 100)))
+            self._apply_changes(dev, {key_of("current_heating_setpoint"): float(cmd["current_heating_setpoint"])})
         if "system_mode" in cmd and 0x0201 in ins:
             modes = {"off": 0, "auto": 1, "cool": 3, "heat": 4}
             await self._write_attr(dev, ep, 0x0201, 0x001C, zcl.DataType.enum8, modes[str(cmd["system_mode"])])
-            self._apply_changes(dev, {"system_mode": str(cmd["system_mode"])})
+            self._apply_changes(dev, {key_of("system_mode"): str(cmd["system_mode"])})
         if "identify" in cmd and 0x0003 in ins:
             await send(0x0003, "identify", {"time": int(cmd["identify"])})
         if "power_on_behavior" in cmd and 0x0006 in ins:
@@ -681,7 +799,18 @@ class Gateway:
             if val not in POWER_ON_BEHAVIOR:
                 raise ValueError(f"power_on_behavior must be one of {list(POWER_ON_BEHAVIOR)}")
             await self._write_attr(dev, ep, 0x0006, 0x4003, zcl.DataType.enum8, POWER_ON_BEHAVIOR[val])
-            self._apply_changes(dev, {"power_on_behavior": val})
+            self._apply_changes(dev, {key_of("power_on_behavior"): val})
+        if "child_lock" in cmd and 0x0006 in ins and "child_lock" in feats:
+            lock = str(cmd["child_lock"]).upper() in ("LOCK", "ON", "TRUE", "1")
+            await self._write_attr(dev, ep, 0x0006, 0x8000, zcl.DataType.bool_, lock)
+            self._apply_changes(dev, {"child_lock": "LOCK" if lock else "UNLOCK"})
+        if "indicator_mode" in cmd and 0x0006 in ins and "indicator_mode" in feats:
+            modes = {"off": 0, "off/on": 1, "on/off": 2, "on": 3}
+            val = str(cmd["indicator_mode"])
+            if val not in modes:
+                raise ValueError(f"indicator_mode must be one of {list(modes)}")
+            await self._write_attr(dev, ep, 0x0006, 0x8001, zcl.DataType.enum8, modes[val])
+            self._apply_changes(dev, {"indicator_mode": val})
         if "countdown" in cmd and 0x0006 in ins:
             secs = int(cmd["countdown"])
             if not 1 <= secs <= 6553:
@@ -689,8 +818,7 @@ class Gateway:
             # OnWithTimedOff: control u8 (0 = accept when off too), on_time u16 (1/10 s), off_wait_time u16
             body = bytes([0x00]) + (secs * 10).to_bytes(2, "little") + (0).to_bytes(2, "little")
             await self.coord.send_aps(dev.nwk, ep, 0x0006, gc.build_cluster_command(self._next_seq(), 0x42, body))
-            self._apply_changes(dev, {"state": "ON"})
-        await self._publish_state(dev)
+            self._apply_changes(dev, {key_of("state"): "ON"})
 
     async def _write_attr(self, dev: Device, ep: int, cluster: int, attr: int, dtype: zcl.DataType, value: Any) -> None:
         seq = self._next_seq()
@@ -716,9 +844,8 @@ class Gateway:
         decoded = gc.decode_global_command(rsp)
         values = {f"0x{r.attr:04x}": (r.value.hex() if isinstance(r.value, (bytes, bytearray)) else r.value) if r.status == 0 else f"status {r.status:#04x}"
                   for r in decoded.records}
-        pairs = [(r.attr, r.value) for r in decoded.records if r.status == gc.STATUS_SUCCESS]
-        self._track_raw(dev, cluster, pairs)
-        state = zcl.decode_attributes(cluster, pairs, dev.context)
+        state = self._decode_records(dev, ep, cluster, [r for r in decoded.records if r.status == gc.STATUS_SUCCESS])
+        state = quirks.translate_state(dev, ep, state)
         if state:
             self._apply_changes(dev, state)
             await self._publish_state(dev)

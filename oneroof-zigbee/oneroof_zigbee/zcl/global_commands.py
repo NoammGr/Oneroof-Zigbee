@@ -90,6 +90,7 @@ class ReadAttributeRecord:
     status: int
     dtype: int | None = None
     value: Any = None
+    raw: bytes | None = None  # undecoded value bytes (vendor TLV payloads arrive as "strings")
 
 
 @dataclass
@@ -123,8 +124,9 @@ class ReadAttributesResponse:
                 if status == STATUS_SUCCESS:
                     dtype = _u8(payload, o)
                     o += 1
+                    start = o
                     value, o = decode_value(dtype, payload, o)
-                    records.append(ReadAttributeRecord(attr, status, dtype, value))
+                    records.append(ReadAttributeRecord(attr, status, dtype, value, bytes(payload[start:o])))
                 else:
                     records.append(ReadAttributeRecord(attr, status))
             except ZclDecodeError:
@@ -325,6 +327,7 @@ class AttributeReport:
     attr: int
     dtype: int
     value: Any
+    raw: bytes | None = None  # undecoded value bytes (vendor TLV payloads arrive as "strings")
 
 
 @dataclass
@@ -348,8 +351,9 @@ class ReportAttributes:
                 attr = _u16(payload, o)
                 dtype = _u8(payload, o + 2)
                 o += 3
+                start = o
                 value, o = decode_value(dtype, payload, o)
-                records.append(AttributeReport(attr, dtype, value))
+                records.append(AttributeReport(attr, dtype, value, bytes(payload[start:o])))
             except ZclDecodeError:
                 break  # keep what we have; see ReadAttributesResponse.decode
         return cls(records)

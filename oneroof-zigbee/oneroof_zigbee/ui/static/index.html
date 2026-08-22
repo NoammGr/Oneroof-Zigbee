@@ -518,6 +518,8 @@ const CL_NAMES={0:'basic',1:'power_cfg',3:'identify',4:'groups',5:'scenes',6:'on
 const clName=c=>(c&&typeof c==='object'&&c.name)?c.name:(CL_NAMES[cid(c)]||('cluster '+hex(cid(c))));
 function clusters(d){const s=new Set();for(const ep of Object.values(d.endpoints||{}))for(const c of (ep.in_clusters||[]))s.add(cid(c));return s;}
 function catGlyph(d){const cat=Object.values(d.endpoints||{}).map(e=>e.category||'').join(' ').toLowerCase();const cl=clusters(d);
+  const k=(d.kind||'').toLowerCase();const g={light:'bulb',plug:'plug',switch:'power',cover:'cover',lock:'lock',climate:'thermometer',remote:'remote',meter:'bolt'}[d.category||''];
+  if(g)return g;if(d.category==='sensor'){if(/temp|humid|weather|pressure/.test(k))return 'thermometer';if(/leak|water|moist/.test(k))return 'drop';if(/light|illum/.test(k))return 'sun';return 'hand';}
   if(/light|lamp|bulb/.test(cat)||cl.has(0x300)||cl.has(8))return 'bulb';if(/cover|blind|shade|curtain/.test(cat)||cl.has(0x102))return 'cover';if(/lock/.test(cat)||cl.has(0x101))return 'lock';if(/thermostat|climate|hvac/.test(cat)||cl.has(0x201))return 'thermometer';if(/plug|outlet|socket/.test(cat)||cl.has(0x702)||cl.has(0xb04))return 'plug';if(/switch/.test(cat)||cl.has(6))return 'power';if(/remote|button/.test(cat))return 'remote';if(cl.has(0x402))return 'thermometer';if(cl.has(0x405))return 'drop';if(cl.has(0x406)||cl.has(0x500))return 'hand';if(cl.has(0x400))return 'sun';return 'chip';}
 function powerLabel(p){if(!p)return '—';const s=String(p).toLowerCase();if(/mains|dc/.test(s))return 'Mains';if(/batt/.test(s))return 'Battery';return s[0].toUpperCase()+s.slice(1);}
 const dpath=(d,p)=>'api/devices/'+encodeURIComponent(d.ieee||d)+p;
@@ -587,7 +589,7 @@ views.devices={
     const tr=el('tr',{class:'click',title:'Open device'},
       el('td',null,el('div',{style:'display:flex;gap:12px;align-items:center'},thumb,el('div',null,el('div',{style:'display:flex;gap:8px;align-items:center'},avail,name),el('div',{class:'sub mono',text:d.ieee})))),
       el('td',{class:'sub'},el('div',{text:d.model||'—'}),el('div',{text:d.manufacturer||''}),d.description?el('div',{class:'mute',style:'font-style:italic',text:d.description}):null),
-      el('td',{class:'sub',text:d.is_router?'Router':'End device'}),lqi,seenTd,stateTd,ctl,
+      el('td',{class:'sub'},el('div',{text:d.kind||'—'}),el('div',{class:'mute',text:(d.vendor?d.vendor+' · ':'')+(d.is_router?'Router':'End device')})),lqi,seenTd,stateTd,ctl,
       el('td',{onclick:stop},this.menu(d,ok)));
     tr.addEventListener('click',()=>{location.hash='#device/'+encodeURIComponent(d.ieee);});
     const upd=()=>{clear(lqi).append(el('span',{class:'lqi'},el('i',{style:'width:'+Math.min(100,(d.lqi||0)/255*100)+'%'})),String(d.lqi??'—'));seenTd.textContent=rel(d.last_seen);stateTd.textContent=d.interviewed===false?'interviewing…':stateSummary(d.state);avail.className='dot'+(d.available?' on':'');};
@@ -595,6 +597,7 @@ views.devices={
   },
   controls(d,cl){
     const set=p=>api(dpath(d,'/set'),p).catch(e=>toast(e.message,true));const st=d.state||{};const w=el('div',{class:'ctl'});
+    if(d.category&&!/^(light|plug|switch|cover)$/.test(d.category))return w;
     if(cl.has(6)){w.append(el('button',{class:'btn sm',text:st.state==='ON'?'Turn off':'Turn on',onclick:()=>set({state:st.state==='ON'?'OFF':'ON'})}));}
     if(cl.has(8)){w.append(el('input',{type:'range',min:0,max:254,value:st.brightness??127,title:'Brightness',onchange:e=>set({brightness:+e.target.value})}));}
     if(cl.has(0x300)){w.append(el('input',{type:'range',min:153,max:500,value:st.color_temp??300,title:'Colour temperature (mired)',onchange:e=>set({color_temp:+e.target.value})}));}
@@ -659,7 +662,7 @@ function featureControl(d,f,o){
 
 /* ============ DASHBOARD ============ */
 const DCATS=[['all','All'],['light','Lights'],['plug','Plugs'],['sensor','Sensors'],['cover','Covers'],['climate','Climate']];
-function devCat(d){const cat=Object.values(d.endpoints||{}).map(e=>e.category||'').join(' ').toLowerCase();const cl=clusters(d);if(/light|lamp|bulb/.test(cat)||cl.has(0x300)||cl.has(8))return 'light';if(/cover|blind|shade|curtain/.test(cat)||cl.has(0x102))return 'cover';if(/thermostat|climate|hvac/.test(cat)||cl.has(0x201))return 'climate';if(/plug|outlet|socket|switch/.test(cat)||cl.has(0x702)||cl.has(0xb04)||cl.has(6))return 'plug';return 'sensor';}
+function devCat(d){if(d.category){return {light:'light',plug:'plug',switch:'plug',cover:'cover',climate:'climate'}[d.category]||'sensor';}const cat=Object.values(d.endpoints||{}).map(e=>e.category||'').join(' ').toLowerCase();const cl=clusters(d);if(/light|lamp|bulb/.test(cat)||cl.has(0x300)||cl.has(8))return 'light';if(/cover|blind|shade|curtain/.test(cat)||cl.has(0x102))return 'cover';if(/thermostat|climate|hvac/.test(cat)||cl.has(0x201))return 'climate';if(/plug|outlet|socket|switch/.test(cat)||cl.has(0x702)||cl.has(0xb04)||cl.has(6))return 'plug';return 'sensor';}
 const dlink=d=>'#device/'+encodeURIComponent(d.ieee);
 views.dashboard={
   q:'',hl:'',cat:'all',cards:new Map(),
@@ -726,6 +729,7 @@ views.device={
     const desc=el('p',{class:'desc'+(d.description?'':' placeholder'),text:d.description||'Add a description…',title:'Click to edit'});
     desc.addEventListener('click',()=>{if(desc.querySelector('input'))return;const inp=el('input',{type:'text',maxlength:200,value:d.description||'',placeholder:'Where it is, what it does…'});const fin=async(save)=>{if(!inp.parentNode)return;const v=inp.value.trim();inp.remove();const show=()=>{desc.textContent=d.description||'Add a description…';desc.classList.toggle('placeholder',!d.description);};if(save&&v!==(d.description||'')){try{await api(dpath(d,'/describe'),{description:v});d.description=v||null;toast('Description saved');}catch(e){toast(e.message,true);}}show();};inp.addEventListener('keydown',e=>{if(e.key==='Enter')fin(true);if(e.key==='Escape')fin(false);});inp.addEventListener('blur',()=>fin(true));desc.textContent='';desc.append(inp);inp.focus();});
     const badges=el('div',{class:'badges'},
+      el('span',{class:'badge',text:d.kind||(d.is_router?'Router':'End device')}),
       el('span',{class:'badge',text:d.is_router?'Router':'End device'}),
       el('span',{class:'badge'},svg(/batt/i.test(d.power_source||'')?'battery':'bolt'),powerLabel(d.power_source)),
       d.interviewed?el('span',{class:'badge ok',text:'✓ interviewed'}):el('span',{class:'badge danger',text:d.interview_error?'interview failed: '+d.interview_error:'not interviewed'}),
@@ -748,10 +752,10 @@ views.device={
     const topics=el('div');for(const[k,v]of Object.entries(d.mqtt||{}))topics.append(el('div',{class:'topic'},el('span',{class:'mono',text:v}),el('button',{class:'btn sm icon',title:'Copy '+k.replace(/_/g,' '),'aria-label':'Copy',onclick:()=>copyText(v)},svg('copy'))));
     if(!topics.firstChild)topics.append(el('span',{class:'sub',text:'—'}));
     const tb=el('tbody',null,
-      this.kv('Type',(d.is_router?'Router':'End device')+' · '+powerLabel(d.power_source)),
+      this.kv('Type',d.kind||'Unknown device',(d.is_router?'Router':'End device')+' · '+powerLabel(d.power_source)),
       this.kv('IEEE address',d.ieee,d.oui_vendor||'unknown vendor (OUI)',1),
       this.kv('Network address',d.nwk,d.nwk_decimal!=null?'decimal '+d.nwk_decimal:'',1),
-      this.kv('Model',d.model,d.manufacturer||''),
+      this.kv('Model',d.model,[d.vendor,d.manufacturer&&d.manufacturer!==d.vendor?'reported as '+d.manufacturer:null].filter(Boolean).join(' · ')),
       this.kv('Manufacturer code',d.manufacturer_code!=null?hex(d.manufacturer_code):'—',d.manufacturer_code!=null?'decimal '+d.manufacturer_code:'',1),
       this.kv('Firmware',fw,fwSub,1),
       this.kv('Versions',vers),

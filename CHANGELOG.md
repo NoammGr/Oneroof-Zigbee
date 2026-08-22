@@ -1,7 +1,26 @@
 # Changelog
 
-All notable changes to One Roof Zigbee. Version numbers are MAJOR.MINOR.PATCH:
-MAJOR = breaking (re-pairing or config migration needed), MINOR = features, PATCH = fixes.
+## [1.3.0] — 2026-08-22
+
+### Added — device knowledge: models, vendors, private protocols
+- A declarative model table (206 entries, 768 model patterns) tells the gateway what a device *is*:
+  Aqara/Xiaomi, Tuya (incl. the TS0601 datapoint protocol for temperature/humidity sensors, TRVs,
+  wall thermostats, curtains, blinds and presence radars), IKEA, Philips Hue, Sonoff/eWeLink, Heiman,
+  frient/Develco, Schneider, Legrand/Netatmo, Bosch, Danfoss, Eurotronic, Innr, OSRAM/LEDVANCE,
+  SmartThings/Samjin/Centralite, Third Reality, Ubisys, Gledopto, Paulmann, Müller Licht, Linkind,
+  Namron, Sunricher, Aurora, Visonic, Sercomm, Xfinity, LiXee, Moes, Lidl, Yale/Schlage/Kwikset locks.
+- Each device now has a kind ("Contact sensor", "Smart plug", "Wall switch (2 gang)" …), vendor and
+  category, shown in the Devices table and About tab; sensors are read-only, plug-only controls no
+  longer appear on sensors, remotes and buttons publish `action`, multi-gang switches get one control
+  per gang, locks/covers/thermostats have proper controls.
+- Vendor reports decoded: Aqara private attributes (battery voltage and %, device temperature, power
+  outage count, illuminance, power/energy), Tuya datapoints (reports and writes).
+- Home Assistant discovery derives device classes and units from the features (door, motion, moisture,
+  smoke, CO, gas, vibration, tamper, battery, voltage, device temperature, VOC/CO₂/PM2.5 …), adds
+  select/number/lock/cover/climate entities, and keeps the legacy object ids so imported entities
+  survive unchanged.
+- Clusters added: scenes, analog/multistate/binary input, poll control, door lock, pump, fan, CO₂,
+  PM2.5, diagnostics, Tuya and vendor-specific clusters.
 
 ## [1.2.21] — 2026-08-21
 

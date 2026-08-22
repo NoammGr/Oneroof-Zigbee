@@ -385,7 +385,7 @@ def _dec_thermostat(a: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
     if _num(a.get("local_temperature")):
         out["local_temperature"] = round(a["local_temperature"] / 100, 2)
     if _num(a.get("occupied_heating_setpoint")):
-        out["heating_setpoint"] = round(a["occupied_heating_setpoint"] / 100, 2)
+        out["current_heating_setpoint"] = round(a["occupied_heating_setpoint"] / 100, 2)
     if _num(a.get("occupied_cooling_setpoint")):
         out["cooling_setpoint"] = round(a["occupied_cooling_setpoint"] / 100, 2)
     if _num(a.get("system_mode")):
@@ -398,6 +398,39 @@ def _dec_thermostat(a: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
 def _dec_groups(a: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
     v = a.get("name_support")
     return {"group_name_support": bool(v & 0x80)} if _num(v) else {}
+
+
+LOCK_STATE = {0: "not_fully_locked", 1: "locked", 2: "unlocked"}
+
+
+def _dec_door_lock(a: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    v = a.get("lock_state")
+    if _num(v):
+        out["lock_state"] = LOCK_STATE.get(v, f"unknown_{v}")
+        if v in (1, 2):
+            out["state"] = "LOCK" if v == 1 else "UNLOCK"
+    v = a.get("door_state")
+    if _num(v):
+        out["door_state"] = {0: "open", 1: "closed", 2: "error_jammed", 3: "error_forced_open", 4: "error_unspecified"}.get(v, f"unknown_{v}")
+    return out
+
+
+def _dec_multistate(a: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    v = a.get("present_value")
+    return {"present_value": v} if _num(v) else {}
+
+
+def _dec_analog(a: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    v = a.get("present_value")
+    return {"present_value": round(v, 3)} if _num(v) else {}
+
+
+def _dec_concentration(key: str) -> Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]:
+    def dec(a: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+        v = a.get("measured_value")
+        return {key: round(v, 1)} if _num(v) else {}
+    return dec
 
 
 # ---------------------------------------------------------------------------
@@ -697,6 +730,43 @@ def _make_clusters() -> dict[int, Cluster]:
         )
     )
 
+    clusters.append(Cluster(0x0005, "scenes", _attrs((0x0000, "scene_count", U8), (0x0001, "current_scene", U8), (0x0002, "current_group", U16))))
+    clusters.append(Cluster(0x000C, "analog_input", _attrs((0x001C, "description", STR), (0x0055, "present_value", DataType.single)), decoder=_dec_analog))
+    clusters.append(Cluster(0x000D, "analog_output", _attrs((0x001C, "description", STR), (0x0055, "present_value", DataType.single, True)), decoder=_dec_analog))
+    clusters.append(Cluster(0x0012, "multistate_input", _attrs((0x001C, "description", STR), (0x0055, "present_value", U16)), decoder=_dec_multistate))
+    clusters.append(Cluster(0x0020, "poll_control", _attrs((0x0000, "check_in_interval", DataType.uint32, True), (0x0003, "short_poll_interval", U16))))
+
+    ids, defs = _cmds(
+        CommandDef(0x00, "lock_door", (CommandParam("pin_code", DataType.octstr, b""),)),
+        CommandDef(0x01, "unlock_door", (CommandParam("pin_code", DataType.octstr, b""),)),
+        CommandDef(0x02, "toggle", (CommandParam("pin_code", DataType.octstr, b""),)),
+    )
+    clusters.append(
+        Cluster(
+            0x0101,
+            "door_lock",
+            _attrs((0x0000, "lock_state", E8), (0x0001, "lock_type", E8), (0x0002, "actuator_enabled", BOOL), (0x0003, "door_state", E8),
+                   (0x0055, "present_value", U16)),  # 0x0055 is what some vibration sensors misuse this cluster for
+            ids,
+            {0x20: "operation_event_notification", 0x21: "programming_event_notification"},
+            defs,
+            decoder=_dec_door_lock,
+        )
+    )
+    clusters.append(Cluster(0x0202, "fan_control", _attrs((0x0000, "fan_mode", E8, True), (0x0001, "fan_mode_sequence", E8))))
+    clusters.append(Cluster(0x0204, "thermostat_ui", _attrs((0x0000, "temperature_display_mode", E8, True), (0x0001, "keypad_lockout", E8, True))))
+    clusters.append(Cluster(0x040D, "carbon_dioxide", _attrs((0x0000, "measured_value", DataType.single)), decoder=_dec_concentration("co2")))
+    clusters.append(Cluster(0x042A, "pm25", _attrs((0x0000, "measured_value", DataType.single)), decoder=_dec_concentration("pm25")))
+    clusters.append(Cluster(0x0B05, "diagnostics"))
+    clusters.append(Cluster(0xE000, "tuya_private_e000"))
+    clusters.append(Cluster(0xE001, "tuya_private_e001"))
+    clusters.append(Cluster(0xEF00, "tuya_datapoints", {}, {0x00: "set_data", 0x03: "query_data"}, {0x01: "data_response", 0x02: "data_report", 0x06: "status_report"}))
+    clusters.append(Cluster(0xFC00, "philips_private", {}, {}, {0x00: "button_event"}))
+    clusters.append(Cluster(0xFC02, "samjin_private", _attrs((0x0010, "acceleration", B8), (0x0012, "x_axis", I16), (0x0013, "y_axis", I16), (0x0014, "z_axis", I16))))
+    clusters.append(Cluster(0xFC11, "sonoff_private"))
+    clusters.append(Cluster(0xFC7C, "ikea_private"))
+    clusters.append(Cluster(0xFCC0, "lumi_private", _attrs((0x00F7, "lumi_report", DataType.octstr), (0x0201, "power_outage_memory", BOOL, True))))
+
     return {c.id: c for c in clusters}
 
 
@@ -859,4 +929,5 @@ __all__ = [
     "SYSTEM_MODE",
     "POWER_SOURCE",
     "COLOR_MODE",
+    "LOCK_STATE",
 ]

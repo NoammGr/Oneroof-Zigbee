@@ -13,6 +13,8 @@ Every layer is written from scratch; no code is taken from other projects.
  oneroof_zigbee.zcl        ZCL frame codec, attribute types, cluster models
         │  typed attribute reports / commands
  oneroof_zigbee.gateway    device registry, interview, state, security policy
+        │  features (what a device exposes), corrected by
+ oneroof_zigbee.quirks     model knowledge: kind/vendor, feature overrides, vendor report codecs
         │
  oneroof_zigbee.mqtt       our own MQTT broker, 3.1.1 and 5 clients (+ in-process client)
         │
@@ -69,7 +71,26 @@ ConfigureReporting(0x06)/Rsp(0x07), ReportAttributes(0x0A), DefaultResponse(0x0B
 
 `zcl.clusters` exposes `Cluster` models with `id`, `name`, `attributes: dict[int, Attribute]`
 and decoders that turn attribute values into plain JSON-able state, e.g.
-`{"temperature": 21.3}`.
+`{"temperature": 21.3}`. `zcl.vendor` holds the pure codecs for vendor-private payloads
+(Aqara tag/type/value reports, Tuya datapoints).
+
+### quirks (model knowledge)
+
+`features.generic_features` derives controls from clusters alone; that is right for
+well-behaved Zigbee 3.0 products and wrong for the rest (a door sensor reporting contact
+through the On/Off cluster would become a switch). `quirks.QUIRKS` is a declarative table
+keyed by (manufacturer pattern, model pattern) → `Quirk`: the human `kind` and `vendor`, a
+coarse `category`, features to drop/add/re-label, how the On/Off attribute is to be read
+(`on_off_as`), the names of multi-gang endpoints, which clusters may be bound (`()` for
+sleepy devices that reject binds), and how the vendor's private reports map to state
+(Aqara tags, Tuya datapoint maps, multistate buttons, analog inputs, remote commands).
+`quirks.describe(dev)` is what `Device.kind/vendor/category` return; unknown models go
+through `classify_device` (IAS zone type, measurement clusters, metering, device ids,
+battery-powered on/off-only → remote). The gateway runs `decode_vendor_attributes`
+before the standard decoders and `translate_state` after them, so published keys
+(`contact`, `state_l1`, `action`…) are the device's keys regardless of how the value
+arrived; `ha.discovery` builds entities from the same feature list. Rule for entries:
+precision beats breadth — a quirk claims only what the model does; the rest stays generic.
 
 ### mqtt
 ```python

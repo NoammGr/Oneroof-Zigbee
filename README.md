@@ -27,14 +27,15 @@ Read [SECURITY.md](SECURITY.md) for the full model, including what this does *no
 ## What it does
 
 * **Coordinator**: TI CC2652 / CC1352 (Sonoff ZBDongle-P, SMLIGHT SLZB-06/07, ZigStar …) over USB or `tcp://` (network coordinators).
-* **Devices**: anything speaking standard ZCL — lights (on/off, dim, colour, CT), plugs with power metering, temperature / humidity / pressure / illuminance / occupancy, IAS contact / motion / leak / smoke, covers, thermostats. Plus standard extras: power-on behaviour, countdown.
+* **Devices**: anything speaking standard ZCL — lights (on/off, dim, colour, CT), plugs with power metering, temperature / humidity / pressure / illuminance / occupancy, IAS contact / motion / leak / smoke / CO / vibration, covers, thermostats, door locks, remotes and buttons (as `action` events). Plus standard extras: power-on behaviour, countdown.
+* **Model knowledge** for the common makes, so a device shows up as what it is (contact sensor, 2-gang wall switch, TRV, remote…) instead of whatever its clusters suggest: Aqara/Xiaomi (structured battery/temperature/contact reports, multi-gang switches, buttons, plugs, curtain), Tuya (TS00xx switches, plugs with child lock and indicator, buttons, sensors, lights, and TS0601 datapoint devices: temperature/humidity, TRVs, wall thermostats, curtains, presence radars, generic datapoint fallback), IKEA (bulbs, drivers, plugs, remotes, motion, contact, leak, blinds), Philips Hue (bulbs, dimmer, motion, buttons), Sonoff, Innr, OSRAM/LEDVANCE, SmartThings/Centralite, Heiman, frient/Develco, Third Reality, Danfoss, Eurotronic, Bosch, Yale/Kwikset/Schlage locks, Ubisys, Gledopto, Paulmann, Müller Licht, LiXee, Visonic, Xfinity, Linkind, Namron, Sunricher, Aurora, Lidl, Legrand/Netatmo, Schneider. Unknown models fall back to cluster heuristics with a device-level kind.
 * **Built-in MQTT broker** (3.1.1 and 5 clients) with users, roles, ACLs, TLS/mTLS, lockout.
 * **Home Assistant** auto-discovery; appears in the HA sidebar via Ingress as an add-on.
 * **Web UI**: Dashboard, Devices (About / Controls / State / Clusters / Reporting / Bind / Firmware), Pair, Map, Logs, Activity, Settings (full admin console with help on every setting).
 * **Migrate from a previous setup without re-pairing** (same dongle) — same broker, topics and HA entities.
 * **Backups** (encrypted), **OTA** (local, verified), **import**, **restart** — all from the UI.
 
-Not yet: Tuya/Aqara private clusters (child lock, indicator mode …), groups & scenes, Silicon Labs (EZSP) dongles, touchlink.
+Not yet: Tuya datapoint maps beyond the families listed above (unknown TS0601 models show raw datapoints), Aqara private settings (power outage memory, sensitivity …), groups & scenes, Silicon Labs (EZSP) dongles, touchlink.
 
 ## Install
 

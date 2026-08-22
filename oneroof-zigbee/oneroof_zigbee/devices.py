@@ -73,6 +73,27 @@ class Device:
     def ieee_str(self) -> str:
         return ieee_str(self.ieee)
 
+    # -- model knowledge (derived, never persisted as truth) ------------------
+
+    def _info(self) -> Any:
+        from .quirks import describe  # local import: quirks depends on this module
+        return describe(self)
+
+    @property
+    def kind(self) -> str:
+        """Human device kind, e.g. "Contact sensor", "Wall switch (2 gang)"."""
+        return self._info().kind
+
+    @property
+    def vendor(self) -> str | None:
+        """Display vendor name ("Aqara", "IKEA"…) derived from the manufacturer string."""
+        return self._info().vendor
+
+    @property
+    def category(self) -> str:
+        """Coarse device category: light, plug, switch, sensor, remote, cover, climate, lock, meter, unknown."""
+        return self._info().category
+
     def primary_endpoint(self) -> Endpoint | None:
         if not self.endpoints:
             return None
@@ -83,11 +104,15 @@ class Device:
         d = asdict(self)
         d["ieee"] = self.ieee_str
         d["endpoints"] = {str(k): asdict(v) for k, v in self.endpoints.items()}
+        info = self._info()
+        d["kind"], d["vendor"], d["category"] = info.kind, info.vendor, info.category
         return d
 
     @staticmethod
     def from_json(d: dict[str, Any]) -> Device:
         d = dict(d)
+        for derived in ("kind", "vendor", "category"):
+            d.pop(derived, None)
         d["ieee"] = ieee_int(d["ieee"])
         d["endpoints"] = {int(k): Endpoint(**v) for k, v in d.get("endpoints", {}).items()}
         return Device(**d)

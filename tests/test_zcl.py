@@ -358,7 +358,7 @@ def test_window_covering() -> None:
 
 def test_thermostat() -> None:
     st = decode_attributes(0x0201, [(0, 2150), (0x12, 2000), (0x1C, 4)])
-    assert st == {"local_temperature": 21.5, "heating_setpoint": 20.0, "system_mode": "heat"}
+    assert st == {"local_temperature": 21.5, "current_heating_setpoint": 20.0, "system_mode": "heat"}
 
 
 def test_basic_cluster() -> None:
