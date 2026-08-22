@@ -721,8 +721,29 @@ class Gateway:
 
         self._timers[(dev.ieee, key)] = asyncio.create_task(clear(), name=f"clear-{key}-{dev.ieee_str}")
 
+    # Basic-cluster identity fields and vendor heartbeat attributes describe the device, not its
+    # state: they go to the device record (About tab) and never into state/Activity/Home Assistant.
+    _IDENTITY_KEYS = {"manufacturer_name", "model_id", "date_code", "sw_build_id", "zcl_version", "app_version",
+                      "stack_version", "hw_version", "power_source", "battery_backup"}
+
     def _apply_changes(self, dev: Device, changed: dict[str, Any]) -> list[dict[str, Any]]:
         now = time.time()
+        identity = {k: v for k, v in changed.items() if k in self._IDENTITY_KEYS or k.startswith("basic_0x")}
+        if identity:
+            changed = {k: v for k, v in changed.items() if k not in identity}
+            for k, v in identity.items():
+                if k == "sw_build_id":
+                    dev.sw_build = v or dev.sw_build
+                elif k == "model_id":
+                    dev.model = v or dev.model
+                elif k == "manufacturer_name":
+                    dev.manufacturer = v or dev.manufacturer
+                elif k in ("date_code", "hw_version", "zcl_version", "app_version", "stack_version", "power_source"):
+                    setattr(dev, k, v)
+                else:
+                    dev.context.setdefault("basic_extra", {})[k] = v
+            if not changed:
+                return []
         events = dev.record_changes(changed, now)
         if dev.lqi is not None:
             dev.record_changes({"linkquality": dev.lqi}, now)

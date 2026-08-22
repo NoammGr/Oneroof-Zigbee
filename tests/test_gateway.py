@@ -321,3 +321,18 @@ async def test_silent_routers_are_polled_and_lqi_seeded_from_state(tmp_path):
     assert reads, "on/off attribute read sent to the silent router"
     assert dev.state.get("state") == "ON" and dev.last_seen > 0, "answer applied; last-seen refreshed"
     await t.close()
+
+
+async def test_identity_and_vendor_heartbeat_attributes_never_become_state(tmp_path):
+    from oneroof_zigbee.devices import Endpoint
+    fake, coord, broker, gw, t = await make(tmp_path)
+    dev = gw.registry.add_or_update(0xA4C1380000000077, 0x4321, is_router=True)
+    dev.endpoints[1] = Endpoint(1, 0x0104, 0x0051, [0, 6], [], "plug")
+    dev.interviewed = True
+    before = len(gw.activity)
+    events = gw._apply_changes(dev, {"app_version": 80, "basic_0xffe2": 56, "basic_0xffe4": 0, "state": "ON"})
+    assert "app_version" not in dev.state and "basic_0xffe2" not in dev.state and dev.state["state"] == "ON"
+    assert dev.app_version == 80 and dev.context["basic_extra"] == {"basic_0xffe2": 56, "basic_0xffe4": 0}
+    assert all(e["key"] == "state" for e in events) and all(r["key"] == "state" for r in list(gw.activity)[before:])
+    assert gw._apply_changes(dev, {"basic_0xffe2": 57}) == []
+    await t.close()

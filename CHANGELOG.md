@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.1] — 2026-08-22
+
+### Fixed
+- Basic-cluster identity fields (application/stack/hardware version, date code, power source) and
+  vendor heartbeat attributes (`basic_0xffe2` …) no longer appear as device state, in Activity or in
+  Home Assistant; they go to the device record (About tab).
+
 ## [1.5.0] — 2026-08-22
 
 ### Added — unknown devices handled, and teachable
