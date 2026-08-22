@@ -133,7 +133,7 @@ Switch to the built-in TLS broker from Settings whenever you are ready.
 
 ## Host side (add-on)
 
-* Runs as uid 1000, not root. No `hassio_api`, no `host_network`, no
+* Starts as root only to read the Supervisor's root-owned options and own its config folder, then drops to uid 1000 when the serial device is reachable that way (the log says which). No `hassio_api`, no `host_network`, no
   `privileged`, no `/share` or `/config` mounts, web UI only via Ingress.
 * One process, three third-party Python packages (`pyserial-asyncio`,
   `cryptography`, `pyyaml`). `pip audit` takes seconds.

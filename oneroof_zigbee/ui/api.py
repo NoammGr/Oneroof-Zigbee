@@ -214,8 +214,9 @@ class UiApi:
     async def index(self, req: Request) -> Response:
         return Response(200, self._index, "text/html; charset=utf-8")
 
-    _FAVICON = (b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="8" fill="#e2603c"/>'
-                b'<path d="M8 10h16l-12 12h12" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>')
+    _FAVICON = (b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#e2603c"/>'
+                b'<path d="M10 10h12l-12 12h12" fill="none" stroke="#fff" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>'
+                b'<path d="M23.5 8.5a4 4 0 0 1 0 0M21.5 9.2a3.2 3.2 0 0 1 3.2-3.2M21.5 11.4a5.4 5.4 0 0 1 5.4-5.4" fill="none" stroke="#fff" stroke-width="1.6" stroke-linecap="round"/></svg>')
 
     async def favicon(self, req: Request) -> Response:
         return Response(200, self._FAVICON, "image/svg+xml", {"Cache-Control": "public, max-age=86400"})
