@@ -1,0 +1,24 @@
+[project]
+name = "oneroof_zigbee"
+version = "1.0.1"
+description = "From-scratch, security-first Zigbee to MQTT gateway with its own MQTT 3.1.1 broker"
+requires-python = ">=3.11"
+dependencies = [
+    "pyserial-asyncio",
+    "cryptography",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio", "pytest-timeout", "websockets", "ruff"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["oneroof_zigbee*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

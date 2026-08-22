@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.claude/
+data/
+config.yaml
+*.keystore
+*.keystore.pass
+*.passwd
+audit.log
+activity.log
+tls/
+firmware/
+*.ozbk
+.DS_Store

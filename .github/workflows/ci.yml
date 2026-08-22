@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: lint + unit + integration + e2e (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Lint
+        run: ruff check oneroof_zigbee tests addon --select E,F,B --ignore E501,B905
+      - name: Tests (browser e2e uses the runner's Chrome)
+        run: pytest -q --timeout=180
+        env:
+          PYTHONUNBUFFERED: "1"
+
+  addon-image:
+    name: add-on image builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: addon/oneroof_zigbee/Dockerfile
+          push: false
+          tags: oneroof-zigbee:ci
