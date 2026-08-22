@@ -640,3 +640,28 @@ async def test_16_importer_reads_mqtt_section_and_admin_writes_legacy_layout(tmp
     assert saved["mqtt"]["external"] == {"server": "mqtt://core-mosquitto:1883", "client_id": "oneroof-zigbee", "user": "mqtt-user", "password": "s3cret-pass"}
     Config.load(cfg_path)  # and it is a valid config
     assert oct(os.stat(cfg_path).st_mode & 0o777) in ("0o600", "0o644")
+
+
+async def test_17_managed_import_writes_overrides_and_recreates_login(tmp_path_factory):
+    """Add-on path: the import switches the legacy layout on through overrides.yaml (the Supervisor owns
+    options.json) and recreates the previous broker login as a client user."""
+    from oneroof_zigbee.admin import Admin
+    from oneroof_zigbee.devices import Registry
+    from oneroof_zigbee.mqtt import Acl, PasswordFile
+    from oneroof_zigbee.security import NetworkSecrets
+    import yaml
+    z2m = Z2M_CONFIG.replace("mqtt:\n  base_topic: zigbee2mqtt\n",
+                             "mqtt:\n  base_topic: zigbee2mqtt\n  server: mqtt://core-mosquitto:1883\n  user: nvr-client\n  password: nvr-secret-123\n")
+    tmp = tmp_path_factory.mktemp("managed")
+    os.environ["ONEROOF_ZIGBEE_KEYSTORE_PASSPHRASE"] = "e2e-passphrase"
+    cfg = Config.from_dict({"serial": {"port": "/dev/null"}, "data_dir": str(tmp), "mqtt": {"tls": "off", "port": 0}})
+    pw = PasswordFile(tmp / "mqtt.passwd")
+    acl = Acl()
+    admin = Admin(cfg, None, pw, acl, set(), managed=True)
+    r = admin.import_apply({"configuration.yaml": z2m, "database.db": Z2M_DB}, Registry(tmp / "devices.json"), NetworkSecrets.generate(15), set())
+    ov = yaml.safe_load((tmp / "overrides.yaml").read_text())
+    assert ov == {"legacy_layout": True, "base_topic": "zigbee2mqtt", "discovery_prefix": "homeassistant"}
+    assert "legacy_layout" in r["compat"] and "user:nvr-client" in r["compat"]
+    assert pw.verify("nvr-client", "nvr-secret-123")
+    assert acl.can_publish("nvr-client", "oneroof/events") and "nvr-client" not in admin.control_users
+    assert "legacy_layout" in admin.restart_required

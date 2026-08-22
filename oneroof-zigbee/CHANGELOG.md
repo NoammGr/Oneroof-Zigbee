@@ -3,6 +3,68 @@
 All notable changes to One Roof Zigbee. Version numbers are MAJOR.MINOR.PATCH:
 MAJOR = breaking (re-pairing or config migration needed), MINOR = features, PATCH = fixes.
 
+## [1.2.5] — 2026-08-21
+
+### Fixed — "UI not built" in the add-on
+- The web UI's `index.html` was not included in the installed package (only `.py` files were), so the
+  add-on served "UI not built". The static files are now declared as package data and verified present
+  in the built wheel.
+
+## [1.2.4] — 2026-08-21
+
+### Fixed — first run on real hardware (Sonoff ZBDongle-P, Z-Stack 3.x.0)
+- `APP_CNF_BDB_SET_ACTIVE_DEFAULT_CENTRALIZED_KEY` was encoded with a boolean first byte; the firmware
+  reads it as a mode (0 = default global key, 1 = install code, …), so "use default" was sent as "install
+  code with an all-zero code" and rejected with INVALID_PARAMETER, aborting network formation. The mode
+  is now encoded correctly, and the simulated coordinator in the tests rejects the wrong encoding the way
+  the real firmware does.
+
+## [1.2.3] — 2026-08-21
+
+### Fixed — automatic least privilege, done right
+- The unprivileged-access check in 1.2.1 opened the *resolved* device path, which does not exist inside the
+  add-on container (only the `/dev/serial/by-id/...` name does), so the check was silently skipped and root
+  was dropped blindly. The check now opens the device exactly as configured, and whenever it cannot prove
+  access it stays root. Result: automatic — drops to uid 1000 where the host allows it, otherwise runs as
+  root like every other add-on, and the log states which. `drop_privileges: true` is the default again.
+
+## [1.2.2] — 2026-08-21
+
+### Changed — run as root inside the container by default (like all add-ons)
+- The Supervisor's device handling kept denying the unprivileged user access to the Sonoff dongle on a
+  real Home Assistant host even after the empirical check. The add-on now runs as root inside its
+  unprivileged container, as every Home Assistant add-on does; `drop_privileges: true` is an opt-in for
+  hosts where uid 1000 can use the device. Container-level hardening is unchanged.
+
+## [1.2.1] — 2026-08-21
+
+### Fixed — "Permission denied" opening the coordinator after dropping root
+- The decision to drop to uid 1000 is now made empirically: a throwaway child process tries to open the
+  serial device as the unprivileged user first. If that works the add-on drops root; if not (device node
+  not accessible to non-root on that host), it stays root like other add-ons and says so in the log.
+  Previously the check looked at file modes only and could drop root when the device was in fact unusable.
+
+## [1.2.0] — 2026-08-21
+
+### Added — the add-on takes the broker's place in Home Assistant, automatically
+- The add-on registers itself as Home Assistant's MQTT service (`services: mqtt:provide`): the MQTT
+  integration set up through the Supervisor repoints itself to One Roof Zigbee, and add-ons that
+  auto-detect the broker (e.g. One Roof Bridge) follow. Registration happens once the broker is listening
+  and is removed on shutdown. If the old broker is still registered, the log says to stop it.
+- Importing a previous setup in the add-on now switches the legacy layout on by itself (through an
+  overrides file, since the Supervisor owns the options) and recreates the previous broker login as a
+  `client` user so anything outside Home Assistant keeps connecting unchanged.
+- New `client` role (full publish/subscribe, no control).
+
+### Changed
+- Plain MQTT listener (1883) on by default inside the add-on network (required by Home Assistant's
+  discovery); still no host port unless enabled. External-broker options remain for standalone use.
+- README rewritten around the three-step add-on journey.
+
+### Tests
+- Add-on entrypoint tests against a fake Supervisor (service registration, "old broker still registered",
+  overrides merge, option parsing); container verified end-to-end locally. 290 tests.
+
 ## [1.1.13] — 2026-08-21
 
 ### Fixed — add-on start-up robustness

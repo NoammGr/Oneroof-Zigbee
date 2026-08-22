@@ -41,13 +41,22 @@ Not yet: Tuya/Aqara private clusters (child lock, indicator mode …), groups & 
 ### Home Assistant add-on
 
 1. Settings → Add-ons → Add-on store → ⋮ → Repositories → add `https://github.com/NoammGr/Oneroof-Zigbee`.
-2. Install **OneRoof Zigbee** (the first install builds the image on your HA host, a few minutes),
-   set the serial port, start it.
-3. The log shows the MQTT passwords **once**; the CA certificate is in the add-on config folder
-   (`/addon_configs/…oneroof_zigbee/tls/ca.crt`, reachable via Samba or the File editor).
-4. Settings → Devices & services → Add integration → **MQTT**: broker = the HA host,
-   port **8883**, TLS on, user `homeassistant`, upload the CA as *Broker certificate*.
-5. Open OneRoof Zigbee in the sidebar → Pair.
+2. Install **One Roof Zigbee**. Configuration → `serial_port`: pick your adapter. Start.
+3. That's it for a new network: One Roof Zigbee registers itself as Home Assistant's MQTT service,
+   so the MQTT integration and add-ons that auto-detect the broker connect to it by themselves.
+   Open the UI from the sidebar → Pair.
+
+**Coming from a previous setup** (existing devices, Mosquitto, dashboards):
+1. Stop the old Zigbee add-on and the Mosquitto add-on (don't uninstall yet).
+2. Install and start One Roof Zigbee as above.
+3. Sidebar → One Roof Zigbee → Settings → *Import a previous setup* → upload the old
+   `configuration.yaml` + `coordinator_backup.json` (+ `database.db`, `state.json` if present)
+   → Import → Restart.
+
+Everything else is automatic: same network (no re-pairing), same topics and Home Assistant
+entities (dashboards, automations, history untouched), Home Assistant and add-ons repointed to
+the new broker through the Supervisor, and the previous broker login recreated so clients outside
+Home Assistant keep connecting. When all is well, uninstall the old add-ons.
 
 ### Standalone
 
@@ -64,32 +73,25 @@ MQTT: port 8883, TLS, CA at `data/tls/ca.crt`.
 
 ## Migrating from a previous setup (nothing else changes)
 
-Keep the **same coordinator dongle** — the network lives in its flash. Then:
+Keep the **same coordinator dongle** — the network lives in its flash. Import the old files
+(UI: Settings → *Import a previous setup*; CLI: `oneroof-zigbee import /path/to/old/data --apply`).
 
-1. Stop your previous gateway add-on (leave your MQTT broker running).
-2. Install OneRoof Zigbee with the same serial port.
-3. Settings → *Import a previous setup* → upload its `configuration.yaml`, `coordinator_backup.json`,
-   and if present `database.db` and `state.json` → Preview → Import → Restart.
+The import does the whole move:
 
-The import does three things so that **nothing downstream notices**:
+* **Same network** — adopts the existing key / PAN / channel so the coordinator starts instead of
+  re-forming; names, models and endpoints are imported, so no interview runs and no device is re-paired.
+* **Same topics and entities** — the previous `<base>/<friendly name>` layout and discovery identities,
+  so Home Assistant keeps the *same* entities: ids, names, areas, history, automations, cards.
+* **Same clients** — in the add-on, One Roof Zigbee registers as Home Assistant's MQTT service, so the
+  MQTT integration and auto-detecting add-ons switch over by themselves; the previous broker login is
+  recreated for clients outside Home Assistant.
 
-* **Same network** — adopts the existing network key / PAN / channel, so the coordinator
-  starts instead of re-forming; device names, models and endpoints are imported, so no
-  interviews run and no device is re-paired.
-* **Same broker** — keeps using your existing MQTT broker (server/login from
-  `configuration.yaml`; the built-in broker stays off until you switch). Home Assistant's
-  MQTT integration, OneRoof Bridge, OneRoof NVR and any dashboard keep their connection as is.
-* **Same topics and entities** — the previous `<base>/<friendly name>` topic layout and the
-  same Home Assistant discovery identities, so HA keeps the *same* entities: entity ids,
-  names, areas, history, automations, Lovelace cards.
+If the dongle was wiped or replaced, `coordinator_backup.json` is required: we re-form with the same
+key and a higher frame counter and devices rejoin on their own. If the previous setup used a well-known
+default network key, the import flags it — rotate it once everything works (the one step that re-pairs).
 
-Later, from Settings, you can turn on the built-in TLS broker and point clients at it —
-at your pace. If the dongle was wiped or replaced, `coordinator_backup.json` is required:
-we re-form with the same key and a higher frame counter and devices rejoin on their own.
-If the previous setup used a well-known default network key, the import flags it — rotate
-it once everything works (that is the one step that re-pairs devices).
-
-CLI equivalent: `oneroof-zigbee import /path/to/previous/data --apply`.
+Standalone (outside the add-on) you can instead keep an *existing broker* (`mqtt.external`) — the import
+offers it when the old config names one.
 
 ## Firmware updates (OTA)
 
@@ -139,8 +141,8 @@ eviction, lockout, users, config, backup/restore, OTA transfer, import, shutdown
 
 ## Status
 
-Everything above is implemented and tested against simulated hardware; it has
-**not yet been run against a physical dongle**. Expect to iterate on the first real pairing.
+Tested against simulated hardware and, since 1.2.4, against a real Sonoff ZBDongle-P (Z-Stack 3.x.0)
+during its first bring-up; expect to iterate on the first real pairings.
 
 ## License
 

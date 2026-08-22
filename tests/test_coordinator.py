@@ -37,6 +37,9 @@ async def test_runtime_security_applied_every_start():
     fake, coord, t = await make()
     reqs = [(f.subsystem, f.command, f.data) for f in fake.requests]
     assert (c.Subsystem.APP_CNF, c.AppCnfCmd.BDB_SET_TC_REQUIRE_KEY_EXCHANGE, b"\x01") in reqs
+    # default mode = 0 (use the global default key); a Sonoff ZBDongle-P rejects 1 as a boolean with INVALID_PARAMETER
+    key_cmds = [d for ss, cmd, d in reqs if ss is c.Subsystem.APP_CNF and cmd == c.AppCnfCmd.BDB_SET_ACTIVE_DEFAULT_CENTRALIZED_KEY]
+    assert key_cmds and key_cmds[-1][0] == c.CentralizedKeyMode.DEFAULT_GLOBAL
     assert (c.Subsystem.APP_CNF, c.AppCnfCmd.SET_ALLOWREJOIN_TC_POLICY, b"\x00") in reqs
     await t.close()
     # second start with matching NV must NOT re-form
@@ -56,7 +59,7 @@ async def test_strict_mode_replaces_public_link_key_and_requires_install_code():
     reqs = [(f.command, f.data) for f in fake.requests if f.subsystem is c.Subsystem.APP_CNF]
     assert (c.AppCnfCmd.BDB_SET_JOINUSESINSTALLCODE, b"\x01") in reqs
     key_cmd = [d for cmd, d in reqs if cmd == c.AppCnfCmd.BDB_SET_ACTIVE_DEFAULT_CENTRALIZED_KEY][-1]
-    assert key_cmd[0] == 0 and key_cmd[1:] == coord.secrets.tc_install_code and len(key_cmd) == 19
+    assert key_cmd[0] == c.CentralizedKeyMode.INSTALL_CODE and key_cmd[1:] == coord.secrets.tc_install_code and len(key_cmd) == 19
     from oneroof_zigbee.security import crc16
     assert crc16(key_cmd[1:17]) == int.from_bytes(key_cmd[17:19], 'little')
     with pytest.raises(PermissionError):

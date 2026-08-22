@@ -115,6 +115,14 @@ built to add as little surface as possible:
 * One self-contained HTML file: no CDN, no framework, no build step; device
   names from the radio are rendered as text nodes, never as HTML.
 
+## Inside Home Assistant (add-on)
+
+The add-on registers itself as Home Assistant's MQTT service. Home Assistant's own discovery expects
+plain MQTT on the add-on's internal hostname, so the plain listener (1883) is on by default **inside the
+add-on network only** — it is not published on a host port unless you enable it in the add-on's Network
+section. Traffic between Home Assistant and the add-on never leaves the Docker network. Everything
+reachable from your LAN stays TLS (8883).
+
 ## Legacy layout (after importing a previous setup)
 
 While the legacy layout is on, the gateway uses *your existing* broker and the
@@ -133,7 +141,7 @@ Switch to the built-in TLS broker from Settings whenever you are ready.
 
 ## Host side (add-on)
 
-* Starts as root only to read the Supervisor's root-owned options and own its config folder, then drops to uid 1000 when the serial device is reachable that way (the log says which). No `hassio_api`, no `host_network`, no
+* Least privilege, automatically: the add-on starts as root (the Supervisor's device and volume handling assumes it), proves in a child process that an unprivileged user can open the coordinator exactly as configured, and then drops to uid 1000. If that proof fails on a given host it stays root inside its *unprivileged* container like every other add-on, and the log says so. The container requests no host network, no Supervisor/Home Assistant API, no privileged mode. No `hassio_api`, no `host_network`, no
   `privileged`, no `/share` or `/config` mounts, web UI only via Ingress.
 * One process, three third-party Python packages (`pyserial-asyncio`,
   `cryptography`, `pyyaml`). `pip audit` takes seconds.
