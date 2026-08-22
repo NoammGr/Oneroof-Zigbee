@@ -106,3 +106,13 @@ def test_counter_restart_near_zero_is_not_an_anomaly():
     clock.t += 30
     m.observe(9, seq=130, lqi=120, is_command=False, mains=True)  # a jump into the middle is still one
     assert [a["kind"] for a in alerts] == ["sequence_jump"]
+
+
+def test_uncounted_chatter_never_raises():
+    m, alerts, clock = make()
+    feed(m, clock, 10, 60, gap=60.0)
+    clock.t = (int(clock.t // 60) + 1) * 60.0
+    for _ in range(300):  # vendor heartbeat every 200 ms
+        clock.t += 0.2
+        m.observe(10, seq=None, lqi=120, is_command=False, mains=True, count=False)
+    assert alerts == [] and m.profiles[10].last_seen == clock.t

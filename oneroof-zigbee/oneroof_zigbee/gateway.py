@@ -597,8 +597,14 @@ class Gateway:
             log.debug("%s: undecodable ZCL on %#06x: %s", dev.ieee_str, m.cluster, e)
             return
 
-        self.monitor.observe(dev.ieee, seq=frame.seq, lqi=m.lqi, is_command=bool(frame.is_cluster_specific and frame.direction == 0),
-                             mains=bool(dev.is_router or dev.rx_on_when_idle))
+        if m.cluster == 0x0000:
+            # Basic-cluster chatter (vendor heartbeats, identity reads) says nothing about behaviour;
+            # only its link quality is worth keeping.
+            self.monitor.observe(dev.ieee, seq=None, lqi=m.lqi, is_command=False,
+                                 mains=bool(dev.is_router or dev.rx_on_when_idle), count=False)
+        else:
+            self.monitor.observe(dev.ieee, seq=frame.seq, lqi=m.lqi, is_command=bool(frame.is_cluster_specific and frame.direction == 0),
+                                 mains=bool(dev.is_router or dev.rx_on_when_idle))
         fut = self._pending_rsp.get((m.src_addr, frame.seq, m.cluster))
         if (fut and not fut.done() and frame.direction == zcl.DIRECTION_SERVER_TO_CLIENT
                 and frame.frame_type == zcl.FRAME_TYPE_GLOBAL

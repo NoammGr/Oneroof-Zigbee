@@ -88,11 +88,19 @@ class Monitor:
 
     # -- observations --------------------------------------------------------
 
-    def observe(self, ieee: int, *, seq: int | None, lqi: int | None, is_command: bool, mains: bool) -> list[str]:
-        """Feed one received frame. Returns the anomaly kinds raised (for tests/UI)."""
+    def observe(self, ieee: int, *, seq: int | None, lqi: int | None, is_command: bool, mains: bool,
+                count: bool = True) -> list[str]:
+        """Feed one received frame. Returns the anomaly kinds raised (for tests/UI).
+        ``count=False`` updates link quality and last-seen only (vendor chatter frames)."""
         now = self._now()
         p = self.profiles.setdefault(ieee, Profile())
         raised: list[str] = []
+        if not count:
+            if lqi is not None:
+                p.lqi_n += 1
+                p.lqi_mean += (lqi - p.lqi_mean) / min(p.lqi_n, 50)
+            p.last_seen = now
+            return raised
         p.frames += 1
 
         if seq is not None and p.last_seq is not None and p.frames > 20:

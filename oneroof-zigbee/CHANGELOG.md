@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.7] — 2026-08-22
+
+### Changed
+- The anomaly monitor ignores Basic-cluster chatter (vendor heartbeats, identity reads) for its burst
+  and sequence checks; only link quality and last-seen are taken from such frames. Tuya plugs were
+  raising `device_anomaly` with their own heartbeat.
+
 ## [1.5.6] — 2026-08-22
 
 ### Changed
