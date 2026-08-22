@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.6.2] — 2026-08-22
+
+### Fixed — phantom entities from earlier descriptions
+- Entity configs are retained on the broker; when a device's description changes (corrected
+  interview, better model knowledge, a definition), configs that no longer apply are now blanked so
+  Home Assistant drops the entity (e.g. a door sensor once described as "MQTT Switch"). The first
+  announce after this update also sweeps the shapes earlier versions could have left behind.
+
 ## [1.6.1] — 2026-08-22
 
 ### Changed — the Home Assistant role is a full broker client

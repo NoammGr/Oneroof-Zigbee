@@ -373,3 +373,38 @@ async def test_endpoints_without_clusters_are_reinterviewed(tmp_path):
             d.context.pop("reporting_done", None)
     assert dev.interviewed is False and "reporting_done" not in dev.context
     await t.close()
+
+
+async def test_reannounce_blanks_entity_configs_that_no_longer_apply(tmp_path):
+    """A retained switch config from an earlier, wrong description must be erased when the device
+    is announced with its correct description, or Home Assistant keeps a phantom entity."""
+    from oneroof_zigbee.devices import Endpoint
+    fake, coord, broker, gw, t = await make(tmp_path)
+    dev = gw.registry.add_or_update(0x00158D0000000077, 0x7777, is_router=True)
+    dev.manufacturer, dev.model = None, None
+    dev.endpoints[1] = Endpoint(1, 0x0104, 0x0100, [0, 6], [], "switch")  # wrongly described as a mains switch
+    dev.interviewed = True
+    await gw._announce(dev)
+    sw = f"homeassistant/switch/{dev.ieee_str}/switch/config"
+    assert broker.last(sw)
+    dev.manufacturer, dev.model = "LUMI", "lumi.sensor_magnet.aq2"  # corrected: a contact sensor
+    dev.is_router = False
+    dev.endpoints[1] = Endpoint(1, 0x0104, 0x0104, [0, 3, 0xFFFF], [0, 4, 3, 6, 8, 5], "sensor")
+    await gw._announce(dev)
+    assert broker.last(sw) == b"", "stale switch config blanked"
+    assert broker.last(f"homeassistant/binary_sensor/{dev.ieee_str}/contact/config")
+    await t.close()
+
+
+async def test_first_tracked_announce_sweeps_legacy_entity_shapes(tmp_path):
+    from oneroof_zigbee.devices import Endpoint
+    fake, coord, broker, gw, t = await make(tmp_path)
+    dev = gw.registry.add_or_update(0x00158D0000000078, 0x7778, is_router=False)
+    dev.manufacturer, dev.model = "LUMI", "lumi.sensor_magnet.aq2"
+    dev.endpoints[1] = Endpoint(1, 0x0104, 0x0104, [0, 3, 0xFFFF], [0, 4, 3, 6, 8, 5], "sensor")
+    dev.interviewed = True
+    await gw._announce(dev)
+    assert broker.last(f"homeassistant/switch/{dev.ieee_str}/switch/config") == b"", "phantom switch shape blanked"
+    assert broker.last(f"homeassistant/binary_sensor/{dev.ieee_str}/contact/config"), "real entity published after the sweep"
+    assert "discovery_topics" in dev.context
+    await t.close()

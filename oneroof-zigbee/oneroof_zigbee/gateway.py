@@ -862,10 +862,33 @@ class Gateway:
             devices.append(entry)
         await self.broker.publish(f"{self.base}/bridge/devices", json.dumps(devices).encode(), retain=True)
 
+    _LEGACY_ENTITY_SHAPES = (
+        ("switch", "switch"), ("light", "light"), ("switch", "state"), ("select", "power_on_behavior"),
+        ("binary_sensor", "alarm_1"), ("binary_sensor", "tamper"), ("binary_sensor", "battery_low"),
+        ("sensor", "illuminance_lux"), ("button", "identify"), ("sensor", "action"), ("sensor", "voltage"),
+        ("sensor", "device_temperature"), ("sensor", "power_outage_count"), ("binary_sensor", "occupancy"),
+        ("binary_sensor", "contact"), ("sensor", "temperature"), ("sensor", "humidity"), ("sensor", "pressure"),
+        ("sensor", "power"), ("sensor", "energy"), ("sensor", "current"), ("lock", "child_lock"), ("select", "indicator_mode"),
+    )
+
     async def _announce(self, dev: Device) -> None:
         if not self.cfg.homeassistant.discovery:
             return
-        for topic, payload in discovery_messages(dev, self.base, self.cfg.homeassistant.discovery_prefix, legacy=self.legacy):
+        msgs = discovery_messages(dev, self.base, self.cfg.homeassistant.discovery_prefix, legacy=self.legacy)
+        current = {t for t, _ in msgs}
+        # Entity configs are retained; one that no longer applies (the device was described
+        # differently before: wrong interview, model knowledge improved, definition changed) must be
+        # blanked, or Home Assistant keeps a stale entity forever.
+        known = dev.context.get("discovery_topics")
+        if known is None:
+            # First announce with tracking: sweep the entity shapes earlier versions may have left
+            # behind for this device (a blank retained publish on an absent topic is harmless).
+            pfx = self.cfg.homeassistant.discovery_prefix
+            known = [f"{pfx}/{comp}/{dev.ieee_str}/{obj}/config" for comp, obj in self._LEGACY_ENTITY_SHAPES]
+        for stale in set(known) - current:
+            await self.broker.publish(stale, b"", retain=True)
+        dev.context["discovery_topics"] = sorted(current)
+        for topic, payload in msgs:
             await self.broker.publish(topic, payload, retain=True)
         await self._publish_availability(dev, dev.available)
 
