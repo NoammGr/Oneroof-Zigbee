@@ -260,7 +260,7 @@ class Admin:
 
     # ---------------------------------------------------------------- backup --
 
-    BACKUP_FILES = ("network.keystore", "network.keystore.pass", "devices.json", "users.yaml", "mqtt.passwd",
+    BACKUP_FILES = ("network.keystore", "network.keystore.pass", "devices.json", "users.yaml", "definitions.yaml", "mqtt.passwd",
                     "tls/ca.key", "tls/ca.crt", "tls/server.key", "tls/server.crt")
 
     def make_backup(self, password: str) -> bytes:

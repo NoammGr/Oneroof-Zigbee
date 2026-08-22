@@ -179,7 +179,7 @@ def discovery_messages(dev: Device, base: str, prefix: str, *, legacy: bool = Fa
             cfg = {"name": f["name"], "value_template": tmpl, "payload_on": True, "payload_off": False, "entity_category": diag}
             if f["base"] == "contact":  # our contact: true == closed; HA door: on == open
                 cfg["value_template"] = f"{{{{ not value_json.{key} }}}}"
-            dc = _BINARY_CLASS.get(f["base"])
+            dc = f.get("device_class") or _BINARY_CLASS.get(f["base"])
             if dc:
                 cfg["device_class"] = dc
             add("binary_sensor", key, cfg)
@@ -195,6 +195,7 @@ def discovery_messages(dev: Device, base: str, prefix: str, *, legacy: bool = Fa
             dc, unit, sc, ec = _SENSOR_META.get(f["base"], (None, f.get("unit"), "measurement", None))
             if f["base"] == "voltage" and f.get("unit") == "mV":
                 unit = "mV"
+            dc = f.get("device_class") or dc
             add("sensor", key, {"name": f["name"], "value_template": tmpl, "device_class": dc, "unit_of_measurement": unit or f.get("unit"),
                                 "state_class": sc, "entity_category": diag or ec, "icon": _ICONS.get(f["base"]),
                                 "enabled_by_default": False if f["base"] in ("voltage", "device_temperature", "power_outage_count") and f["category"] == "diagnostic" else None})
@@ -202,7 +203,7 @@ def discovery_messages(dev: Device, base: str, prefix: str, *, legacy: bool = Fa
             dc, unit, _sc, _ec = _SENSOR_META.get(f["base"], (None, f.get("unit"), None, None))
             add("number", key, {"name": f["name"], "command_topic": set_topic, "value_template": tmpl, "command_template": '{"%s": {{ value }} }' % key,
                                 "min": f.get("min"), "max": f.get("max"), "step": f.get("step"), "unit_of_measurement": unit or f.get("unit"),
-                                "device_class": dc, "entity_category": diag, "mode": "slider" if f.get("max") is not None else "box"})
+                                "device_class": f.get("device_class") or dc, "entity_category": diag, "mode": "slider" if f.get("max") is not None else "box"})
         elif typ == "enum" and acc == "r":
             add("sensor", key, {"name": f["name"], "value_template": tmpl, "icon": _ICONS.get(f["base"]), "entity_category": diag,
                                 "enabled_by_default": True})

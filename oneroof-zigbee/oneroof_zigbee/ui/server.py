@@ -209,10 +209,12 @@ class Server:
                 k, _, v = kv.partition("=")
                 query[_unquote(k)] = _unquote(v)
         req = Request(method, path, query, headers, body, peer)
-        if method == "POST":
+        if method in ("POST", "PUT", "DELETE", "PATCH"):
+            # every state-changing request needs the custom header (CSRF) and a JSON object body
+            # (DELETE may come without a body; it then gets an empty object)
             if headers.get("x-oneroof") != "1":
                 raise HttpError(403, "missing X-OneRoof header")
-            if not headers.get("content-type", "").startswith("application/json"):
+            if (body or method != "DELETE") and not headers.get("content-type", "").startswith("application/json"):
                 raise HttpError(415, "JSON body required")
             try:
                 req.json = json.loads(body or b"{}")

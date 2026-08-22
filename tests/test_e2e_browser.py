@@ -229,6 +229,46 @@ async def test_b06_phone_layout(stack, browser):  # noqa: F811
     assert b.errors == []
 
 
+async def test_b07_datapoints_tab_teaches_a_tuya_model(stack, browser):  # noqa: F811
+    """A TS0601 nobody knows: raw datapoints show up in the Datapoints tab, mapping one through the row editor
+    writes a definition, the state key changes and the Settings card lists the definition."""
+    from tests.sim import SimDevice
+    s, b = stack, browser
+    base = f"http://127.0.0.1:{s.ui.port}/"
+    ieee, nwk = 0x00158D00000000B7, 0x7B07
+    if _gw(s).registry.get(ieee) is None:
+        await api(s, "POST", "/api/permit_join", {"seconds": 30})
+        d = s.world.add(SimDevice(ieee, nwk, "_TZE200_browserz", "TS0601", [0x0000, 0x0004, 0x0005, 0xEF00], [0x0019], 0x0051, router=False, power_source=3))
+        s.world.announce(d)
+        await wait_for(lambda: (lambda x: x and x.interviewed)(_gw(s).registry.get(ieee)), 8)
+    # one report with an ambiguous layout (1 bool only) → raw dp_1, nothing inferred
+    s.world.fake.emit_incoming(nwk, 0xEF00, bytes([0x09, 0x31, 0x02, 0x00, 0x01, 0x01, 0x01, 0x00, 0x01, 0x01]))
+    await wait_for(lambda: json.loads(s.got.get(f"{BASE}/0x{ieee:016x}/state", b"{}")).get("dp_1") is True, 5)
+    await b.go(base, f"device/0x{ieee:016x}", 2.0)
+    await b.click_text("Datapoints")
+    await asyncio.sleep(1.0)
+    assert await b.js("[...document.querySelectorAll('.dptab tbody tr')].some(tr=>tr.textContent.includes('dp_1'))"), "raw datapoint listed"
+    await b.click_text("Map…")
+    await asyncio.sleep(0.3)
+    await b.js("""(()=>{const ed=document.querySelector('.dpedit');const inp=ed.querySelector('input[type=text]');inp.value='water_leak';inp.dispatchEvent(new Event('input',{bubbles:true}));
+      const sel=[...ed.querySelectorAll('select')][0];sel.value='binary';sel.dispatchEvent(new Event('change',{bubbles:true}));const dc=[...ed.querySelectorAll('input[type=text]')].find(i=>/^door/.test(i.placeholder));dc.value='moisture';})()""")
+    await b.click_text("Save for this model")
+    await wait_for(lambda: _gw(s).definitions.get("_TZE200_browserz", "TS0601") is not None, 5)
+    defn = _gw(s).definitions.get("_TZE200_browserz", "TS0601")
+    assert defn["datapoints"][0] == {"dp": 1, "key": "water_leak", "name": "Water leak", "type": "binary", "access": "r", "category": "sensor", "dtype": "bool", "device_class": "moisture"}
+    await wait_for(lambda: json.loads(s.got.get(f"{BASE}/0x{ieee:016x}/state", b"{}")).get("water_leak") is True, 5)
+    assert json.loads(s.got[f"homeassistant/binary_sensor/0x{ieee:016x}/water_leak/config"])["device_class"] == "moisture"
+    await asyncio.sleep(1.0)
+    assert await b.js("[...document.querySelectorAll('.dptab tbody tr')].some(tr=>tr.textContent.includes('water_leak')&&tr.textContent.includes('defined'))"), "mapping shown in the table"
+    # the About tab shows the type override card; Settings lists the definition
+    await b.click_text("About")
+    await asyncio.sleep(0.8)
+    assert await b.js("/Type & category/.test(document.body.textContent)")
+    await b.go(base, "settings", 2.0)
+    assert await b.js("[...document.querySelectorAll('table tbody tr')].some(tr=>tr.textContent.includes('_TZE200_browserz')&&tr.textContent.includes('TS0601'))"), "definition listed under Settings"
+    assert b.errors == [], f"console errors: {b.errors}"
+
+
 def _gw(s: Stack):
     from tests.test_e2e import _find_gateway
     return _find_gateway(s.ui)

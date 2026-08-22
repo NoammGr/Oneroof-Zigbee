@@ -140,6 +140,9 @@ tr.click{cursor:pointer}tr.click:hover td{background:var(--card-2)}
 .chips{display:flex;gap:6px;flex-wrap:wrap}
 .chip{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:99px;background:var(--card-2);font-size:12px;color:var(--ink)}
 .chip .mono{color:var(--mute)}
+.tag{display:inline-flex;align-items:center;padding:1px 7px;border-radius:99px;font-size:10.5px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;background:var(--accent-soft);color:var(--accent);margin-left:6px;vertical-align:middle}
+.tag.mute{background:var(--card-2);color:var(--mute)}
+.dptab td{vertical-align:top}.dptab .mono{font-size:12.5px}.dpedit{background:var(--card-2);border-radius:var(--rb);padding:12px 14px;margin:4px 0 8px}.dpedit .fgrid{gap:8px 12px}.dpedit .field label{font-size:11.5px}
 .epcard{margin-top:12px}
 .act{display:flex;gap:10px;font-size:12.5px;padding:3px 0}
 .act .t{color:var(--faint);flex:none;font-family:var(--mono)}
@@ -372,8 +375,8 @@ const ICONS={
   n_settings:'M4 7h10M18 7h2M4 17h4M12 17h8M14 7a2 2 0 1 0 4 0a2 2 0 1 0-4 0M8 17a2 2 0 1 0 4 0a2 2 0 1 0-4 0'
 };
 function svg(name,size){const NS='http://www.w3.org/2000/svg';const s=document.createElementNS(NS,'svg');s.setAttribute('viewBox','0 0 24 24');s.setAttribute('class','i');s.setAttribute('aria-hidden','true');if(size)s.style.fontSize=size+'px';const p=document.createElementNS(NS,'path');p.setAttribute('d',ICONS[name]||ICONS.chip);s.append(p);return s;}
-async function api(path,body){
-  const opt=body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json','X-OneRoof':'1'},body:JSON.stringify(body)};
+async function api(path,body,method){
+  const opt=body===undefined?{}:{method:method||'POST',headers:{'Content-Type':'application/json','X-OneRoof':'1'},body:JSON.stringify(body)};
   opt.cache='no-store';
   let r;try{r=await fetch(path,opt);}catch(e){throw new Error('Bridge unreachable');}
   let j=null;try{j=await r.json();}catch(e){}
@@ -448,6 +451,23 @@ const HELP={
   'import.backup':'coordinator_backup.json written by the previous setup. Needed only when the dongle was wiped or replaced: it carries the network key and frame counter into a fresh coordinator.',
   'import.keep_broker':'Keeps publishing to the broker the previous setup used instead of starting the built-in one, so Home Assistant and other MQTT clients stay connected as they are. Trade-off: transport security is that broker\'s (plaintext on 1883 unless you set up TLS there), and since that broker cannot enforce per-user control rights, MQTT control requests (permit_join, remove, key rotation) are refused — control works from this UI only.',
   'import.keep_entities':'Keeps the previous base topic, discovery prefix and exact discovery identities (unique ids, device identifiers, topics). Home Assistant sees the same entities with the same entity ids, so dashboards, automations, history and other MQTT clients keep working unchanged. Off = fresh start: HA creates new entities and the old ones become unavailable.',
+  'datapoints.tab':'Every datapoint this device has reported since it was paired: the id, the wire type the device used, the last raw value and when it came. Rows without a key are unmapped and are published as dp_<n>; give them a meaning here and they become proper features and Home Assistant entities for every device of this model.',
+  'datapoints.inferred':'Guessed from the common layout Tuya uses for this kind of product (thermostats, curtains, sensors, switches …) because the exact model is not in the built-in table. The guess is made only when the datapoint ids and wire types seen so far fit one family and no other. Confirm or correct it by saving a definition.',
+  'datapoints.key':'State key under which the value is published (lowercase, digits and underscores). Standard names (temperature, humidity, battery, position, current_heating_setpoint, state, contact, occupancy …) get the matching Home Assistant entity class automatically.',
+  'datapoints.type':'How the raw value is interpreted: numeric (a number, optionally divided by the scale), binary (true/false with optional labels), enum (a number looked up in the values map) or text.',
+  'datapoints.access':'r = the device only reports it (sensor); rw = it can also be written (control or setting); w = write-only command.',
+  'datapoints.scale':'The reported integer is divided by this before publishing, and multiplied when writing. Tuya commonly reports temperatures ×10 (235 → 23.5) and distances ×100.',
+  'datapoints.unit':'Shown next to the value and passed to Home Assistant, e.g. °C, %, lx, m, s, W, kWh.',
+  'datapoints.values':'Labels for enum and binary datapoints, one per line as number=label (0=open, 1=closed). For binary datapoints 0 and 1 are the off and on labels; true/false give a real boolean.',
+  'datapoints.inverted':'Flip the meaning: binary true becomes false; numeric values are published as 100 − value (for positions that count the other way).',
+  'datapoints.dtype':'Wire type used when writing the datapoint: bool, value (32-bit integer), enum (8-bit), string, raw or bitmap. Defaults to what fits the feature type; the type the device itself reports is shown in the table.',
+  'datapoints.device_class':'Home Assistant device class for the entity (temperature, humidity, battery, door, motion, moisture, smoke, gas, occupancy, distance, illuminance, power, energy …). Leave empty to derive it from the key.',
+  'datapoints.category':'Where the feature appears: sensor (read-only value), control (main control), config (a setting) or diagnostic (hidden by default in Home Assistant).',
+  'datapoints.save':'Writes a definition for this manufacturer and model into definitions.yaml. It applies immediately to every device of the model, takes precedence over the built-in table and is re-announced to Home Assistant; stale entities are removed. No restart.',
+  'definitions.kind':'What the device is shown as (type) and which coarse category it belongs to. The category decides how the dashboard card and the generic controls treat it: a sensor never gets switch controls, a remote only actions. Saved as a definition for this model, so every device of the model follows.',
+  'definitions.on_off_as':'For devices that report a sensor through the On/Off cluster (some contact or motion sensors): publish the On/Off attribute under this key (contact, occupancy, water_leak …) instead of as a switch.',
+  'definitions.card':'Definitions you saved from the device pages: what a model is and what its Tuya datapoints mean. They take precedence over the built-in table, apply to every device of the model and live in definitions.yaml in the data directory (included in backups). Export to share or keep a copy; import merges a file into the current list.',
+  'definitions.import':'A definitions YAML file exported from this or another gateway. Every entry is validated first; one bad entry rejects the whole file. Merge keeps existing definitions for other models; Replace all discards them.',
   'compat.legacy_layout':'Topics are <base>/<friendly name> and discovery messages use the previous identities, so Home Assistant keeps the entities it already had. Enabled by the import; it can only be switched off here, which makes HA create new entities and leaves the old ones unavailable.',
   state:'Switches the device on or off. toggle flips the current state.',
   power_on_behavior:'What the device does after a power cut: stay off, turn on, toggle or restore the previous state. "previous" is usually what you want for lights.',
@@ -527,6 +547,7 @@ function catGlyph(d){const cat=Object.values(d.endpoints||{}).map(e=>e.category|
   if(/light|lamp|bulb/.test(cat)||cl.has(0x300)||cl.has(8))return 'bulb';if(/cover|blind|shade|curtain/.test(cat)||cl.has(0x102))return 'cover';if(/lock/.test(cat)||cl.has(0x101))return 'lock';if(/thermostat|climate|hvac/.test(cat)||cl.has(0x201))return 'thermometer';if(/plug|outlet|socket/.test(cat)||cl.has(0x702)||cl.has(0xb04))return 'plug';if(/switch/.test(cat)||cl.has(6))return 'power';if(/remote|button/.test(cat))return 'remote';if(cl.has(0x402))return 'thermometer';if(cl.has(0x405))return 'drop';if(cl.has(0x406)||cl.has(0x500))return 'hand';if(cl.has(0x400))return 'sun';return 'chip';}
 function powerLabel(p){if(!p)return '—';const s=String(p).toLowerCase();if(/mains|dc/.test(s))return 'Mains';if(/batt/.test(s))return 'Battery';return s[0].toUpperCase()+s.slice(1);}
 const dpath=(d,p)=>'api/devices/'+encodeURIComponent(d.ieee||d)+p;
+function fnm(pat,s){const re=new RegExp('^'+String(pat).toLowerCase().replace(/[.+^${}()|[\]\\]/g,'\\$&').replace(/\*/g,'.*').replace(/\?/g,'.')+'$');return re.test(String(s).toLowerCase());}
 
 /* ============ state ============ */
 const S={bridge:null,devices:[],devMap:new Map(),exposes:{},online:false,page:null,lastSec:null,pj:{open:false,seconds_left:0},pairFeed:[],audit:[],logs:[],sseBackoff:1000,es:null};
@@ -708,7 +729,10 @@ views.dashboard={
 
 /* ============ DEVICE DETAIL ============ */
 const TABS=[['about','About'],['controls','Controls'],['state','State'],['clusters','Clusters'],['reporting','Reporting'],['bind','Bind'],['firmware','Firmware']];
+const hasDatapoints=d=>!!d&&clusters(d).has(0xef00);
+const devTabs=d=>hasDatapoints(d)?[...TABS.slice(0,3),['datapoints','Datapoints'],...TABS.slice(3)]:TABS;
 const CATS=[['control','Controls'],['sensor','Sensors'],['config','Configuration'],['diagnostic','Diagnostics']];
+const DEF_CATS=[['light','Light'],['plug','Smart plug'],['switch','Switch'],['sensor','Sensor'],['remote','Button/remote'],['cover','Cover'],['climate','Thermostat'],['lock','Lock'],['meter','Electricity meter'],['unknown','Unknown']];
 views.device={
   tab:'about',d:null,ieee:null,upd:new Map(),
   enter(m,arg){
@@ -744,7 +768,7 @@ views.device={
       removeBtn(d,ok));
     h.append(el('div',{class:'grow'},name,desc,badges),acts);
   },
-  renderTabs(){const t=clear(this.tabsEl);for(const[id,label]of TABS)t.append(el('button',{text:label,class:id===this.tab?'active':'',onclick:()=>{this.tab=id;this.renderTabs();this.renderTab();}}));},
+  renderTabs(){const t=clear(this.tabsEl);const tabs=devTabs(this.d);if(!tabs.some(x=>x[0]===this.tab))this.tab='about';for(const[id,label]of tabs)t.append(el('button',{text:label,class:id===this.tab?'active':'',onclick:()=>{this.tab=id;this.renderTabs();this.renderTab();}}));},
   leave(){clearTimeout(this.fwTimer);},
   renderTab(){const b=clear(this.body);this.upd.clear();clearTimeout(this.fwTimer);if(!this.d)return;this['tab_'+this.tab](b,this.d);},
   kv(k,v,sub,mono){return el('tr',null,el('td',{text:k}),el('td',null,el('div',{class:mono?'mono':'',text:fmtVal(v)}),sub?el('div',{class:'sub',text:sub}):null));},
@@ -768,12 +792,73 @@ views.device={
       el('tr',null,el('td',{text:'Recent activity'}),el('td',null,this.actEl)),
       el('tr',null,el('td',{text:'MQTT topics'}),el('td',null,topics)));
     b.append(el('div',{class:'twrap'},el('table',{class:'kvt'},tb)));
+    b.append(el('h2',null,'Type & category',help('definitions.kind',null,'Type & category')),this.kindCard(d));
     b.append(el('h2',{text:'Endpoints'}));
     const eps=Object.entries(d.endpoints||{});if(!eps.length)b.append(el('div',{class:'empty',text:'No endpoints known — interview the device.'}));
     for(const[id,ep]of eps){
       const chips=el('div',{class:'chips'},...[...(ep.in_clusters||[]),...(ep.out_clusters||[])].map(c=>el('span',{class:'chip'},clName(c),el('span',{class:'mono',text:hex(cid(c))}))));
       b.append(el('div',{class:'card epcard'},el('div',{style:'display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;margin-bottom:10px'},el('b',{text:'Endpoint '+id}),el('span',{class:'sub',text:[ep.category,ep.device_type,ep.profile?'profile '+hex(ep.profile):null,ep.device_id!=null?'device '+hex(ep.device_id):null].filter(Boolean).join(' · ')})),chips));
     }
+  },
+  defPath(d){return 'api/definitions/'+encodeURIComponent(d.manufacturer)+'/'+encodeURIComponent(d.model);},
+  kindCard(d){
+    const ok=can()&&!!d.manufacturer&&!!d.model;const tip=can()?(d.manufacturer&&d.model?'':'Manufacturer and model are unknown — interview the device first'):NOCTL;
+    const kind=txt(d.kind||'',{placeholder:'e.g. Soil sensor',maxlength:64}),cat=sel(DEF_CATS,d.category||'unknown'),ooa=txt('',{placeholder:'contact, occupancy, water_leak …',maxlength:48});
+    const note=el('div',{class:'sub',text:'Loading…'});let defn=null;const rm=el('button',{class:'btn danger hidden',text:'Remove definition',disabled:!ok,title:tip});
+    api(dpath(d,'/datapoints')).then(r=>{defn=r.definition;if(defn){if(defn.kind)kind.value=defn.kind;if(defn.category)cat.value=defn.category;ooa.value=defn.on_off_as||'';rm.classList.remove('hidden');}
+      const where=r.source==='definition'?'your definition':r.source==='builtin'?'the built-in model table':r.source==='inferred'?'Tuya conventions (inferred from the datapoints seen so far)':'cluster heuristics';
+      clear(note).append('Type and category currently come from ',el('b',{text:where}),'. Saving writes a definition for ',el('span',{class:'mono',text:(d.manufacturer||'?')+' / '+(d.model||'?')}),' that every device of this model follows.');}).catch(e=>{note.textContent=e.message;});
+    const save=el('button',{class:'btn primary',text:'Save for this model',disabled:!ok,title:tip,onclick:async()=>{
+      const body=Object.assign({},defn||{});delete body.manufacturer;delete body.model;const k=kind.value.trim(),o=ooa.value.trim();
+      if(k)body.kind=k;else delete body.kind;body.category=cat.value;if(o)body.on_off_as=o;else delete body.on_off_as;
+      save.disabled=true;try{const r=await api(this.defPath(d),body,'PUT');toast('Definition saved — '+(r.devices||[]).length+' device(s) refreshed');await this.load();}catch(e){toast(e.message,true);save.disabled=!ok;}}});
+    rm.addEventListener('click',async()=>{if(!(await confirmDlg('Remove the definition for '+d.model+'?',[el('p',{text:'Every device of this model goes back to the built-in table (or to inferred datapoints). Home Assistant entities are re-announced.'})],'Remove definition',true)))return;try{await api(this.defPath(d),{},'DELETE');toast('Definition removed');await this.load();}catch(e){toast(e.message,true);}});
+    return el('div',{class:'card'},el('div',{class:'fgrid'},fld('Type',kind,'Free text shown as the device type.','definitions.kind'),fld('Category',cat,null,'definitions.kind'),fld('On/Off attribute means',ooa,'Optional; only for On/Off-cluster sensors.','definitions.on_off_as')),
+      el('div',{class:'cfoot'},note,rm,save));
+  },
+  tab_datapoints(b,d){
+    b.append(el('div',{class:'notice'},el('b',{text:'Datapoints. '}),'This device reports numbered Tuya datapoints instead of standard attributes. Rows with a key are published under that key; unmapped rows are published raw as dp_<n>. Map a row and save to teach the gateway this model.',help('datapoints.tab',null,'Datapoints')));
+    this.dpHost=el('div',{class:'sub',text:'Loading…'});b.append(this.dpHost);
+    api(dpath(d,'/datapoints')).then(r=>{if(S.page==='device'&&this.tab==='datapoints')this.dpRender(d,r);}).catch(e=>{this.dpHost.textContent=e.message;});
+  },
+  dpRender(d,r){
+    const h=clear(this.dpHost);h.className='';const rows=r.datapoints||[];const defn=r.definition||{};const dps=new Map((defn.datapoints||[]).map(x=>[x.dp,x]));
+    const src={definition:'your definition',builtin:'built-in model table',inferred:'inferred from Tuya conventions'+(r.family?' — looks like a '+r.family.replace(/_/g,' '):''),raw:'none — raw values only'}[r.source]||r.source;
+    h.append(el('p',{class:'sub',style:'margin:0 0 10px'},'Mapping: ',el('b',{text:src}),' · ',el('span',{class:'mono',text:(r.manufacturer||'?')+' / '+(r.model||'?')}),r.source==='inferred'?help('datapoints.inferred',null,'Inferred'):null));
+    if(!rows.length){h.append(el('div',{class:'empty',text:'No datapoints reported yet. Wake the device (press a button, change a value) and come back.'}));return;}
+    const tb=el('tbody');
+    for(const row of rows){
+      const tr=el('tr',null,el('td',{class:'mono',text:String(row.dp)}),el('td',{class:'mono',text:row.type_name}),el('td',{class:'mono',text:fmtVal(row.last)}),el('td',{class:'sub',text:row.ts?rel(row.ts):'—',title:row.ts?fmtTs(row.ts):''}),
+        el('td',null,row.key?el('span',null,el('b',{text:row.key}),row.inferred?el('span',{class:'tag',text:'inferred'}):dps.has(row.dp)?el('span',{class:'tag mute',text:'defined'}):null,el('div',{class:'sub',text:row.name||''})):el('span',{class:'sub mono',text:'dp_'+row.dp})),
+        el('td',{text:fmtVal(row.value)}),el('td',null,el('button',{class:'btn sm',text:dps.has(row.dp)?'Edit':'Map…',onclick:()=>this.dpEdit(d,r,row,tr)})));
+      tb.append(tr);
+    }
+    h.append(el('div',{class:'twrap'},el('table',{class:'dptab'},thead(['Id','Wire type','Last raw','Seen','Key','Value','']),tb)));
+    this.dpEditor=null;
+  },
+  dpEdit(d,r,row,tr){
+    if(this.dpEditor)this.dpEditor.remove();
+    const ok=can();const defn=r.definition||{};const cur=(defn.datapoints||[]).find(x=>x.dp===row.dp)||{};
+    const guess={bool:'binary',enum:'enum',string:'text',value:'numeric',raw:'text',bitmap:'numeric'}[row.type_name]||'numeric';
+    const dtOf=t=>({binary:'bool',enum:'enum',text:'string'}[t]||'value');
+    const key=txt(cur.key||(row.inferred?row.key:'')||'',{placeholder:'temperature',maxlength:48}),name=txt(cur.name||(row.inferred?row.name:'')||'',{placeholder:'Temperature',maxlength:64});
+    const type=sel(['numeric','binary','enum','text'],cur.type||guess),acc=sel([['r','r — report only'],['rw','rw — settable'],['w','w — command']],cur.access||'r');
+    const scale=num(cur.scale??1,0.000001,1000000);scale.step='any';const unit=txt(cur.unit||'',{placeholder:'°C',maxlength:16});
+    const vals=el('textarea',{rows:3,placeholder:'0=open\n1=closed',text:cur.values?Object.entries(cur.values).map(([k,v])=>k+'='+v).join('\n'):''});
+    const[inv,invRow]=chk('Inverted',!!cur.inverted,null,'datapoints.inverted');
+    const dtype=sel(['bool','value','enum','string','raw','bitmap'],cur.dtype||dtOf(type.value));type.addEventListener('change',()=>{dtype.value=dtOf(type.value);});
+    const dc=txt(cur.device_class||'',{placeholder:'door, temperature, battery …',maxlength:32}),cat=sel(['sensor','control','config','diagnostic'],cur.category||'sensor');
+    const mn=num(cur.min??'',-1e9,1e9),mx=num(cur.max??'',-1e9,1e9),st=num(cur.step??'',0,1e9);mn.step=mx.step=st.step='any';
+    const parseVals=()=>{const o={};for(const line of vals.value.split('\n')){const t=line.trim();if(!t)continue;const i=t.indexOf('=');if(i<1)throw new Error('Values: one number=label per line');const k=t.slice(0,i).trim(),v=t.slice(i+1).trim();if(!/^-?\d+$/.test(k)||!v)throw new Error('Values: "'+t+'" is not number=label');o[k]=v;}return Object.keys(o).length?o:undefined;};
+    const build=()=>{const o={dp:row.dp,key:key.value.trim(),type:type.value,access:acc.value,category:cat.value,dtype:dtype.value};if(name.value.trim())o.name=name.value.trim();
+      if(scale.value!==''&&+scale.value!==1)o.scale=+scale.value;if(unit.value.trim())o.unit=unit.value.trim();const v=parseVals();if(v)o.values=v;if(inv.checked)o.inverted=true;if(dc.value.trim())o.device_class=dc.value.trim();
+      for(const[i,k]of[[mn,'min'],[mx,'max'],[st,'step']])if(i.value!=='')o[k]=+i.value;return o;};
+    const put=async list=>{const body=Object.assign({},defn);delete body.manufacturer;delete body.model;body.datapoints=list;const res=await api(this.defPath(d),body,'PUT');toast('Definition saved — '+(res.devices||[]).length+' device(s) refreshed');await this.load();};
+    const save=el('button',{class:'btn primary',text:'Save for this model',disabled:!ok,title:ok?'':NOCTL,onclick:async()=>{let o;try{o=build();}catch(e){toast(e.message,true);return;}if(!o.key){toast('Key required',true);return;}save.disabled=true;try{await put([...(defn.datapoints||[]).filter(x=>x.dp!==row.dp),o]);}catch(e){toast(e.message,true);save.disabled=!ok;}}});
+    const un=cur.dp?el('button',{class:'btn danger',text:'Remove mapping',disabled:!ok,onclick:async()=>{try{await put((defn.datapoints||[]).filter(x=>x.dp!==row.dp));}catch(e){toast(e.message,true);}}}):null;
+    const ed=el('tr',null,el('td',{colspan:7},el('div',{class:'dpedit'},el('div',{class:'fgrid'},fld('Key',key,null,'datapoints.key'),fld('Name',name),fld('Type',type,null,'datapoints.type'),fld('Access',acc,null,'datapoints.access'),fld('Scale',scale,null,'datapoints.scale'),fld('Unit',unit,null,'datapoints.unit'),fld('Values',vals,null,'datapoints.values'),fld('Write type',dtype,'Device reports as '+row.type_name+'.','datapoints.dtype'),fld('Device class',dc,null,'datapoints.device_class'),fld('Category',cat,null,'datapoints.category'),fld('Min',mn),fld('Max',mx),fld('Step',st)),invRow,
+      el('div',{class:'cfoot'},el('span',{class:'sub'},'Applies to every ',el('span',{class:'mono',text:(d.manufacturer||'?')+' / '+(d.model||'?')}),' device.',help('datapoints.save',null,'Save')),un,el('button',{class:'btn',text:'Cancel',onclick:()=>{ed.remove();this.dpEditor=null;}}),save))));
+    tr.after(ed);this.dpEditor=ed;key.focus();
   },
   tab_controls(b,d){
     const ex=d.exposes||[];if(!ex.length){b.append(el('div',{class:'empty',text:'No features exposed yet. Re-interview the device to derive them from its clusters.'}));return;}
@@ -782,7 +867,7 @@ views.device={
   },
   feature(f,d){
     const r=featureControl(d,f,{set:p=>this.set(p)});this.upd.set(f.key,r.update);
-    return el('div',{class:'feat'},el('div',{class:'ico'},svg(featIcon(f))),el('div',null,el('div',{class:'nm'},f.name||f.key,help(f.key,f.description,f.name||f.key)),el('div',{class:'ds',text:(f.description||'')+(f.access==='r'?' (read only)':'')+(f.endpoint!=null&&Object.keys(d.endpoints||{}).length>1?' · ep '+f.endpoint:'')})),r.ctrl);
+    return el('div',{class:'feat'},el('div',{class:'ico'},svg(featIcon(f))),el('div',null,el('div',{class:'nm'},f.name||f.key,help(f.key,f.description,f.name||f.key),f.inferred?el('span',{class:'tag',text:'inferred',title:'Guessed from Tuya conventions'},help('datapoints.inferred',null,'Inferred')):null),el('div',{class:'ds',text:(f.description||'')+(f.access==='r'?' (read only)':'')+(f.endpoint!=null&&Object.keys(d.endpoints||{}).length>1?' · ep '+f.endpoint:'')})),r.ctrl);
   },
   epSelect(d,onch){const s=el('select',{class:'sm',onchange:onch});for(const id of Object.keys(d.endpoints||{}))s.append(el('option',{value:id,text:'ep '+id}));return s;},
   clSelect(d,epId,which){const ep=(d.endpoints||{})[epId]||{};const s=el('select',{class:'sm'});const seen=new Set();for(const c of[...(which!=='out'?(ep.in_clusters||[]):[]),...(which!=='in'?(ep.out_clusters||[]):[])]){const id=cid(c);if(seen.has(id))continue;seen.add(id);s.append(el('option',{value:id,text:clName(c)+' '+hex(id)}));}return s;},
@@ -1068,7 +1153,7 @@ views.settings={
     if(ro)h.append(el('div',{class:'notice warn'},el('b',{text:'Managed configuration. '}),'These settings are managed by the Home Assistant add-on configuration (Settings → Add-ons → OneRoof Zigbee → Configuration). Users, backups, restart and the log level can still be changed here.'));
     if(!ok)h.append(el('div',{class:'notice warn'},el('b',{text:'Read-only session. '}),'The UI acts as ',el('span',{class:'mono',text:(S.bridge||{}).ui_user||'?'}),', which is not in control_users; saving is disabled.'));
     this.usersHost=el('div');
-    h.append(el('h2',{text:'Coordinator'}),this.cardCoordinator(ro),el('h2',{text:'Zigbee network & security'}),this.cardZigbee(ro),el('h2',{text:'MQTT broker'}),this.cardMqtt(ro),this.usersHost,el('h2',{text:'Home Assistant & UI'}),this.cardHa(ro),el('h2',{text:'Backup & restore'}),this.cardBackup(ok),el('h2',{text:'Import a previous setup'}),this.cardImport(ok),el('h2',{text:'Firmware library'}),this.cardFirmware(ok),el('h2',{text:'Maintenance'}),this.cardMaint(ok));
+    h.append(el('h2',{text:'Coordinator'}),this.cardCoordinator(ro),el('h2',{text:'Zigbee network & security'}),this.cardZigbee(ro),el('h2',{text:'MQTT broker'}),this.cardMqtt(ro),this.usersHost,el('h2',{text:'Home Assistant & UI'}),this.cardHa(ro),el('h2',{text:'Backup & restore'}),this.cardBackup(ok),el('h2',{text:'Import a previous setup'}),this.cardImport(ok),el('h2',{text:'Firmware library'}),this.cardFirmware(ok),el('h2',null,'Device definitions',help('definitions.card',null,'Device definitions')),this.cardDefinitions(ok),el('h2',{text:'Maintenance'}),this.cardMaint(ok));
     this.renderUsers();
   },
   showBanner(){const b=this.banner;if(!b)return;clear(b);const keys=[...this.pending];if(!keys.length){b.classList.add('hidden');return;}b.classList.remove('hidden');b.append(el('div',{class:'grow'},el('b',{text:'Restart required to apply: '}),el('span',{class:'mono',text:keys.join(', ')})),el('button',{class:'btn primary',text:'Restart now',onclick:()=>this.restart()}));},
@@ -1239,6 +1324,20 @@ views.settings={
     load();
     return el('div',{class:'card'},el('p',{class:'sub',style:'margin:0 0 12px'},el('b',{text:'OneRoof Zigbee never downloads firmware. '}),'Only files you upload here can be offered, and only to a device whose own report matches the file\'s manufacturer and image type.',help('firmware.policy',null,'Firmware policy')),host,
       el('h3',null,'Upload image',help('firmware.upload',null,'Upload image')),el('div',{class:'bar',style:'margin:6px 0 0'},file,up),out);
+  },
+  cardDefinitions(ok){
+    const tip=ok?'':NOCTL;const host=el('div',{class:'sub',text:'Loading…'});const file=el('input',{type:'file',accept:'.yaml,.yml'});const[repl,replRow]=chk('Replace all existing definitions',false,null,'definitions.import');const out=el('div',{class:'sub',style:'margin-top:8px'});
+    const load=async()=>{let r;try{r=await api('api/definitions');}catch(e){host.textContent=e.message;return;}const ds=r.definitions||[];clear(host);host.className='';
+      if(!ds.length){host.append(el('div',{class:'empty',text:'No definitions yet. Teach a model from its device page: Datapoints tab or Type & category on About.'}));return;}
+      host.append(el('div',{class:'twrap flat'},el('table',{class:'fwtab'},thead(['Manufacturer','Model','Type','Category','Datapoints','']),el('tbody',null,...ds.map(x=>{const devs=S.devices.filter(d=>d.manufacturer&&d.model&&fnm(x.manufacturer,d.manufacturer)&&fnm(x.model,d.model));
+        return el('tr',null,el('td',{class:'mono',text:x.manufacturer}),el('td',{class:'mono',text:x.model}),el('td',{text:x.kind||'—'}),el('td',{class:'sub',text:x.category||'—'}),el('td',null,el('span',{text:String((x.datapoints||[]).length)}),devs.length?el('div',{class:'sub'},...devs.slice(0,3).map((d,i)=>el('a',{href:dlink(d),text:(i?', ':'')+(d.friendly_name||d.ieee)})),devs.length>3?' +'+(devs.length-3):''):null),
+          el('td',null,el('button',{class:'btn sm danger',text:'Delete',disabled:!ok,title:tip,onclick:async()=>{if(!(await confirmDlg('Delete the definition for '+x.manufacturer+' / '+x.model+'?',[el('p',{text:'Devices of this model fall back to the built-in table or inferred datapoints; their Home Assistant entities are re-announced.'})],'Delete definition',true)))return;try{await api('api/definitions/'+encodeURIComponent(x.manufacturer)+'/'+encodeURIComponent(x.model),{},'DELETE');toast('Definition deleted');load();}catch(e){toast(e.message,true);}}})));})))));};
+    const exp=el('button',{class:'btn',text:'Export YAML',onclick:async()=>{try{const r=await fetch('api/definitions/export',{cache:'no-store'});if(!r.ok)throw new Error('HTTP '+r.status);const url=URL.createObjectURL(await r.blob());const a=el('a',{href:url,download:'oneroof-zigbee-definitions.yaml'});document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),10000);}catch(e){toast(e.message,true);}}});
+    const imp=el('button',{class:'btn primary',text:'Import',disabled:!ok,title:tip,onclick:async()=>{const fl=file.files&&file.files[0];if(!fl){toast('Choose a definitions file',true);return;}imp.disabled=true;
+      try{const r=await api('api/definitions/import',{yaml:await readFile(fl),replace:repl.checked});clear(out).append(el('b',{text:'Imported '+r.imported+' definition(s). '}),(r.devices||[]).length+' device(s) refreshed.');toast('Definitions imported');file.value='';load();}catch(e){clear(out).append(el('span',{style:'color:var(--danger)',text:'Rejected: '+e.message}));}imp.disabled=!ok;}});
+    load();
+    return el('div',{class:'card'},el('p',{class:'sub',style:'margin:0 0 12px',text:'What a model is and what its Tuya datapoints mean, as taught from the device pages. Definitions take precedence over the built-in table and apply to every device of the model.'}),host,
+      el('h3',null,'Export / import',help('definitions.import',null,'Export / import')),el('div',{class:'bar',style:'margin:6px 0 0'},exp,file,imp),replRow,out);
   },
   cardImport(ok){
     const tip=ok?'':NOCTL;const fy=el('input',{type:'file',accept:'.yaml,.yml'}),fd=el('input',{type:'file',accept:'.db,.json'}),fb=el('input',{type:'file',accept:'.json'}),fs=el('input',{type:'file',accept:'.json'});const out=el('div');let body=null,prev=null;S.importFolder=null;

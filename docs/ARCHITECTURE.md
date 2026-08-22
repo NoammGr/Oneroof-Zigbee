@@ -15,6 +15,8 @@ Every layer is written from scratch; no code is taken from other projects.
  oneroof_zigbee.gateway    device registry, interview, state, security policy
         │  features (what a device exposes), corrected by
  oneroof_zigbee.quirks     model knowledge: kind/vendor, feature overrides, vendor report codecs
+        │  ├─ quirks_tuya   Tuya datapoint conventions: infer a family from what a device reported
+        │  └─ definitions   user definitions (definitions.yaml) compiled to Quirks, precedence over the table
         │
  oneroof_zigbee.mqtt       our own MQTT broker, 3.1.1 and 5 clients (+ in-process client)
         │
@@ -91,6 +93,30 @@ before the standard decoders and `translate_state` after them, so published keys
 (`contact`, `state_l1`, `action`…) are the device's keys regardless of how the value
 arrived; `ha.discovery` builds entities from the same feature list. Rule for entries:
 precision beats breadth — a quirk claims only what the model does; the rest stays generic.
+
+Two layers sit on top of the table for models it does not know:
+
+* `quirks_tuya` — the gateway records every Tuya datapoint a device reports as
+  `context["tuya_seen"] = {dp: {type, last, ts}}`. For a datapoint device without a map,
+  `infer()` matches the seen `(dp, wire type)` pairs against family *signatures*
+  (thermostat, cover, temperature/humidity, smoke, presence radar, switch, soil, light,
+  siren, and the single-bool sensors). A family is chosen only when exactly one fits
+  after pruning families that explain strictly less; within it a datapoint becomes a
+  feature only when its observed wire type agrees with the convention. The result is a
+  `Dp` tuple with `inferred=True` (surfaced as `"inferred": true` in the feature dict);
+  everything else stays `dp_<n>`. `quirks.tuya_dps(dev)` is the single entry point the
+  decoder, the encoder and `shape_features` use, so state keys, commands and entities
+  always agree.
+* `definitions` — `<data_dir>/definitions.yaml` (0600) holds user definitions keyed by a
+  (manufacturer pattern, model pattern): kind/vendor/category/on_off_as overrides, keys to
+  remove and a datapoint list. `compile_quirk` merges one over the built-in entry for the
+  same model (same-id datapoints replace, new ones add) and the gateway installs the store
+  with `quirks.set_definitions`, so `find_quirk` consults it first. Saving, deleting or
+  importing a definition snapshots every device's layout (discovery topics + feature keys),
+  then `Gateway.apply_layout_changes` rebuilds datapoint state from `tuya_seen`, drops stale
+  keys, blanks retained configs of entities that disappeared and re-announces — no restart,
+  legacy identities respected. The UI exposes this as the Datapoints tab, the Type &
+  category card and Settings → Device definitions (`/api/definitions…`).
 
 ### mqtt
 ```python

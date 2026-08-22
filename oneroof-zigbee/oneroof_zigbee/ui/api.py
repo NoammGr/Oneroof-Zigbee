@@ -124,6 +124,12 @@ class UiApi:
         r("POST", "/api/devices/<ieee>/update/check", self.fw_check)
         r("POST", "/api/devices/<ieee>/update/start", self.fw_start)
         r("POST", "/api/devices/<ieee>/update/cancel", self.fw_cancel)
+        r("GET", "/api/devices/<ieee>/datapoints", self.dev_datapoints)
+        r("GET", "/api/definitions", self.definitions_get)
+        r("GET", "/api/definitions/export", self.definitions_export)
+        r("POST", "/api/definitions/import", self.definitions_import)
+        r("PUT", "/api/definitions/<manufacturer>/<model>", self.definitions_put)
+        r("DELETE", "/api/definitions/<manufacturer>/<model>", self.definitions_delete)
         r("GET", "/api/import/scan", self.import_scan)
         r("POST", "/api/import/preview", self.import_preview)
         r("POST", "/api/import/apply", self.import_apply)
@@ -633,6 +639,85 @@ class UiApi:
             self._on_device_event("renamed", dev)
         await self.gw._publish_bridge_info()
         return Response.json({"ok": True, **result, "restart_required": a.restart_required})
+
+    # -- datapoints / definitions -----------------------------------------
+
+    async def dev_datapoints(self, req: Request) -> Response:
+        """Every Tuya datapoint the device has reported, with its current mapping (built-in, user-defined or inferred)."""
+        from .. import quirks, quirks_tuya
+        from ..zcl import vendor as vz
+        dev = self._find(req)
+        q = quirks.find_quirk(dev.manufacturer, dev.model)
+        by_dp = {d.dp: d for d in quirks.tuya_dps(dev, q)}
+        family, _ = quirks_tuya.infer(dev) if quirks_tuya.is_tuya_dp_device(dev) and not (q and q.dps) else (None, ())
+        rows = []
+        for dp, info in sorted(quirks_tuya.seen_datapoints(dev).items()):
+            d = by_dp.get(dp)
+            rows.append({"dp": dp, "type": info["type"], "type_name": vz.TUYA_TYPE_NAMES.get(info["type"], str(info["type"])),
+                         "last": info.get("last"), "ts": info.get("ts"),
+                         "key": d.key if d else None, "name": d.name if d else None, "inferred": bool(d and d.inferred),
+                         "value": dev.state.get(d.key if d else f"dp_{dp}")})
+        defn = self.gw.definitions.find(dev.manufacturer, dev.model)
+        return Response.json({"datapoints": rows, "has_datapoints": quirks_tuya.is_tuya_dp_device(dev) or any(0xEF00 in e.in_clusters for e in dev.endpoints.values()),
+                              "definition": defn, "builtin": bool(q and not q.user_defined and q.dps), "family": family.name if family else None,
+                              "source": "definition" if defn else ("builtin" if q and q.dps else ("inferred" if family else "raw")),
+                              "manufacturer": dev.manufacturer, "model": dev.model, "kind": dev.kind, "category": dev.category})
+
+    async def definitions_get(self, req: Request) -> Response:
+        from ..definitions import CATEGORIES, DP_ACCESS, DP_CATEGORIES, DP_TYPES, DTYPES
+        return Response.json({"definitions": self.gw.definitions.all(), "path": str(self.gw.definitions.path) if self.gw.definitions.path else None,
+                              "options": {"categories": list(CATEGORIES), "types": list(DP_TYPES), "access": list(DP_ACCESS),
+                                          "dp_categories": list(DP_CATEGORIES), "dtypes": list(DTYPES)}})
+
+    async def definitions_export(self, req: Request) -> Response:
+        text = self.gw.definitions.export_yaml().encode()
+        return Response(200, text, "application/yaml; charset=utf-8", {"Content-Disposition": 'attachment; filename="oneroof-zigbee-definitions.yaml"'})
+
+    @staticmethod
+    def _pattern(req: Request, name: str) -> str:
+        from urllib.parse import unquote
+        return unquote(req.params[name])
+
+    async def _definitions_changed(self, before: dict[int, Any], event: str, **fields: Any) -> list[str]:
+        refreshed = await self.gw.apply_layout_changes(before)
+        self.gw.audit.event(event, by=self.who, devices=len(refreshed), **fields)
+        for dev in self.gw.registry.all():
+            if dev.ieee_str in refreshed:
+                self._on_device_event("interviewed", dev)
+        return refreshed
+
+    async def definitions_put(self, req: Request) -> Response:
+        self._require_control()
+        manufacturer, model = self._pattern(req, "manufacturer"), self._pattern(req, "model")
+        before = self.gw.layout_snapshot()
+        try:
+            defn = self.gw.definitions.put(manufacturer, model, req.json)
+        except ValueError as e:
+            raise HttpError(400, str(e)) from e
+        refreshed = await self._definitions_changed(before, "definition_saved", manufacturer=manufacturer, model=model)
+        return Response.json({"ok": True, "definition": defn, "devices": refreshed})
+
+    async def definitions_delete(self, req: Request) -> Response:
+        self._require_control()
+        manufacturer, model = self._pattern(req, "manufacturer"), self._pattern(req, "model")
+        before = self.gw.layout_snapshot()
+        if not self.gw.definitions.delete(manufacturer, model):
+            raise HttpError(404, "no such definition")
+        refreshed = await self._definitions_changed(before, "definition_removed", manufacturer=manufacturer, model=model)
+        return Response.json({"ok": True, "devices": refreshed})
+
+    async def definitions_import(self, req: Request) -> Response:
+        self._require_control()
+        text = req.json.get("yaml")
+        if not isinstance(text, str) or not text.strip():
+            raise HttpError(400, "yaml text required")
+        before = self.gw.layout_snapshot()
+        try:
+            imported = self.gw.definitions.import_yaml(text, replace_all=bool(req.json.get("replace", False)))
+        except ValueError as e:
+            raise HttpError(400, str(e)) from e
+        refreshed = await self._definitions_changed(before, "definitions_imported", count=len(imported))
+        return Response.json({"ok": True, "imported": len(imported), "devices": refreshed, "definitions": self.gw.definitions.all()})
 
     # -- map ---------------------------------------------------------------
 

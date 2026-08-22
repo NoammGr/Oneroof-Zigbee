@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.5.0] — 2026-08-22
+
+### Added — unknown devices handled, and teachable
+- **Datapoint inference** for Tuya datapoint devices without a built-in map: the datapoint ids and
+  wire types the device actually reports are matched against the conventional layouts of product
+  families (thermostats, covers, sensors, smoke/leak/gas/door, presence radars, multi-gang switches,
+  lights, sirens, soil sensors). Conservative: only an unambiguous match is used; everything else stays
+  a raw `dp_<n>` feature. Inferred features are tagged in the UI.
+- **Device definitions you can write yourself**: a "Datapoints" tab on datapoint devices lists every
+  datapoint seen with live values and lets you name each one (key, type, scale, unit, inverted,
+  device class); a "Type & category" card on About lets you correct a device's kind. Definitions are
+  saved per model in `definitions.yaml`, take precedence over the built-in table, apply immediately
+  to every device of that model (discovery re-announced, state rebuilt), are included in backups and
+  can be exported/imported as YAML. Control users only; recorded in the audit log.
+- Raw datapoints are exposed for every datapoint device, so nothing reported is lost before it is
+  named.
+
 ## [1.4.5] — 2026-08-22
 
 ### Fixed — entity identities for common models

@@ -20,6 +20,11 @@ pattern) → :class:`Quirk`.  A quirk says
   multistate buttons, analog inputs, remote commands).
 
 Unknown models fall back to the cluster heuristics with a device-level kind.
+Two things sit in front of / behind this table: user definitions
+(``definitions.py``, installed with :func:`set_definitions`) are consulted
+first by :func:`find_quirk`; Tuya datapoint devices without any map get their
+features inferred from what they reported (``quirks_tuya.py``, via
+:func:`tuya_dps`).
 
 Rule of thumb for entries: *precision beats breadth*.  Every line claims only
 what the model does; anything uncertain is left to the generic layer.
@@ -60,6 +65,9 @@ class Dp:
     max: float | None = None
     step: float | None = None
     description: str = ""
+    inverted: bool = False           # binary: swap true/false; numeric: publish 100 − value (percent positions)
+    device_class: str | None = None  # Home Assistant device class override
+    inferred: bool = False           # guessed from Tuya conventions, not from a model table
 
 
 @dataclass(frozen=True)
@@ -88,6 +96,7 @@ class Quirk:
     action_map: dict[str, str] = field(default_factory=dict)   # generic action → model-specific name
     buttons: int = 0                                # Tuya-style buttons: 1 → no endpoint prefix in actions
     tuya_onoff_attrs: bool = False                  # child_lock/indicator_mode on On/Off attrs 0x8000/0x8001
+    user_defined: bool = False                      # compiled from definitions.yaml rather than this table
 
     def matches(self, manufacturer: str | None, model: str | None) -> bool:
         m = (manufacturer or "").strip().lower()
@@ -543,13 +552,30 @@ VENDOR_PATTERNS: tuple[tuple[str, str], ...] = (
 )
 
 
-def find_quirk(manufacturer: str | None, model: str | None) -> Quirk | None:
+_DEFINITIONS: Any = None  # definitions.Definitions, installed by the gateway; user entries take precedence over QUIRKS
+
+
+def set_definitions(defs: Any) -> None:
+    """Install (or clear, with ``None``) the user-defined device definitions consulted by :func:`find_quirk`."""
+    global _DEFINITIONS
+    _DEFINITIONS = defs
+
+
+def builtin_quirk(manufacturer: str | None, model: str | None) -> Quirk | None:
     if not manufacturer and not model:
         return None
     for q in QUIRKS:
         if q.matches(manufacturer, model):
             return q
     return None
+
+
+def find_quirk(manufacturer: str | None, model: str | None) -> Quirk | None:
+    if _DEFINITIONS is not None:
+        q = _DEFINITIONS.quirk_for(manufacturer, model)
+        if q is not None:
+            return q
+    return builtin_quirk(manufacturer, model)
 
 
 def vendor_name(manufacturer: str | None, quirk: Quirk | None = None) -> str | None:
@@ -570,6 +596,12 @@ def vendor_name(manufacturer: str | None, quirk: Quirk | None = None) -> str | N
 
 _CATEGORY_LABEL = {"light": "Light", "plug": "Smart plug", "switch": "Switch", "sensor": "Sensor", "remote": "Button/remote", "cover": "Cover",
                    "climate": "Thermostat", "lock": "Lock", "meter": "Electricity meter", "unknown": "Unknown device"}
+
+
+
+def category_label(category: str) -> str:
+    return _CATEGORY_LABEL.get(category, "Unknown device")
+
 
 _IAS_KIND = {0x0015: ("Contact sensor", "contact"), 0x000D: ("Motion sensor", "occupancy"), 0x002A: ("Water leak sensor", "water_leak"),
              0x0028: ("Smoke detector", "smoke"), 0x002B: ("CO detector", "carbon_monoxide"), 0x002D: ("Vibration sensor", "vibration"),
@@ -680,14 +712,32 @@ class DeviceInfo:
         return self.quirk.description or None if self.quirk else None
 
 
+def tuya_dps(dev: Device, q: Quirk | None = None) -> tuple[Dp, ...]:
+    """The datapoint map in force for a device: the quirk's (built-in or user-defined) map, else the
+    conventions inferred from what the device has reported (``quirks_tuya``)."""
+    if q is None:
+        q = find_quirk(dev.manufacturer, dev.model)
+    if q is not None and q.dps:
+        return q.dps
+    from . import quirks_tuya as qt
+    if not qt.is_tuya_dp_device(dev):
+        return ()
+    return qt.infer(dev)[1]
+
+
 def describe(dev: Device) -> DeviceInfo:
     q = find_quirk(dev.manufacturer, dev.model)
     if q is not None:
         kind, cat = q.kind, q.category
         if cat == "unknown" and q.dps == () and dev.endpoints:
-            k2, c2 = classify_device(dev)
-            if c2 != "unknown":
-                kind, cat = k2, c2
+            from . import quirks_tuya as qt
+            guess = qt.infer_kind(dev) if qt.is_tuya_dp_device(dev) else None
+            if guess is not None:
+                kind, cat = guess
+            else:
+                k2, c2 = classify_device(dev)
+                if c2 != "unknown":
+                    kind, cat = k2, c2
         if q.kind in ("Bulb", "Light") and dev.endpoints:
             k2, c2 = classify_device(dev)
             if c2 == "light":
@@ -773,22 +823,29 @@ def shape_features(dev: Device, generic: list[dict[str, Any]], info: DeviceInfo)
             if extra["key"] not in have:
                 out.append(dict(extra))
                 have.add(extra["key"])
-        if q.dps:
-            seen: set[str] = set()
-            for dp in q.dps:
-                if dp.key in seen or dp.key in have:
-                    if dp.key in seen:
-                        continue
-                    # same key reported by another dp (e.g. cover position set vs report): keep the first
-                    continue
-                seen.add(dp.key)
-                out.append(_dp_feature(dp))
-        elif q.category == "unknown" and any(0xEF00 in ep.in_clusters for ep in dev.endpoints.values()):
-            # generic TS0601: raw datapoints seen so far become features so the UI shows them
-            for k, v in sorted(dev.state.items()):
-                if k.startswith("dp_") and k not in have:
-                    t = "binary" if isinstance(v, bool) else ("numeric" if isinstance(v, (int, float)) else "text")
-                    out.append(_f(k, f"Datapoint {k[3:]}", "Raw Tuya datapoint (meaning unknown for this model)", t, "r", icon="sliders", category="sensor", endpoint=1, cluster=0xEF00))
+    if any(vz.TUYA_CLUSTER in ep.in_clusters for ep in dev.endpoints.values()):
+        have = {f["key"] for f in out}
+        mapped: set[int] = set()
+        seen: set[str] = set()
+        for dp in tuya_dps(dev, q):
+            mapped.add(dp.dp)
+            if dp.key in seen or dp.key in have:
+                continue  # same key reported by another dp (e.g. cover position set vs report): keep the first
+            seen.add(dp.key)
+            out.append(_dp_feature(dp))
+        # datapoints without a meaning stay visible as raw values so the UI can show (and the user can teach) them
+        from . import quirks_tuya as qt
+        raw: dict[int, Any] = {dp: info_.get("last") for dp, info_ in qt.seen_datapoints(dev).items()}
+        for k, v in dev.state.items():
+            if k.startswith("dp_") and k[3:].isdigit():
+                raw.setdefault(int(k[3:]), v)
+        for n in sorted(raw):
+            k = f"dp_{n}"
+            if n in mapped or k in have:
+                continue
+            v = raw[n]
+            t = "binary" if isinstance(v, bool) else ("numeric" if isinstance(v, (int, float)) else "text")
+            out.append(_f(k, f"Datapoint {n}", "Raw Tuya datapoint (meaning unknown for this model)", t, "r", icon="sliders", category="sensor", endpoint=1, cluster=vz.TUYA_CLUSTER, dp=n))
 
     if info.category in ("sensor", "remote", "meter"):
         for f in out:
@@ -805,6 +862,10 @@ def shape_features(dev: Device, generic: list[dict[str, Any]], info: DeviceInfo)
 
 def _dp_feature(dp: Dp) -> dict[str, Any]:
     extra: dict[str, Any] = {"dp": dp.dp, "dp_type": dp.dtype}
+    if dp.inferred:
+        extra["inferred"] = True
+    if dp.device_class:
+        extra["device_class"] = dp.device_class
     if dp.unit:
         extra["unit"] = dp.unit
     if dp.min is not None:
@@ -952,13 +1013,13 @@ def _lumi_state(q: Quirk | None, tags: dict[int, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def decode_tuya_report(dev: Device, cmd: int, payload: bytes) -> dict[str, Any]:
-    if cmd not in (vz.TUYA_CMD_DATA_RESPONSE, vz.TUYA_CMD_DATA_REPORT, vz.TUYA_CMD_STATUS_REPORT):
-        return {}
+def decode_tuya_values(dev: Device, datapoints: list[tuple[int, int, Any]]) -> dict[str, Any]:
+    """Published keys for decoded ``(dp, type, value)`` triples: mapped datapoints become their feature key,
+    the rest ``dp_<n>``. Used for live reports and to rebuild state after a definition change."""
     q = find_quirk(dev.manufacturer, dev.model)
-    dps = {d.dp: d for d in (q.dps if q else ())}
+    dps = {d.dp: d for d in tuya_dps(dev, q)}
     out: dict[str, Any] = {}
-    for dp, _dtype, value in vz.decode_tuya_datapoints(payload):
+    for dp, _dtype, value in datapoints:
         d = dps.get(dp)
         if d is None:
             if isinstance(value, (bool, int, float, str)):
@@ -968,13 +1029,13 @@ def decode_tuya_report(dev: Device, cmd: int, payload: bytes) -> dict[str, Any]:
             continue
         if d.type == "numeric" and isinstance(value, (int, float)) and not isinstance(value, bool):
             v = value / d.scale if d.scale != 1 else value
-            if d.key == "position" and q and q.cover_inverted:
+            if d.inverted or (d.key == "position" and q and q.cover_inverted):
                 v = 100 - v
             out[d.key] = round(v, 2) if isinstance(v, float) else v
         elif d.type == "enum" and d.values is not None:
             out[d.key] = d.values.get(int(value) if not isinstance(value, bool) else int(value), str(value))
         elif d.type == "binary":
-            on = bool(value)
+            on = bool(value) != d.inverted
             if d.values:
                 lab = d.values.get(1 if on else 0, on)
                 out[d.key] = True if lab == "true" else (False if lab == "false" else lab)
@@ -985,12 +1046,16 @@ def decode_tuya_report(dev: Device, cmd: int, payload: bytes) -> dict[str, Any]:
     return out
 
 
+def decode_tuya_report(dev: Device, cmd: int, payload: bytes) -> dict[str, Any]:
+    if cmd not in (vz.TUYA_CMD_DATA_RESPONSE, vz.TUYA_CMD_DATA_REPORT, vz.TUYA_CMD_STATUS_REPORT):
+        return {}
+    return decode_tuya_values(dev, vz.decode_tuya_datapoints(payload))
+
+
 def encode_tuya_command(dev: Device, key: str, value: Any, seq: int) -> bytes | None:
     """Payload for a ``setData`` that writes feature ``key``; ``None`` if the key is not a writable dp."""
     q = find_quirk(dev.manufacturer, dev.model)
-    if not q:
-        return None
-    d = next((d for d in q.dps if d.key == key and d.access in ("rw", "w")), None)
+    d = next((d for d in tuya_dps(dev, q) if d.key == key and d.access in ("rw", "w")), None)
     if d is None:
         return None
     if d.type == "enum" and d.values is not None:
@@ -1007,13 +1072,13 @@ def encode_tuya_command(dev: Device, key: str, value: Any, seq: int) -> bytes | 
                 value = rev[value.upper()]
             elif value in ("true", "false"):
                 value = value == "true"
-        return vz.encode_tuya_datapoint(seq, d.dp, d.dtype, bool(value))
+        return vz.encode_tuya_datapoint(seq, d.dp, d.dtype, bool(value) != d.inverted)
     if d.type == "numeric":
         v = float(value)
-        if d.key == "position" and q.cover_inverted:
-            v = 100 - v
         if d.min is not None and v < d.min or d.max is not None and v > d.max:
             raise ValueError(f"{key} must be between {d.min} and {d.max}")
+        if d.inverted or (d.key == "position" and q and q.cover_inverted):
+            v = 100 - v
         return vz.encode_tuya_datapoint(seq, d.dp, d.dtype, int(round(v * d.scale)))
     return vz.encode_tuya_datapoint(seq, d.dp, d.dtype, value)
 
@@ -1090,5 +1155,6 @@ def remote_action(dev: Device, ep: int, cluster: int, cmd: int, payload: bytes, 
     return action
 
 
-__all__ = ["Quirk", "Dp", "QUIRKS", "find_quirk", "vendor_name", "describe", "DeviceInfo", "classify_device", "is_battery_powered",
-           "binding_policy", "shape_features", "translate_state", "decode_vendor_attributes", "decode_tuya_report", "encode_tuya_command", "remote_action"]
+__all__ = ["Quirk", "Dp", "QUIRKS", "find_quirk", "builtin_quirk", "set_definitions", "vendor_name", "describe", "DeviceInfo", "classify_device",
+           "is_battery_powered", "binding_policy", "shape_features", "tuya_dps", "translate_state", "decode_vendor_attributes", "decode_tuya_values",
+           "decode_tuya_report", "encode_tuya_command", "remote_action"]

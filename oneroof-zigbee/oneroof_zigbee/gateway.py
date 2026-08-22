@@ -20,8 +20,9 @@ from pathlib import Path
 from collections.abc import Callable
 from typing import Any
 
-from . import quirks, zcl
+from . import quirks, quirks_tuya, zcl
 from .config import Config
+from .definitions import Definitions
 from .devices import Device, Registry
 from .ha import Topics, bridge_discovery, discovery_messages, removal_messages
 from .mqtt import Broker
@@ -93,6 +94,9 @@ class Gateway:
         self._activity_path = (cfg.data_dir / "activity.log") if cfg.data_dir else None
         from .ota import OtaServer
         self.ota = OtaServer(cfg.data_dir / "firmware", audit)
+        # user device definitions take precedence over the built-in model table; installed process-wide
+        self.definitions = Definitions((cfg.data_dir / "definitions.yaml") if cfg.data_dir else None)
+        quirks.set_definitions(self.definitions)
 
     # ------------------------------------------------------------- start --
 
@@ -605,7 +609,7 @@ class Gateway:
                 asyncio.create_task(self.coord.send_aps(dev.nwk, m.src_ep, 0x0019, out, wait_confirm=False))
             return
         elif m.cluster == vz.TUYA_CLUSTER and frame.direction == zcl.DIRECTION_SERVER_TO_CLIENT:
-            changed = quirks.decode_tuya_report(dev, frame.command, frame.payload)
+            changed = await self._tuya_report(dev, frame)
             if not frame.disable_default_response:
                 asyncio.create_task(self._default_response(dev, m, frame))
         else:
@@ -626,6 +630,65 @@ class Gateway:
                 # an action is an event, not a state: publish it once more cleared so HA's sensor resets
                 dev.state["action"] = ""
                 await self._publish_state(dev)
+
+    async def _tuya_report(self, dev: Device, frame: zcl.ZclFrame) -> dict[str, Any]:
+        """Decode a datapoint report, remembering every datapoint id and wire type the device has shown
+        (``context["tuya_seen"]``). A datapoint seen for the first time may change the feature list
+        (inference, raw ``dp_<n>`` values), so the layout is refreshed and re-announced then."""
+        if frame.command not in (vz.TUYA_CMD_DATA_RESPONSE, vz.TUYA_CMD_DATA_REPORT, vz.TUYA_CMD_STATUS_REPORT):
+            return {}
+        dps = vz.decode_tuya_datapoints(frame.payload)
+        seen = dev.context.get(quirks_tuya.SEEN_KEY) or {}
+        new = any(not isinstance(seen.get(str(dp)), dict) or seen[str(dp)].get("type") != t for dp, t, _ in dps)
+        before = self._layout_of(dev) if new else None
+        quirks_tuya.record_datapoints(dev, dps, time.time())
+        changed = quirks.decode_tuya_values(dev, dps)
+        if new:
+            self.registry.save()
+            await self._refresh_layout(dev, before)
+        return changed
+
+    def _layout_of(self, dev: Device) -> tuple[set[str], set[str]]:
+        """``(discovery topics, feature keys)`` — what Home Assistant and the state payload currently see."""
+        topics = {t for t, _ in discovery_messages(dev, self.base, self.cfg.homeassistant.discovery_prefix, legacy=self.legacy)} if self.cfg.homeassistant.discovery else set()
+        return topics, {f["key"] for f in self._features(dev)}
+
+    def layout_snapshot(self) -> dict[int, tuple[set[str], set[str]]]:
+        return {d.ieee: self._layout_of(d) for d in self.registry.all()}
+
+    async def _refresh_layout(self, dev: Device, before: tuple[set[str], set[str]] | None) -> bool:
+        """Re-shape features after the model knowledge for a device changed: rebuild the datapoint-derived
+        state from the last seen values, drop stale keys and entities, re-announce and republish."""
+        feats = self._features(dev)
+        keys = {f["key"] for f in feats}
+        mapped = {f["dp"] for f in feats if "dp" in f and not f["key"].startswith("dp_")}
+        seen = quirks_tuya.seen_datapoints(dev)
+        rebuilt = quirks.decode_tuya_values(dev, [(dp, info["type"], info.get("last")) for dp, info in sorted(seen.items())]) if seen else {}
+        stale = {f"dp_{dp}" for dp in mapped} | ((before[1] - keys) if before else set())
+        for k in stale:
+            dev.state.pop(k, None)
+        moved = bool(stale & set(before[1])) if before else bool(stale)
+        events = self._apply_changes(dev, rebuilt) if rebuilt else []
+        topics, _ = self._layout_of(dev)
+        if before is not None and before == (topics, keys) and not events and not moved:
+            return False
+        if before is not None:
+            for t in before[0] - topics:
+                await self.broker.publish(t, b"", retain=True)  # entity no longer exists: blank the retained config
+        await self._announce(dev)
+        await self._publish_state(dev)
+        self._emit_device_event("interviewed", dev)
+        return True
+
+    async def apply_layout_changes(self, before: dict[int, tuple[set[str], set[str]]]) -> list[str]:
+        """After definitions changed: refresh every device whose layout differs from ``before``."""
+        refreshed: list[str] = []
+        for dev in self.registry.all():
+            if await self._refresh_layout(dev, before.get(dev.ieee)):
+                refreshed.append(dev.ieee_str)
+        self.registry.save()
+        await self._publish_bridge_info()
+        return refreshed
 
     def _remote_event(self, dev: Device, m: IncomingAps, frame: zcl.ZclFrame) -> dict[str, Any]:
         out: dict[str, Any] = {}
@@ -658,7 +721,7 @@ class Gateway:
 
         self._timers[(dev.ieee, key)] = asyncio.create_task(clear(), name=f"clear-{key}-{dev.ieee_str}")
 
-    def _apply_changes(self, dev: Device, changed: dict[str, Any]) -> None:
+    def _apply_changes(self, dev: Device, changed: dict[str, Any]) -> list[dict[str, Any]]:
         now = time.time()
         events = dev.record_changes(changed, now)
         if dev.lqi is not None:
@@ -677,6 +740,7 @@ class Gateway:
                     self.on_activity(dev.ieee, ev)
                 except Exception:
                     log.exception("on_activity observer failed")
+        return events
 
     async def _resolve_unknown_short(self, nwk: int) -> Device | None:
         """A known device (e.g. imported without its short address, or re-addressed after a
