@@ -623,3 +623,29 @@ def test_discovery_payloads_never_contain_nulls():
         for legacy in (True, False):
             for topic, payload in discovery_messages(dev, "zigbee2mqtt", "homeassistant", legacy=legacy):
                 walk(json.loads(payload), topic)
+
+
+def test_values_in_state_are_exposed_even_without_cluster_information():
+    """Imported without clusters (previous database lacked them): model knowledge and the state
+    safety net still produce the entities the previous layout had."""
+    import json
+    from oneroof_zigbee.devices import Device, Endpoint
+    from oneroof_zigbee.features import features_for
+    from oneroof_zigbee.ha.discovery import discovery_messages
+    d = Device(ieee=0x00158D0000000005, nwk=0x7777, friendly_name="Rack sensor", manufacturer="LUMI", model="lumi.weather")
+    d.endpoints[1] = Endpoint(1, 0x0104, 0x0100, [], [], "switch")
+    d.interviewed = True
+    d.state.update({"pressure": 1000.5, "temperature": 32.66, "humidity": 33.74, "voltage": 2865, "battery": 10})
+    keys = {f["key"] for f in features_for(d)}
+    assert {"temperature", "humidity", "pressure", "battery", "voltage"} <= keys
+    uids = {json.loads(p)["unique_id"] for _t, p in discovery_messages(d, "zigbee2mqtt", "homeassistant", legacy=True)}
+    assert {"0x00158d0000000005_temperature_zigbee2mqtt", "0x00158d0000000005_humidity_zigbee2mqtt",
+            "0x00158d0000000005_pressure_zigbee2mqtt"} <= uids
+    # unknown model with only state: the safety net alone
+    u = Device(ieee=0x00158D0000000006, nwk=0x7778, friendly_name="Mystery", manufacturer="Acme", model="X1")
+    u.endpoints[1] = Endpoint(1, 0x0104, 0x0100, [], [], "unknown")
+    u.interviewed = True
+    u.state.update({"temperature": 21.5, "contact": False, "frobnicate": 3})
+    fk = {f["key"]: f for f in features_for(u)}
+    assert fk["temperature"]["from_state"] and fk["temperature"]["access"] == "r" and fk["contact"]["type"] == "binary"
+    assert "frobnicate" not in fk, "unknown keys are not invented into entities"

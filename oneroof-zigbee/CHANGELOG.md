@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.5.5] — 2026-08-22
+
+### Fixed — values present in the state are always exposed
+- Devices imported without cluster information (the previous database did not carry it) produced no
+  measurement entities although their state held temperature/humidity/pressure. Three fixes: such
+  devices are interviewed again on contact; the model table adds the measurements of the Aqara
+  climate sensors explicitly; and, for every model, any state key with a known meaning that has no
+  feature becomes a read-only entity — nothing a device reports is lost on the way to Home Assistant.
+
 ## [1.5.4] — 2026-08-22
 
 ### Added — MQTT 5 Subscription Identifiers

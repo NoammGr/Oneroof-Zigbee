@@ -357,3 +357,19 @@ async def test_imported_device_goes_online_on_first_frame(tmp_path):
     assert dev.available is True
     assert broker.last(f"oneroof/zigbee/{dev.ieee_str}/availability") == b"online"
     await t.close()
+
+
+async def test_endpoints_without_clusters_are_reinterviewed(tmp_path):
+    from oneroof_zigbee.devices import Endpoint
+    fake, coord, broker, gw, t = await make(tmp_path)
+    dev = gw.registry.add_or_update(0x00158D0000000042, 0x4242, is_router=False)
+    dev.endpoints[1] = Endpoint(1, 0x0104, 0x0100, [], [], "switch")
+    dev.interviewed = True
+    dev.context["imported_from"] = "previous"
+    dev.context["reporting_done"] = True
+    for d in gw.registry.all():  # the start-up sanitiser
+        if d.interviewed and d.endpoints and not any(e.in_clusters or e.out_clusters for e in d.endpoints.values()):
+            d.interviewed = False
+            d.context.pop("reporting_done", None)
+    assert dev.interviewed is False and "reporting_done" not in dev.context
+    await t.close()

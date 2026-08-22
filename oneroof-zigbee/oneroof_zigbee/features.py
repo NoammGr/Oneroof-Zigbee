@@ -161,10 +161,60 @@ def _assign_keys(dev: Device, feats: list[dict[str, Any]]) -> list[dict[str, Any
     return out
 
 
+# State keys with a known meaning. A value that is present in the device state but has no feature
+# (imported without cluster information, vendor report the model table does not know …) is still
+# exposed, read-only, so nothing the device reports is lost on the way to Home Assistant.
+KNOWN_STATE_FEATURES: dict[str, tuple[str, str, str | None, str, str]] = {
+    # key: (name, type, unit, icon, category)
+    "temperature": ("Temperature", "numeric", "°C", "thermometer", "sensor"),
+    "humidity": ("Humidity", "numeric", "%", "drop", "sensor"),
+    "pressure": ("Pressure", "numeric", "hPa", "gauge", "sensor"),
+    "illuminance": ("Illuminance", "numeric", "lx", "sun", "sensor"),
+    "illuminance_lux": ("Illuminance", "numeric", "lx", "sun", "sensor"),
+    "occupancy": ("Occupancy", "binary", None, "hand", "sensor"),
+    "contact": ("Contact", "binary", None, "shield", "sensor"),
+    "water_leak": ("Water leak", "binary", None, "drop", "sensor"),
+    "smoke": ("Smoke", "binary", None, "shield", "sensor"),
+    "gas": ("Gas", "binary", None, "shield", "sensor"),
+    "vibration": ("Vibration", "binary", None, "shield", "sensor"),
+    "tamper": ("Tamper", "binary", None, "shield", "diagnostic"),
+    "battery_low": ("Battery low", "binary", None, "battery", "diagnostic"),
+    "battery": ("Battery", "numeric", "%", "battery", "diagnostic"),
+    "voltage": ("Battery voltage", "numeric", "mV", "battery", "diagnostic"),
+    "device_temperature": ("Device temperature", "numeric", "°C", "thermometer", "diagnostic"),
+    "power_outage_count": ("Power outages", "numeric", None, "counter", "diagnostic"),
+    "power": ("Power", "numeric", "W", "bolt", "sensor"),
+    "energy": ("Energy", "numeric", "kWh", "bolt", "sensor"),
+    "current": ("Current", "numeric", "A", "bolt", "sensor"),
+    "voltage_ac": ("Voltage", "numeric", "V", "bolt", "sensor"),
+    "co2": ("CO₂", "numeric", "ppm", "gauge", "sensor"),
+    "pm25": ("PM2.5", "numeric", "µg/m³", "gauge", "sensor"),
+    "voc": ("VOC", "numeric", "ppb", "gauge", "sensor"),
+    "action": ("Action", "text", None, "hand", "sensor"),
+}
+
+
+def _state_fallbacks(dev: Device, have: set[str]) -> list[dict[str, Any]]:
+    out = []
+    for key, (name, type_, unit, icon, category) in KNOWN_STATE_FEATURES.items():
+        if key in have or key not in dev.state:
+            continue
+        extra: dict[str, Any] = {"from_state": True}
+        if unit:
+            extra["unit"] = unit
+        if type_ == "binary":
+            extra.update(value_on=True, value_off=False)
+        out.append(_f(key, name, "Reported by the device", type_, "r", icon=icon, category=category, endpoint=0, cluster=0, **extra))
+    return out
+
+
 def features_for(dev: Device) -> list[dict[str, Any]]:
     from . import quirks
     info = quirks.describe(dev)
-    return quirks.shape_features(dev, generic_features(dev), info)
+    feats = quirks.shape_features(dev, generic_features(dev), info)
+    have = {f["key"] for f in feats}
+    feats.extend(_state_fallbacks(dev, have))
+    return feats
 
 
 def feature_index(dev: Device) -> dict[str, dict[str, Any]]:

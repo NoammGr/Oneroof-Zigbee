@@ -102,6 +102,10 @@ class Gateway:
 
     async def start(self) -> None:
         for d in self.registry.all():
+            if d.interviewed and d.endpoints and not any(e.in_clusters or e.out_clusters for e in d.endpoints.values()):
+                d.interviewed = False  # imported without cluster information: interview it on contact
+                d.context.pop("reporting_done", None)
+                self.registry.save()
             if d.nwk == 0 and (d.interviewed or d.endpoints):
                 # Interviewed at address 0 = the coordinator's own descriptors; discard them.
                 d.endpoints.clear()
