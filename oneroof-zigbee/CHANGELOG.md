@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.5.6] — 2026-08-22
+
+### Changed
+- Sleepy (battery) devices are no longer interviewed at start — they answer only when awake and are
+  interviewed on their next report; no more `interview_failed` parade after a restart.
+- A ZCL sequence counter restarting near zero is treated as a device reboot, not an impersonation
+  signal.
+
 ## [1.5.5] — 2026-08-22
 
 ### Fixed — values present in the state are always exposed

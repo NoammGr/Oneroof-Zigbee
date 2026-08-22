@@ -95,3 +95,14 @@ def test_profiles_round_trip():
     m2, _, _ = make()
     m2.load(data)
     assert m2.profiles[7].frames == 30 and m2.profiles[7].last_seq == 29
+
+
+def test_counter_restart_near_zero_is_not_an_anomaly():
+    m, alerts, clock = make()
+    feed(m, clock, 9, 60)
+    clock.t += 30
+    m.observe(9, seq=4, lqi=120, is_command=False, mains=True)  # device rebooted: counter restarted
+    assert alerts == []
+    clock.t += 30
+    m.observe(9, seq=130, lqi=120, is_command=False, mains=True)  # a jump into the middle is still one
+    assert [a["kind"] for a in alerts] == ["sequence_jump"]

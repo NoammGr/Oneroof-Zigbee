@@ -158,9 +158,12 @@ class Gateway:
         for dev in devices:
             if dev.context.get("reporting_done") or dev.ieee in self._interview_tasks:
                 continue
+            known_sleepy = (not (dev.is_router or dev.rx_on_when_idle)
+                            and (str(dev.power_source or "").lower() == "battery" or bool(dev.endpoints)))
+            if dev.nwk and known_sleepy and not dev.interviewed:
+                continue  # answers only when awake — interviewed on its next report (unknown types are tried)
             if dev.nwk:
-                # Address known from the previous setup's backup: talk to the device directly. A
-                # sleepy device simply does not answer (interview_failed) and is retried on contact.
+                # Address known from the previous setup's backup: talk to the device directly.
                 nwk = dev.nwk
             else:
                 try:

@@ -97,7 +97,9 @@ class Monitor:
 
         if seq is not None and p.last_seq is not None and p.frames > 20:
             delta = (seq - p.last_seq) % 256
-            if SEQ_JUMP < delta < 256 - SEQ_JUMP:
+            # A counter that restarts near zero is a device reboot/resync, not an impersonator
+            # (who keeps a counter of their own somewhere in the middle of the range).
+            if SEQ_JUMP < delta < 256 - SEQ_JUMP and seq >= 16:
                 raised += self._raise(p, ieee, "sequence_jump", now, last=p.last_seq, seen=seq)
         if seq is not None:
             p.last_seq = seq
