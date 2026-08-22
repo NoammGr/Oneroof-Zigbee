@@ -76,6 +76,7 @@ class _Session:
         self.keepalive = 0
         self.will: pk.Publish | None = None
         self.subscriptions: dict[str, int] = {}  # filter -> granted qos
+        self.subscription_ids: dict[str, int] = {}  # filter -> MQTT 5 subscription identifier (if the client gave one)
         self.inflight: dict[int, float] = {}  # outbound packet id -> send time
         self._next_pid = 1
         self._outq: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=MAX_OUTBOUND_QUEUE)
@@ -130,8 +131,9 @@ class _Session:
                 return pid
         raise RuntimeError("no free packet identifiers")
 
-    def deliver(self, topic: str, payload: bytes, qos: int, retain: bool) -> None:
-        """Queue a PUBLISH for this client at ``min(qos, granted)``."""
+    def deliver(self, topic: str, payload: bytes, qos: int, retain: bool, *, filters: tuple[str, ...] = ()) -> None:
+        """Queue a PUBLISH for this client at ``min(qos, granted)``. ``filters`` are the matching
+        subscriptions; their MQTT 5 identifiers are echoed in the packet."""
         if qos > 0:
             if len(self.inflight) >= MAX_INFLIGHT:
                 log.warning("client %r: %d unacked messages, delivering QoS 0", self.client_id, MAX_INFLIGHT)
@@ -140,7 +142,8 @@ class _Session:
         if qos > 0:
             pid = self.next_packet_id()
             self.inflight[pid] = time.monotonic()
-        self.send(pk.Publish(topic=topic, payload=payload, qos=qos, retain=retain, packet_id=pid))
+        ids = tuple(self.subscription_ids[f] for f in filters if f in self.subscription_ids) if self.version == 5 else ()
+        self.send(pk.Publish(topic=topic, payload=payload, qos=qos, retain=retain, packet_id=pid, subscription_ids=ids))
 
     # -- inbound ----------------------------------------------------------
 
@@ -254,6 +257,7 @@ class _Session:
                     codes = []
                     for tf in topics:
                         existed = self.subscriptions.pop(tf, None) is not None
+                        self.subscription_ids.pop(tf, None)
                         if existed:
                             self.broker._unsubscribe_session(self, tf)
                         codes.append(0x00 if existed else 0x11)  # MQTT 5: 0x11 = no subscription existed
@@ -292,6 +296,10 @@ class _Session:
                 continue
             granted = min(req_qos, 1)
             self.subscriptions[tf] = granted
+            if s.subscription_id:
+                self.subscription_ids[tf] = s.subscription_id
+            else:
+                self.subscription_ids.pop(tf, None)
             self.broker._subscribe_session(self, tf)
             codes.append(granted)
         self.send(pk.Suback(s.packet_id, codes))
@@ -491,7 +499,7 @@ class Broker:
     def _send_retained(self, session: _Session, tf: str, granted_qos: int) -> None:
         for topic, r in list(self._retained.items()):
             if pk.topic_matches(tf, topic):
-                session.deliver(topic, r.payload, min(r.qos, granted_qos), True)
+                session.deliver(topic, r.payload, min(r.qos, granted_qos), True, filters=(tf,))
 
     # -- routing ----------------------------------------------------------
 
@@ -509,13 +517,15 @@ class Broker:
                     self._retained_bytes += len(payload)
         # TCP subscribers: one delivery per session at the highest matching granted QoS.
         targets: dict[_Session, int] = {}
+        matched: dict[_Session, list[str]] = {}
         for tf, sessions in self._subs.items():
             if pk.topic_matches(tf, topic):
                 for s in sessions:
                     granted = s.subscriptions.get(tf, 0)
                     targets[s] = max(targets.get(s, 0), granted)
+                    matched.setdefault(s, []).append(tf)
         for s, granted in targets.items():
-            s.deliver(topic, payload, min(qos, granted), False)
+            s.deliver(topic, payload, min(qos, granted), False, filters=tuple(matched.get(s, ())))
         # In-process subscribers.
         for ls in list(self._local_subs):
             if pk.topic_matches(ls.topic_filter, topic):

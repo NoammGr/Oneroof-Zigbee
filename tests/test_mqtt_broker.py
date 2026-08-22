@@ -603,3 +603,35 @@ async def test_addon_adopts_home_assistants_existing_login(tmp_path: Path) -> No
         assert not pf.verify("gw", b"wrong")
     finally:
         await b.stop()
+
+
+async def test_mqtt5_subscription_identifiers_are_echoed(broker: Broker) -> None:
+    """Home Assistant's client requires Subscription Identifiers: the broker advertises them and
+    echoes the identifier of every matching subscription in delivered PUBLISHes (retained too)."""
+    gw = await connect(broker, "gw", "gwpw")
+    await gw.publish("oz/dev1/state", b"retained", qos=0, retain=True)
+    await asyncio.sleep(0.05)
+    r, w = await asyncio.open_connection("127.0.0.1", broker.port)
+    w.write(_v5_connect("ha-ids", "ha", "hapw"))
+    ack = await _read(r)
+    assert isinstance(ack, pk.Connack) and ack.return_code == 0
+    raw = pk.encode(pk.Connack(False, 0), 5, connack_props=pk.SERVER_CONNACK_PROPS)
+    assert bytes([pk.PROP_SUBSCRIPTION_IDS_AVAILABLE, 1]) in raw, "advertised as available"
+    w.write(pk.encode(pk.Subscribe(3, [("oz/#", 1)], subscription_id=42), 5))
+    assert isinstance(await _read(r), pk.Suback)
+    retained = await _read(r)
+    assert isinstance(retained, pk.Publish) and retained.retain and retained.subscription_ids == (42,)
+    w.write(pk.encode(pk.Subscribe(4, [("oz/dev1/+", 0)], subscription_id=7), 5))
+    assert isinstance(await _read(r), pk.Suback)
+    assert isinstance(await _read(r), pk.Publish)  # retained replay for the second filter
+    await gw.publish("oz/dev1/state", b"live", qos=0)
+    live = await _read(r)
+    assert live.payload == b"live" and sorted(live.subscription_ids) == [7, 42], "both matching subscriptions identified"
+    # identifier 0 is a protocol error (hand-built: the encoder never emits it)
+    props = bytes([pk.PROP_SUBSCRIPTION_ID, 0x00])
+    body = (5).to_bytes(2, "big") + pk.encode_remaining_length(len(props)) + props + pk.encode_string("oz/#") + b"\x00"
+    w.write(bytes([0x82]) + pk.encode_remaining_length(len(body)) + body)
+    d = await _read(r)
+    assert isinstance(d, pk.Disconnect) and d.reason == pk.RC_MALFORMED
+    w.close()
+    await gw.disconnect()

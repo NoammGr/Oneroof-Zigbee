@@ -184,6 +184,7 @@ class Publish:
     retain: bool = False
     dup: bool = False
     packet_id: int | None = None
+    subscription_ids: tuple[int, ...] = ()  # MQTT 5: identifiers of the subscriptions this delivery matched
 
 
 @dataclass(slots=True)
@@ -196,6 +197,7 @@ class Subscribe:
     packet_id: int
     topics: list[tuple[str, int]] = field(default_factory=list)
     retain_handling: list[int] = field(default_factory=list)  # MQTT 5 per-filter option (0 send, 1 if new, 2 never)
+    subscription_id: int | None = None  # MQTT 5: identifier the client wants echoed in matching PUBLISHes
 
 
 @dataclass(slots=True)
@@ -321,6 +323,7 @@ PROP_TOPIC_ALIAS = 0x23
 PROP_MAXIMUM_QOS = 0x24
 PROP_RETAIN_AVAILABLE = 0x25
 PROP_WILDCARD_AVAILABLE = 0x28
+PROP_SUBSCRIPTION_ID = 0x0B
 PROP_SUBSCRIPTION_IDS_AVAILABLE = 0x29
 PROP_SHARED_AVAILABLE = 0x2A
 PROP_REASON_STRING = 0x1F
@@ -364,6 +367,8 @@ def _read_properties(r: _Reader) -> dict[int, Any]:
         elif pid in _PROP_VARINT:
             val, used = decode_remaining_length(r.data, r.pos)
             r.pos += used
+            out.setdefault(pid, []).append(val)  # Subscription Identifier may repeat in a PUBLISH
+            continue
         elif pid in _PROP_BINARY:
             val = r.binary()
         elif pid in _PROP_STRING:
@@ -408,7 +413,7 @@ def _write_properties(props: dict[int, Any] | None) -> bytes:
 # supported, no shared subscriptions / subscription ids, no topic aliases towards us.
 SERVER_CONNACK_PROPS: dict[int, Any] = {
     PROP_MAXIMUM_QOS: 1, PROP_RETAIN_AVAILABLE: 1, PROP_WILDCARD_AVAILABLE: 1,
-    PROP_SUBSCRIPTION_IDS_AVAILABLE: 0, PROP_SHARED_AVAILABLE: 0, PROP_TOPIC_ALIAS_MAX: 0,
+    PROP_SUBSCRIPTION_IDS_AVAILABLE: 1, PROP_SHARED_AVAILABLE: 0, PROP_TOPIC_ALIAS_MAX: 0,
 }
 
 # ---------------------------------------------------------------------------
@@ -458,7 +463,8 @@ def encode(packet: Packet, version: int = 4, *, connack_props: dict[int, Any] | 
                     raise MalformedPacket("invalid requested QoS")
                 body += encode_string(tf) + bytes([qos])
             if v5:
-                body = bytearray(struct.pack("!H", pid)) + b"\x00" + bytes(body[2:])
+                props = (bytes([PROP_SUBSCRIPTION_ID]) + encode_remaining_length(packet.subscription_id)) if packet.subscription_id else b""
+                body = bytearray(struct.pack("!H", pid)) + encode_remaining_length(len(props)) + props + bytes(body[2:])
             return _frame(SUBSCRIBE, 0x2, bytes(body))
         case Suback(packet_id=pid, return_codes=codes):
             for c in codes:
@@ -542,7 +548,8 @@ def _encode_publish(p: Publish, v5: bool = False) -> bytes:
     elif p.packet_id is not None:
         raise MalformedPacket("packet identifier present for QoS 0")
     if v5:
-        body += b"\x00"  # no properties
+        props = b"".join(bytes([PROP_SUBSCRIPTION_ID]) + encode_remaining_length(i) for i in p.subscription_ids if i > 0)
+        body += encode_remaining_length(len(props)) + props
     body += p.payload
     return _frame(PUBLISH, flags, bytes(body))
 
@@ -603,8 +610,14 @@ def decode(ptype: int, flags: int, body: bytes, version: int = 4) -> Packet:
         return Puback(pid)
     if ptype == SUBSCRIBE:
         pid = _check_packet_id(r.u16())
+        sub_id = None
         if v5:
-            _read_properties(r)
+            ids = _read_properties(r).get(PROP_SUBSCRIPTION_ID, [])
+            if len(ids) > 1:
+                raise MalformedPacket("more than one subscription identifier in SUBSCRIBE")
+            sub_id = ids[0] if ids else None
+            if sub_id == 0:
+                raise MalformedPacket("subscription identifier 0 is not allowed")
         topics: list[tuple[str, int]] = []
         handling: list[int] = []
         while r.remaining():
@@ -621,7 +634,7 @@ def decode(ptype: int, flags: int, body: bytes, version: int = 4) -> Packet:
             handling.append(rh)
         if not topics:
             raise MalformedPacket("SUBSCRIBE with no filters")
-        return Subscribe(pid, topics, handling if v5 else [])
+        return Subscribe(pid, topics, handling if v5 else [], sub_id)
     if ptype == SUBACK:
         pid = _check_packet_id(r.u16())
         if v5:
@@ -740,12 +753,15 @@ def _decode_publish(flags: int, body: bytes, v5: bool = False) -> Publish:
     pid: int | None = None
     if qos > 0:
         pid = _check_packet_id(r.u16())
+    sub_ids: tuple[int, ...] = ()
     if v5:
         props = _read_properties(r)
         if PROP_TOPIC_ALIAS in props:
             raise MalformedPacket("topic alias used although Topic Alias Maximum is 0")
+        if PROP_SUBSCRIPTION_ID in props:
+            sub_ids = tuple(props[PROP_SUBSCRIPTION_ID])
     payload = r.take(r.remaining())
-    return Publish(topic=topic, payload=payload, qos=qos, retain=retain, dup=dup, packet_id=pid)
+    return Publish(subscription_ids=sub_ids, topic=topic, payload=payload, qos=qos, retain=retain, dup=dup, packet_id=pid)
 
 
 def decode_one(buf: bytes, version: int = 4) -> tuple[Packet, int]:

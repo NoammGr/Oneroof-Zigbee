@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.4] — 2026-08-22
+
+### Added — MQTT 5 Subscription Identifiers
+- The broker now supports (and advertises) subscription identifiers: the identifier a client attaches
+  to a subscription is echoed in every matching PUBLISH, including retained replays and multiple
+  matching subscriptions. Home Assistant's MQTT client requires this and logged a warning.
+
 ## [1.5.3] — 2026-08-22
 
 ### Fixed — Home Assistant rejected every discovery message
