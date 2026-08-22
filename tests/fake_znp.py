@@ -43,6 +43,7 @@ class FakeZnp:
         self.closed = False
         self.ieee = 0x00124B0011223344
         self.frame_counter = None
+        self.ignore_set_frame_counter = False  # model firmware that does not keep SET_NWK_FRAME_COUNTER
         self.nwk_to_ieee: dict[int, int] = {}  # populated by emit_announce; used for IEEE_ADDR_REQ
         self.on_data_request = None  # optional hook: Frame -> list[Frame] of AREQs to emit
 
@@ -88,6 +89,8 @@ class FakeZnp:
             elif cmd == c.SysCmd.OSAL_NV_WRITE:
                 item = int.from_bytes(f.data[0:2], "little")
                 self.nv[item] = f.data[4:]
+                if item == c.NvId.NWK_ACTIVE_KEY_INFO and len(f.data[4:]) >= 21:
+                    self.frame_counter = int.from_bytes(f.data[4:][17:21], "little")
                 if item == c.NvId.STARTUP_OPTION and f.data[4] == 3:
                     # clear everything on next reset, like the real thing
                     self.nv = {item: f.data[4:]}
@@ -97,6 +100,9 @@ class FakeZnp:
                 item = int.from_bytes(f.data[0:2], "little")
                 if item == c.NvId.BDBNODEISONANETWORK:
                     self._srsp(f, b"\x00\x01" + (b"\x01" if self.formed else b"\x00"))
+                elif item == c.NvId.NWK_ACTIVE_KEY_INFO:
+                    body = b"\x00" + self.nv.get(c.NvId.PRECFGKEY, bytes(16))[:16] + (self.frame_counter or 0).to_bytes(4, "little")
+                    self._srsp(f, b"\x00" + bytes([len(body)]) + body)
                 elif item in self.nv:
                     v = self.nv[item]
                     self._srsp(f, b"\x00" + bytes([len(v)]) + v)
@@ -115,7 +121,8 @@ class FakeZnp:
                     self._srsp(f, b"\x02")
                     return
             if cmd == c.AppCnfCmd.SET_NWK_FRAME_COUNTER:
-                self.frame_counter = int.from_bytes(f.data[0:4], "little")
+                if not self.ignore_set_frame_counter:
+                    self.frame_counter = int.from_bytes(f.data[0:4], "little")
             if cmd == c.AppCnfCmd.BDB_ADD_INSTALLCODE:
                 self.install_codes.append((int.from_bytes(f.data[1:9], "little"), f.data[9:]))
             self._srsp(f, b"\x00")

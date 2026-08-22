@@ -131,8 +131,21 @@ async def test_lockout_after_five_failures(broker: Broker, monkeypatch: pytest.M
     assert ei.value.code == pk.CONNACK_NOT_AUTHORIZED
     # After the lockout expires, we get back in.
     monkeypatch.setattr(broker_mod, "AUTH_LOCKOUT_SECONDS", 30.0)
-    broker._lockouts["127.0.0.1"] -= 31
+    broker._lockouts["127.0.0.1|gw"] -= 31
     c = await connect(broker, "gw", "gwpw")
+    await c.disconnect()
+
+
+async def test_lockout_is_per_user_so_a_failing_login_cannot_block_another(broker: Broker) -> None:
+    """Home Assistant's stored login may keep failing from the same address; a different, correct
+    login from that address must still get in."""
+    for _ in range(6):
+        with pytest.raises(ConnectRefused):
+            await connect(broker, "ro", "stale-password")
+    with pytest.raises(ConnectRefused) as ei:
+        await connect(broker, "ro", "ropw")
+    assert ei.value.code == pk.CONNACK_NOT_AUTHORIZED, "the failing user itself is locked out"
+    c = await connect(broker, "ha", "hapw")  # another user from the same address
     await c.disconnect()
 
 
@@ -439,3 +452,154 @@ async def test_client_reconnects_with_backoff(broker: Broker) -> None:
     await broker.publish("oz/after", b"back")
     assert await seen.wait(1) == [("oz/after", b"back")]
     await c.disconnect()
+
+
+# --------------------------------------------------------------------------- MQTT 5 ---
+
+
+def _v5_connect(client_id: str, user: str, pw: str, *, session_expiry: int = 0) -> bytes:
+    """Hand-built MQTT 5 CONNECT, as paho/Home Assistant send it (properties present)."""
+    props = b"\x11" + session_expiry.to_bytes(4, "big") + b"\x21\x00\x14"  # session expiry, receive max 20
+    body = pk.encode_string("MQTT") + bytes([5, 0xC2]) + (60).to_bytes(2, "big")
+    body += pk.encode_remaining_length(len(props)) + props
+    body += pk.encode_string(client_id) + pk.encode_string(user) + len(pw).to_bytes(2, "big") + pw.encode()
+    return bytes([0x10]) + pk.encode_remaining_length(len(body)) + body
+
+
+async def _read(reader: asyncio.StreamReader, version: int = 5) -> pk.Packet:
+    head = await asyncio.wait_for(reader.readexactly(2), 3)
+    buf = bytearray(head)
+    while True:
+        try:
+            _, _, length, hsize = pk.decode_fixed_header(bytes(buf))
+            break
+        except pk.NeedMoreData:
+            buf += await reader.readexactly(1)
+    buf += await reader.readexactly(hsize + length - len(buf))
+    return pk.decode_one(bytes(buf), version)[0]
+
+
+async def test_mqtt5_client_full_session(broker: Broker) -> None:
+    """An MQTT 5 client (properties everywhere) connects, subscribes, receives retained and live
+    messages, unsubscribes and disconnects with a reason code — alongside a 3.1.1 client."""
+    gw = await connect(broker, "gw", "gwpw")
+    await gw.publish("oz/dev1/state", b"retained-state", qos=0, retain=True)
+    await asyncio.sleep(0.05)
+    r, w = await asyncio.open_connection("127.0.0.1", broker.port)
+    w.write(_v5_connect("ha-v5", "ha", "hapw"))
+    ack = await _read(r)
+    assert isinstance(ack, pk.Connack) and ack.return_code == 0 and not ack.session_present
+    # SUBSCRIBE v5: packet id, empty properties, filter + options (QoS 1, retain handling 0)
+    w.write(pk.encode(pk.Subscribe(7, [("oz/#", 1)]), 5))
+    suback = await _read(r)
+    assert isinstance(suback, pk.Suback) and suback.packet_id == 7 and suback.return_codes == [1]
+    retained = await _read(r)
+    assert isinstance(retained, pk.Publish) and retained.topic == "oz/dev1/state" and retained.payload == b"retained-state" and retained.retain
+    # live QoS1 message from the 3.1.1 client arrives as a v5 PUBLISH (properties block present) and is acked v5-style
+    await gw.publish("oz/dev1/set", b'{"state":"ON"}', qos=1)
+    live = await _read(r)
+    assert isinstance(live, pk.Publish) and live.payload == b'{"state":"ON"}' and live.qos == 1 and live.packet_id
+    w.write(bytes([0x40, 0x03]) + live.packet_id.to_bytes(2, "big") + b"\x00")  # PUBACK with reason code, no properties
+    # v5 client publishes with properties (content type) — delivered to the 3.1.1 subscriber unchanged
+    seen = Collector()
+    assert await gw.subscribe("oz/dev1/set", seen) == 1
+    props = b"\x03" + pk.encode_string("application/json")
+    body = pk.encode_string("oz/dev1/set") + pk.encode_remaining_length(len(props)) + props + b'{"state":"OFF"}'
+    w.write(bytes([0x30]) + pk.encode_remaining_length(len(body)) + body)
+    assert (await seen.wait(1))[-1] == ("oz/dev1/set", b'{"state":"OFF"}')
+    echo = await _read(r)  # the v5 client is subscribed to oz/# itself (no No-Local requested)
+    assert isinstance(echo, pk.Publish) and echo.payload == b'{"state":"OFF"}'
+    # SUBSCRIBE with retain handling 2 must not replay retained messages
+    w.write(bytes([0x82]) + pk.encode_remaining_length(2 + 1 + 2 + len("oz/dev1/state") + 1)
+            + (8).to_bytes(2, "big") + b"\x00" + pk.encode_string("oz/dev1/state") + bytes([0x21]))
+    suback2 = await _read(r)
+    assert isinstance(suback2, pk.Suback) and suback2.return_codes == [1]
+    w.write(pk.encode(pk.Pingreq(), 5))
+    assert isinstance(await _read(r), pk.Pingresp), "no retained replay before the ping response"
+    # UNSUBSCRIBE v5 → UNSUBACK with per-filter reason codes (0x11 = no subscription existed)
+    w.write(pk.encode(pk.Unsubscribe(9, ["oz/#", "never/subscribed"]), 5))
+    unsuback = await _read(r)
+    assert isinstance(unsuback, pk.Unsuback) and unsuback.reason_codes == [0x00, 0x11]
+    w.write(pk.encode(pk.Disconnect(0x04), 5))  # disconnect with will message
+    w.close()
+    await gw.disconnect()
+
+
+async def test_mqtt5_bad_credentials_use_v5_reason_code(broker: Broker) -> None:
+    r, w = await asyncio.open_connection("127.0.0.1", broker.port)
+    w.write(_v5_connect("x", "ha", "wrong"))
+    ack = await _read(r)
+    assert isinstance(ack, pk.Connack) and ack.return_code == pk.RC_BAD_CREDENTIALS
+    w.close()
+
+
+async def test_mqtt5_takeover_sends_disconnect_reason(broker: Broker) -> None:
+    r1, w1 = await asyncio.open_connection("127.0.0.1", broker.port)
+    w1.write(_v5_connect("same-id", "ha", "hapw"))
+    assert isinstance(await _read(r1), pk.Connack)
+    r2, w2 = await asyncio.open_connection("127.0.0.1", broker.port)
+    w2.write(_v5_connect("same-id", "ha", "hapw"))
+    assert isinstance(await _read(r2), pk.Connack)
+    d = await _read(r1)
+    assert isinstance(d, pk.Disconnect) and d.reason == pk.RC_SESSION_TAKEN_OVER
+    w1.close()
+    w2.close()
+
+
+def test_mqtt5_connack_decodes_with_v5_flag() -> None:
+    raw = pk.encode(pk.Connack(False, pk.CONNACK_ACCEPTED), 5, connack_props=pk.SERVER_CONNACK_PROPS)
+    assert raw[:4] == bytes([0x20, len(raw) - 2, 0x00, 0x00])
+    assert pk.encode(pk.Connack(False, pk.CONNACK_NOT_AUTHORIZED), 5)[3] == pk.RC_NOT_AUTHORIZED
+    with pytest.raises(pk.MalformedPacket):
+        pk.decode(pk.PUBLISH, 0, pk.encode_string("t") + b"\x03\x23\x00\x01" + b"x", 5)  # topic alias refused
+
+
+# ------------------------------------------------------------ login adoption ---
+
+
+async def test_addon_adopts_home_assistants_existing_login(tmp_path: Path) -> None:
+    """Inside the add-on, for an hour after an import, the login Home Assistant still sends from its
+    own address is adopted once; anything else keeps being refused."""
+    from oneroof_zigbee.admin import Admin
+    from oneroof_zigbee.config import Config
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(f"serial:\n  port: /dev/null\ndata_dir: {tmp_path}\nmqtt:\n  password_file: {tmp_path}/passwd\n")
+    cfg = Config.load(cfg_path)
+    pf = PasswordFile(cfg.mqtt.password_file)
+    pf.set_password("gw", "gwpw")
+    admin = Admin(cfg, cfg_path, pf, make_acl(), set(), managed=True)
+    events: list[dict] = []
+    admin.audit = type("A", (), {"security": lambda self, t, **kw: events.append({"type": t, **kw})})()
+    b = Broker(auth=pf, acl=make_acl(), host="127.0.0.1", port=0, tls=None, sys_user="gw")
+    b.adopt_login = admin.adopt_login
+    await b.start()
+    try:
+        # window closed → refused as before
+        r, w = await asyncio.open_connection("127.0.0.1", b.port)
+        w.write(_v5_connect("homeassistant", "addons", "previous-broker-password"))
+        assert (await _read(r)).return_code == pk.RC_BAD_CREDENTIALS
+        w.close()
+        admin.open_login_adoption_window()
+        # wrong source address → refused (the test client is 127.0.0.1)
+        r, w = await asyncio.open_connection("127.0.0.1", b.port)
+        w.write(_v5_connect("homeassistant", "addons", "previous-broker-password"))
+        assert (await _read(r)).return_code == pk.RC_BAD_CREDENTIALS
+        w.close()
+        # Home Assistant's address during the window → adopted, connected, recorded, window closed
+        admin.ADOPT_FROM = ("127.0.0.1",)
+        r, w = await asyncio.open_connection("127.0.0.1", b.port)
+        w.write(_v5_connect("homeassistant", "addons", "previous-broker-password"))
+        assert (await _read(r)).return_code == 0
+        w.close()
+        assert pf.verify("addons", b"previous-broker-password") and next(u for u in admin.list_users() if u["name"] == "addons")["role"] == "homeassistant"
+        assert events and events[-1]["type"] == "broker_login_adopted" and events[-1]["user"] == "addons"
+        assert not admin.login_adoption_open()
+        # an existing user with a wrong password is never adopted
+        admin.open_login_adoption_window()
+        r, w = await asyncio.open_connection("127.0.0.1", b.port)
+        w.write(_v5_connect("x", "gw", "wrong"))
+        assert (await _read(r)).return_code == pk.RC_BAD_CREDENTIALS
+        w.close()
+        assert not pf.verify("gw", b"wrong")
+    finally:
+        await b.stop()

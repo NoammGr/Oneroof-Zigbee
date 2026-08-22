@@ -79,7 +79,7 @@ instead of `oneroof/zigbee/#`.
 
 * Anonymous connections are rejected — there is no setting to allow them.
 * Passwords: scrypt (n=2^15), constant-time compare, 0600 file.
-* 5 login attempts from an IP within 60 s → 30 s lockout; attempts are counted *before* the (expensive) password check, at most 2 checks run concurrently, at most 256 connections total — so parallel guessing cannot bypass the lockout or exhaust memory.
+* 5 failed login attempts for one username from an IP within 60 s → 30 s lockout for that address+username (everything inside Home Assistant shares one address, so one failing login must not block others); attempts are counted *before* the (expensive) password check, at most 2 checks run concurrently, at most 256 connections total — so parallel guessing cannot bypass the lockout or exhaust memory.
 * Retained messages from TCP clients capped at 5000 topics / 16 MiB.
 * Per-user ACLs, default deny. The HA user can read state and publish `set`
   commands, but **only users listed as `control_users` can open the join
@@ -151,3 +151,16 @@ Switch to the built-in TLS broker from Settings whenever you are ready.
 ## Reporting
 
 This is a personal project; review it yourself, it is small enough.
+
+## Login adoption (add-on only)
+
+Home Assistant stores the broker login its MQTT integration was created with and does not take a new
+broker announcement while an integration exists. To make the move automatic, the add-on adopts the
+login Home Assistant keeps sending: for one hour after an import or the first start, a failed login
+**from Home Assistant's own address inside the add-on network** (172.30.32.1/2) for a user that does
+not exist yet is accepted once, the user is created with the Home Assistant role (control devices,
+cannot open the network), the window closes, and `broker_login_adopted` is written to the audit log.
+Existing users with a wrong password are never adopted; the plaintext listener this arrives on is not
+reachable from outside Home Assistant unless a host port is mapped. Review or remove the adopted user
+under Settings → Users & access at any time.
+

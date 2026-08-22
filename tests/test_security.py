@@ -137,3 +137,27 @@ def test_join_guard_first_window_allowed_right_after_boot(monkeypatch):
     monkeypatch.setattr(_t, "monotonic", lambda: 2.0)
     g = JoinGuard(JoinPolicy(cooldown_seconds=1000), Audit(None))
     assert g.request_open(10, "me").seconds == 10
+
+
+async def test_transport_debug_log_never_shows_key_material(caplog):
+    """Key reads/writes and install codes are redacted even at DEBUG (logs get pasted into tickets)."""
+    import logging
+    from tests.fake_znp import FakeZnp
+    from oneroof_zigbee.znp import commands as c
+    from oneroof_zigbee.znp.transport import Transport
+    fake = FakeZnp()
+    t = Transport(fake.reader, fake.writer, timeout=2.0)
+    t.start()
+    caplog.set_level(logging.DEBUG, logger="oneroof_zigbee.znp.transport")
+    key = bytes(range(0x10, 0x20))
+    await t.request(c.nv_item_init(c.NvId.PRECFGKEY, 16, key))
+    await t.request(c.nv_write(c.NvId.PRECFGKEY, key))
+    await t.request(c.nv_read(c.NvId.PRECFGKEY), check_status=False)
+    from oneroof_zigbee.security.installcode import crc16
+    await t.request(c.appcnf_set_default_centralized_key(False, key + crc16(key).to_bytes(2, "little")))
+    await t.request(c.nv_read(c.NvId.PANID), check_status=False)  # harmless items stay readable
+    text = caplog.text
+    assert key.hex() not in text and "<redacted>" in text
+    assert "RX SRSP SYS:0x08 <redacted>" in text
+    assert any(line for line in text.splitlines() if "TX SYS:0x08 " in line and "<redacted>" not in line), "PANID read not redacted"
+    await t.close()

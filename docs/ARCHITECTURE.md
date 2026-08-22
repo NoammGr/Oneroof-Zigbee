@@ -14,7 +14,7 @@ Every layer is written from scratch; no code is taken from other projects.
         │  typed attribute reports / commands
  oneroof_zigbee.gateway    device registry, interview, state, security policy
         │
- oneroof_zigbee.mqtt       our own MQTT 3.1.1 broker (+ in-process client)
+ oneroof_zigbee.mqtt       our own MQTT broker, 3.1.1 and 5 clients (+ in-process client)
         │
  oneroof_zigbee.ha         Home Assistant MQTT discovery payloads
 ```

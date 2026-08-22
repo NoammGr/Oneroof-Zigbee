@@ -129,6 +129,8 @@ async def test_b01_every_page_renders_without_console_errors(stack, browser):  #
         title = await b.js("document.querySelector('h1') && document.querySelector('h1').textContent")
         assert title, f"{page}: no heading rendered"
         assert await b.js("document.documentElement.scrollWidth <= window.innerWidth"), f"{page}: horizontal overflow"
+    from oneroof_zigbee import __version__
+    assert await b.js("document.querySelector('#h-ver').textContent") == f"v{__version__}", "running version shown in the header"
     # every device tab
     for tab in ["About", "Controls", "State", "Clusters", "Reporting", "Bind", "Firmware"]:
         await b.click_text(tab)

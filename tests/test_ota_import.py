@@ -342,3 +342,27 @@ def test_backup_device_table_gives_short_addresses_and_ext_pan_order():
                                                                          "[161, 178, 195, 212, 229, 246, 7, 24]"),
                                    database_db=None, coordinator_backup=None)
     assert cfg_only.network.ext_pan_id == plan.network.ext_pan_id, "configuration.yaml list and backup string agree"
+
+
+async def test_imported_devices_with_known_addresses_are_interviewed_directly(ui, tmp_path):  # noqa: F811
+    """Addresses from the backup's device table: no ZDO broadcast, the device is asked straight away."""
+    fake, gw, server, api = ui
+    from oneroof_zigbee.admin import Admin
+    from oneroof_zigbee.mqtt import Acl, PasswordFile
+    api.admin = Admin(gw.cfg, None, PasswordFile(tmp_path / "p"), Acl(), gw.control_users)
+    st, _, _ = await http(server.port, "POST", "/api/import/apply", {"configuration.yaml": Z2M_CONFIG, "coordinator_backup.json": BACKUP_WITH_DEVICES})
+    assert st == 200
+    dev = gw.registry.get(0xA4C1380000000001)
+    assert dev.nwk == 0x98C3 and not dev.interviewed
+    fake.requests.clear()
+    pending = [d for d in gw.registry.all() if d.context.get("imported_from") and not d.context.get("reporting_done")]
+    task = asyncio.create_task(gw._locate_imported(pending))
+    for _ in range(200):
+        await asyncio.sleep(0.05)
+        if gw.registry.get(0xA4C1380000000001).interviewed:
+            break
+    task.cancel()
+    d = gw.registry.get(0xA4C1380000000001)
+    assert d.interviewed and d.endpoints[1].in_clusters == [0, 6, 8]
+    assert not [f for f in fake.requests if f.subsystem.name == "ZDO" and f.command == 0x00 and f.data[:8] == (0xA4C1380000000001).to_bytes(8, "little")], \
+        "no NWK_ADDR_REQ for a device whose address is known"

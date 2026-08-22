@@ -28,7 +28,7 @@ Read [SECURITY.md](SECURITY.md) for the full model, including what this does *no
 
 * **Coordinator**: TI CC2652 / CC1352 (Sonoff ZBDongle-P, SMLIGHT SLZB-06/07, ZigStar …) over USB or `tcp://` (network coordinators).
 * **Devices**: anything speaking standard ZCL — lights (on/off, dim, colour, CT), plugs with power metering, temperature / humidity / pressure / illuminance / occupancy, IAS contact / motion / leak / smoke, covers, thermostats. Plus standard extras: power-on behaviour, countdown.
-* **Built-in MQTT 3.1.1 broker** with users, roles, ACLs, TLS/mTLS, lockout.
+* **Built-in MQTT broker** (3.1.1 and 5 clients) with users, roles, ACLs, TLS/mTLS, lockout.
 * **Home Assistant** auto-discovery; appears in the HA sidebar via Ingress as an add-on.
 * **Web UI**: Dashboard, Devices (About / Controls / State / Clusters / Reporting / Bind / Firmware), Pair, Map, Logs, Activity, Settings (full admin console with help on every setting).
 * **Migrate from a previous setup without re-pairing** (same dongle) — same broker, topics and HA entities.
@@ -46,23 +46,28 @@ Not yet: Tuya/Aqara private clusters (child lock, indicator mode …), groups & 
    so the MQTT integration and add-ons that auto-detect the broker connect to it by themselves.
    Open the UI from the sidebar → Pair.
 
-**Coming from a previous setup** (existing devices, Mosquitto, dashboards):
-1. Stop the old Zigbee add-on and the Mosquitto add-on (don't uninstall yet).
+**Coming from a previous setup** (existing devices, broker add-on, dashboards):
+1. Stop the old Zigbee add-on and the old broker add-on (don't uninstall yet).
 2. Install and start One Roof Zigbee as above.
-3. Sidebar → One Roof Zigbee → Settings → *Import a previous setup* → upload the old
-   `configuration.yaml` + `coordinator_backup.json` (+ `database.db`, `state.json` if present)
-   → Import → Restart.
+3. Sidebar → One Roof Zigbee → Settings → *Import a previous setup* → **Use this folder** (the old
+   folder is found on this Home Assistant; uploads work too) → Import → Restart.
+4. Nothing else. Home Assistant keeps retrying its existing broker login from inside the add-on
+   network; for one hour after the import (or the first start) the add-on adopts that login, records
+   it in the audit log (`broker_login_adopted`) and Home Assistant is connected without any change on
+   its side. (You can instead point the MQTT integration at the add-on yourself: Settings → Devices &
+   services → MQTT → Configure → broker = the add-on hostname from its log, port 1883, any user from
+   Settings → Users & access.)
 
 Everything else is automatic: same network (no re-pairing), same topics and Home Assistant
-entities (dashboards, automations, history untouched), Home Assistant and add-ons repointed to
-the new broker through the Supervisor, and the previous broker login recreated so clients outside
-Home Assistant keep connecting. When all is well, uninstall the old add-ons.
+entities (dashboards, automations, history untouched), add-ons that auto-detect the broker repointed
+through the Supervisor, and the previous broker login recreated so clients outside Home Assistant
+keep connecting. When all is well, uninstall the old add-ons.
 
 ### Standalone
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e .
-cp config.example.yaml config.yaml            # set serial.port
+cp docs/config.example.yaml config.yaml            # set serial.port
 .venv/bin/python -m oneroof_zigbee passwd admin
 .venv/bin/python -m oneroof_zigbee passwd homeassistant
 .venv/bin/python -m oneroof_zigbee run -c config.yaml
@@ -112,10 +117,11 @@ you press *Update* for that one device. The gateway never downloads firmware.
 ## Layout
 
 ```
-oneroof_zigbee/
+oneroof-zigbee/          Home Assistant add-on: config, Dockerfile, run.py — and the gateway itself:
+oneroof-zigbee/oneroof_zigbee/
   znp/        UNPI framing, ZNP commands, async transport, coordinator bring-up
   zcl/        ZCL codec, data types, global commands, cluster converters
-  mqtt/       MQTT 3.1.1 broker (auth, ACL, TLS, retained, QoS1) + client
+  mqtt/       MQTT broker for 3.1.1 and 5 clients (auth, ACL, TLS, retained, QoS1) + client
   security/   install codes (AES-MMO), encrypted keystore, local CA, join guard, audit log
   ui/         own HTTP/SSE server, JSON API, single-file web UI
   ha/         Home Assistant discovery
@@ -123,7 +129,6 @@ oneroof_zigbee/
   importer.py import of a previous setup
   ota.py      OTA upgrade server (local, verified)
   gateway.py  orchestration
-oneroof-zigbee/  Home Assistant add-on (non-root, Ingress-only UI)
 tests/        unit, integration, end-to-end (stack + real browser)
 docs/         architecture, UI API contract
 ```
@@ -131,7 +136,7 @@ docs/         architecture, UI API contract
 ## Tests
 
 ```bash
-./e2e.sh          # lint + 279 tests: unit, integration, end-to-end stack, browser (skips without Chrome)
+tests/e2e.sh      # lint + 297 tests: unit, integration, end-to-end stack, browser (skips without Chrome)
 ```
 
 The end-to-end suite boots the production entry point with a simulated coordinator

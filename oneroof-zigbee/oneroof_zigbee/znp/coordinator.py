@@ -189,9 +189,18 @@ class Coordinator:
         log.info("coordinator 0x%016x up: pan=%#06x channel=%d state=%d", self.ieee, nwk.pan_id, nwk.channel, di.device_state)
         self.audit.event("coordinator_started", ieee=f"0x{self.ieee:016x}", pan_id=f"{nwk.pan_id:#06x}", channel=nwk.channel,
                          strict_install_codes=self.strict)
+        if nwk.pan_id != self.secrets.pan_id or nwk.channel != self.secrets.channel:
+            # The firmware kept a previous network instead of applying ours: the keystore and the
+            # radio disagree, which after a key rotation means the old key is still in use.
+            log.error("coordinator is on pan=%#06x channel=%d but the keystore says pan=%#06x channel=%d — "
+                      "the network was not (re)formed", nwk.pan_id, nwk.channel, self.secrets.pan_id, self.secrets.channel)
+            self.audit.security("network_parameters_mismatch", radio_pan_id=f"{nwk.pan_id:#06x}", radio_channel=nwk.channel,
+                                keystore_pan_id=f"{self.secrets.pan_id:#06x}", keystore_channel=self.secrets.channel)
 
         await self._register_endpoint()
         await self._force_close_join()
+        if self.secrets.frame_counter:
+            await self._ensure_frame_counter(self.secrets.frame_counter + FRAME_COUNTER_MARGIN)
 
     async def _reset(self) -> None:
         reset_ind = await self._arm(self.t.wait_for(Subsystem.SYS, SysCmd.RESET_IND, timeout=8.0))
@@ -272,6 +281,55 @@ class Coordinator:
         await self.t.request(c.appcnf_start_commissioning(c.CommissioningMode.NWK_FORMATION))
         await coord_up
         self.audit.security("network_formed", channel=s.channel, pan_id=f"{s.pan_id:#06x}")
+
+    async def nwk_frame_counter(self) -> int | None:
+        """The coordinator's outgoing NWK frame counter, read back from the active key item."""
+        raw = await self._nv_read(NvId.NWK_ACTIVE_KEY_INFO)
+        if raw is None or len(raw) < 21:
+            return None
+        return int.from_bytes(raw[17:21], "little")
+
+    async def _ensure_frame_counter(self, minimum: int) -> None:
+        """Devices drop frames whose NWK counter is below the last one they saw from us, so after an
+        import the counter must be above the previous setup's. The SET command is not always kept
+        across formation/reset on every firmware; verify by reading it back and fall back to writing
+        the key item directly, then restart the network."""
+        minimum = min(minimum, 0xFFFF_FFFF)
+        current = await self.nwk_frame_counter()
+        log.info("NWK frame counter on the coordinator: %s (need at least %d)", current, minimum)
+        if current is not None and current >= minimum:
+            self.audit.event("frame_counter_verified", value=current)
+            return
+        try:
+            await self.t.request(c.appcnf_set_nwk_frame_counter(minimum))
+        except ZnpStatusError as e:
+            log.warning("SET_NWK_FRAME_COUNTER refused (%s)", e)
+        current = await self.nwk_frame_counter()
+        if current is not None and current >= minimum:
+            log.info("NWK frame counter set to %d", current)
+            self.audit.event("frame_counter_verified", value=current)
+            return
+        raw = await self._nv_read(NvId.NWK_ACTIVE_KEY_INFO)
+        if raw is None or len(raw) < 21:
+            log.error("cannot read the active key item; frame counter stays at %s — devices may ignore us", current)
+            self.audit.security("frame_counter_unverified", value=current, needed=minimum)
+            return
+        patched = raw[:17] + minimum.to_bytes(4, "little") + raw[21:]
+        await self._nv_write(NvId.NWK_ACTIVE_KEY_INFO, patched)
+        alt = await self._nv_read(NvId.NWK_ALTERN_KEY_INFO)
+        if alt is not None and len(alt) >= 21:
+            await self._nv_write(NvId.NWK_ALTERN_KEY_INFO, alt[:17] + minimum.to_bytes(4, "little") + alt[21:])
+        await self._reset()
+        await self._apply_runtime_security()
+        await self._startup()
+        await self._register_endpoint()
+        current = await self.nwk_frame_counter()
+        if current is not None and current >= minimum:
+            log.warning("NWK frame counter written directly and restarted: now %d", current)
+            self.audit.event("frame_counter_verified", value=current, method="nv")
+        else:
+            log.error("NWK frame counter still %s after writing it; devices may ignore this coordinator", current)
+            self.audit.security("frame_counter_unverified", value=current, needed=minimum)
 
     async def _apply_runtime_security(self) -> None:
         """Settings the firmware forgets across resets — applied every boot."""

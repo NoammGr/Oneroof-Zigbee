@@ -3,216 +3,128 @@
 All notable changes to One Roof Zigbee. Version numbers are MAJOR.MINOR.PATCH:
 MAJOR = breaking (re-pairing or config migration needed), MINOR = features, PATCH = fixes.
 
+## [1.2.21] — 2026-08-21
+
+### Fixed
+- Per-client subscription limit raised from 64 to 2048: Home Assistant subscribes to one topic per
+  entity plus its discovery filters and was being cut off (`subscription limit reached`), leaving
+  entities without updates.
+
+## [1.2.20] — 2026-08-21
+
+### Fixed — devices ignored the coordinator after an import
+- The coordinator's NWK frame counter is now read back after every start. If it is below the
+  imported value, it is set again with the network up and verified; if the firmware still does not
+  keep it, the active/alternate key items are written directly and the network restarted. The log
+  states the counter found and the result; Activity records `frame_counter_verified` or a
+  `frame_counter_unverified` alert. Devices drop every frame from a coordinator whose counter is
+  lower than the last one they saw — which looked like "no answer, no state, no LQI".
+
+## [1.2.19] — 2026-08-21
+
+### Fixed — Home Assistant could lock itself out
+- The login lockout is now per address **and username**. Everything inside Home Assistant arrives
+  from one address, so a stored login that kept failing (after a user was removed or its password
+  changed) locked that address and rejected a correct login typed into the MQTT dialog as well.
+
+## [1.2.18] — 2026-08-21
+
+### Changed
+- Imported devices whose address is known from the backup are interviewed directly after start
+  instead of waiting for an answer to a broadcast address query (which some devices never give).
+  A failed direct interview is retried when the device next talks.
+
+## [1.2.17] — 2026-08-21
+
+### Added — Home Assistant's existing broker login is adopted
+- For one hour after an import (or the first start), the add-on adopts the login Home Assistant's MQTT
+  integration keeps sending from its own address inside the add-on network: the user is created with
+  the Home Assistant role, the window closes, and `broker_login_adopted` is recorded. No dialog, no
+  typing — the migration is fully automatic. Details and limits in SECURITY.md.
+
+## [1.2.16] — 2026-08-21
+
+### Added — MQTT 5 clients
+- The broker accepts MQTT 5 connections next to 3.1.1: properties in every packet are parsed and
+  validated, reason codes are used in CONNACK/SUBACK/UNSUBACK/DISCONNECT, session expiry 0 is treated as a
+  clean session, "retain handling = never" is honoured, a taken-over session is told why. The broker
+  advertises QoS 1, retained messages and wildcards, and no topic aliases or shared subscriptions.
+  Home Assistant's MQTT integration can be left on its default protocol setting.
+
+## [1.2.15] — 2026-08-21
+
+### Fixed — Home Assistant kept the previous broker's login
+- Home Assistant adopts an announced broker only when no MQTT integration exists yet; with an existing
+  one it keeps the previous login (`addons`) and fails to connect every few seconds. The broker now logs
+  a one-time instruction when it sees that login, and README/DOCS describe the one-time reconfiguration.
+- Changing the Home Assistant user's password in the web UI also updates the login the add-on announces
+  to Home Assistant on every start.
+
+## [1.2.14] — 2026-08-21
+
+### Changed — deterministic builds, clear versions, clean logs
+- The gateway package lives inside the add-on folder and is copied into the image at build time; nothing
+  is downloaded during the build, and the build fails if the packaged version and the add-on version
+  disagree. The image always contains exactly the version the add-on store shows.
+- The running version is shown at the top right of every page and in the first log line at start.
+- The byte-level DEBUG log of coordinator traffic redacts frames that carry keys (network key, link keys,
+  trust-centre key, install codes), so a pasted log never gives away the network.
+- After start, the PAN id and channel the radio reports are compared with the keystore; a mismatch (the
+  firmware kept a previous network) is logged and raised as a `network_parameters_mismatch` alert, so a
+  key rotation that did not take effect cannot go unnoticed.
+- Repository tidied: build artefacts removed from version control, `config.example.yaml` under `docs/`,
+  the test runner under `tests/`; add-on README brought up to date.
+
 ## [1.2.9] — 2026-08-21
 
-### Fixed — import reads the backup's device table
-- `coordinator_backup.json` lists every device with its short network address; the import now uses it,
-  so imported devices are addressable immediately (no lookup, no waiting for a first report).
-  Devices the backup knows but the previous configuration no longer lists are not resurrected.
-- The `ext_pan_id` list in `configuration.yaml` is written most-significant byte first (like the
-  backup's hex string); it was read the other way round, which made the coordinator's stored settings
-  look different and triggered a needless network re-formation on the first import.
-- Re-importing discards endpoints that were recorded at address 0, and keeps a real interview
-  instead of forcing a new one.
-
-## [1.2.8] — 2026-08-21
-
-### Fixed — interviews of imported devices
-- A device imported without its database has no known short address (stored as 0). Address 0 is the
-  coordinator itself, so an interview at that address returned the gateway's *own* endpoint: every
-  device showed the same controls, no model, no state. Interviews now resolve the real address first
-  and refuse to talk to 0; a device that does not answer shows "did not answer the address lookup"
-  and is interviewed when it next reports.
-- At start, devices that were interviewed at address 0 have that bogus data discarded automatically.
-- The registry no longer indexes address 0.
-
-## [1.2.7] — 2026-08-21
-
-### Changed — imported devices come alive at start
-- Right after start, the gateway asks every imported device that has not talked yet for its address
-  (one ZDO broadcast per second). Devices that are awake are interviewed or configured immediately;
-  sleepy ones are still picked up when they next report. Activity shows `imported_devices_lookup`.
-- When the coordinator's stored settings differ from the keystore, the log now names the setting and
-  both values (`coordinator NV … differs`) and Activity records `coordinator_nv_mismatch`.
-- A restored frame counter is set ~1M frames above the saved value, so devices never see a frame
-  counter lower than the one they last accepted.
-
-## [1.2.6] — 2026-08-21
-
-### Added — import without uploading anything
-- The add-on reads a previous setup's files straight from Home Assistant's config share (read-only): the
-  import card shows "Found on this Home Assistant" with the detected folder and which files it holds; one
-  click imports it. Uploads stay as a fallback, now with a fourth slot for `state.json`.
-- When the browser cannot read a chosen file (not downloaded locally, on a share), the real reason is shown
-  and nothing is sent half-empty.
+### Added — import straight from the Home Assistant share, complete and safe
+- The import card shows "Found on this Home Assistant": the previous setup's folder is read by the add-on
+  itself (read-only) — one click, no uploads. Uploads remain as a fallback (now with a `state.json` slot),
+  and a file the browser cannot read is reported instead of sent half-empty.
+- `coordinator_backup.json`'s device table supplies every device's short address, so imported devices are
+  addressable immediately; devices without an address are looked up by a ZDO broadcast after start and
+  interviewed as soon as they answer; sleepy ones are picked up on their next report.
+- An interview never targets short address 0 (the coordinator itself); data recorded that way is discarded.
+- `ext_pan_id` lists in `configuration.yaml` are read in the right byte order, so the coordinator's stored
+  settings match the imported ones and the network is started, not re-formed.
+- A restored frame counter is set well above the saved value; mismatching coordinator settings are named in
+  the log (`coordinator_nv_mismatch`).
 
 ## [1.2.5] — 2026-08-21
 
-### Fixed — "UI not built" in the add-on
-- The web UI's `index.html` was not included in the installed package (only `.py` files were), so the
-  add-on served "UI not built". The static files are now declared as package data and verified present
-  in the built wheel.
-
-## [1.2.4] — 2026-08-21
-
-### Fixed — first run on real hardware (Sonoff ZBDongle-P, Z-Stack 3.x.0)
-- `APP_CNF_BDB_SET_ACTIVE_DEFAULT_CENTRALIZED_KEY` was encoded with a boolean first byte; the firmware
-  reads it as a mode (0 = default global key, 1 = install code, …), so "use default" was sent as "install
-  code with an all-zero code" and rejected with INVALID_PARAMETER, aborting network formation. The mode
-  is now encoded correctly, and the simulated coordinator in the tests rejects the wrong encoding the way
-  the real firmware does.
-
-## [1.2.3] — 2026-08-21
-
-### Fixed — automatic least privilege, done right
-- The unprivileged-access check in 1.2.1 opened the *resolved* device path, which does not exist inside the
-  add-on container (only the `/dev/serial/by-id/...` name does), so the check was silently skipped and root
-  was dropped blindly. The check now opens the device exactly as configured, and whenever it cannot prove
-  access it stays root. Result: automatic — drops to uid 1000 where the host allows it, otherwise runs as
-  root like every other add-on, and the log states which. `drop_privileges: true` is the default again.
-
-## [1.2.2] — 2026-08-21
-
-### Changed — run as root inside the container by default (like all add-ons)
-- The Supervisor's device handling kept denying the unprivileged user access to the Sonoff dongle on a
-  real Home Assistant host even after the empirical check. The add-on now runs as root inside its
-  unprivileged container, as every Home Assistant add-on does; `drop_privileges: true` is an opt-in for
-  hosts where uid 1000 can use the device. Container-level hardening is unchanged.
-
-## [1.2.1] — 2026-08-21
-
-### Fixed — "Permission denied" opening the coordinator after dropping root
-- The decision to drop to uid 1000 is now made empirically: a throwaway child process tries to open the
-  serial device as the unprivileged user first. If that works the add-on drops root; if not (device node
-  not accessible to non-root on that host), it stays root like other add-ons and says so in the log.
-  Previously the check looked at file modes only and could drop root when the device was in fact unusable.
-
-## [1.2.0] — 2026-08-21
-
-### Added — the add-on takes the broker's place in Home Assistant, automatically
+### Added — automatic handover of Home Assistant's MQTT, first run on real hardware
 - The add-on registers itself as Home Assistant's MQTT service (`services: mqtt:provide`): the MQTT
-  integration set up through the Supervisor repoints itself to One Roof Zigbee, and add-ons that
-  auto-detect the broker (e.g. One Roof Bridge) follow. Registration happens once the broker is listening
-  and is removed on shutdown. If the old broker is still registered, the log says to stop it.
-- Importing a previous setup in the add-on now switches the legacy layout on by itself (through an
-  overrides file, since the Supervisor owns the options) and recreates the previous broker login as a
-  `client` user so anything outside Home Assistant keeps connecting unchanged.
-- New `client` role (full publish/subscribe, no control).
+  integration and add-ons that auto-detect the broker switch to One Roof Zigbee by themselves. Importing a
+  previous setup in the add-on enables the legacy layout automatically and recreates the previous broker
+  login (new `client` role) so clients outside Home Assistant keep connecting.
+- Plain MQTT listener (1883) inside the add-on network by default (needed by Home Assistant's discovery);
+  no host ports unless enabled.
 
-### Changed
-- Plain MQTT listener (1883) on by default inside the add-on network (required by Home Assistant's
-  discovery); still no host port unless enabled. External-broker options remain for standalone use.
-- README rewritten around the three-step add-on journey.
-
-### Tests
-- Add-on entrypoint tests against a fake Supervisor (service registration, "old broker still registered",
-  overrides merge, option parsing); container verified end-to-end locally. 290 tests.
+### Fixed
+- Least privilege done automatically: the add-on starts as root only to read the Supervisor's options and
+  own its config folder, proves the coordinator is usable by uid 1000 (opening the device exactly as
+  configured) and drops root when it is; otherwise it stays root like other add-ons and says so.
+- `APP_CNF_BDB_SET_ACTIVE_DEFAULT_CENTRALIZED_KEY` mode byte encoded correctly (the firmware rejected the
+  old encoding with INVALID_PARAMETER, aborting network formation on a Sonoff ZBDongle-P).
+- The web UI is shipped as package data ("UI not built").
 
 ## [1.1.13] — 2026-08-21
 
-### Fixed — add-on start-up robustness
-- `network_coordinator` accepts `host:port`, `tcp://host:port`, or a `/dev/...` path entered by mistake; an
-  invalid value prints a plain instruction instead of a traceback. `serial_port` always takes precedence.
-- When the Supervisor does not provide the broker login for the legacy layout, the log lists the exact add-on
-  options to fill in (`external_broker`, `external_broker_user`, `external_broker_password`).
-- A coordinator that cannot be opened is reported as one clear line with the path and the likely causes.
+### Added — Home Assistant add-on store
+- Repository laid out as a Home Assistant add-on repository (`repository.yaml`, `oneroof-zigbee/` at the
+  root) under "One Roof Zigbee Add-ons", with the family icon, logo, `DOCS.md` and the changelog link.
+- Release pipeline: CI (lint + tests on 3.11–3.13), Auto-tag on push to `main`, release workflow that
+  verifies versions, builds add-on images (amd64, aarch64) and publishes a GitHub Release.
 
-## [1.1.12] — 2026-08-21
-
-### Changed
-- Changelog header explains the version scheme in its own words (no external reference).
-
-## [1.1.11] — 2026-08-21
-
-### Fixed — "Permission denied: /data/options.json"
-- The Supervisor creates `options.json`, `/data` and the add-on config folder root-owned, and serial devices
-  belong to a host-specific group; a container that starts as an unprivileged user cannot read them. The
-  add-on now starts as root only to read the options and take ownership of its config folder, then drops to
-  uid 1000 (adding the serial device's group) whenever the device remains accessible that way — and says in
-  the log whether it dropped or had to stay root. All other hardening is unchanged.
-
-## [1.1.10] — 2026-08-21
-
-### Fixed — add-on failed to start with "Duplicate mount point: /data"
-- The Supervisor always mounts the add-on's private storage at `/data`; the add-on additionally mapped its
-  config folder there. The config folder is now mounted at `/config` and holds everything you may want to
-  reach (keystore, users, `tls/ca.crt`, backups, firmware) — visible under `/addon_configs/<slug>/` via
-  Samba or the File editor and included in Home Assistant backups. `/data` stays the Supervisor's
-  (`options.json`). Verified locally with both mounts.
-
-## [1.1.9] — 2026-08-21
-
-### Fixed — add-on would not start next to an existing broker add-on
-- The add-on no longer claims host ports 8883/1883 by default. Inside Home Assistant the MQTT integration
-  reaches the add-on by its internal hostname (now printed in the log), and an existing broker add-on
-  usually owns those host ports already, which made Docker refuse to create the container. Host ports can
-  be enabled in the add-on's Network section for clients outside Home Assistant.
-
-## [1.1.8] — 2026-08-21
-
-### Changed — releases no longer depend on pushing tags by hand
-- New *Auto-tag* workflow: every push to `main` creates the `vX.Y.Z` tag for the version in `pyproject.toml`
-  if it does not exist, which in turn runs the release pipeline.
-- Add-on build falls back to the `main` branch tarball when the release tag is not published yet (a NOTICE
-  appears in the build log), so an install never fails on a missing tag. Verified locally for both paths.
-
-## [1.1.7] — 2026-08-21
-
-### Fixed — add-on image build on the Home Assistant base
-- The Supervisor builds the add-on on its own Alpine base image, which has no Python; the Dockerfile assumed
-  a Python image and failed with `pip: not found`. It now installs Python and the compiled dependencies
-  (`cryptography`, `yaml`, `pyserial`) from Alpine packages — no Rust/C build step, so it also builds quickly
-  on a Raspberry Pi — and installs only the gateway and one pure-Python dependency with pip. Verified locally
-  on `ghcr.io/home-assistant/base`: 38 MB image, runs as uid 1000.
-- `build.yaml` points at the per-architecture Home Assistant base images.
-- The "no control users" warning no longer fires before the UI-managed users are loaded.
-
-## [1.1.6] — 2026-08-21
-
-### Fixed
-- Browser end-to-end tests on CI: Chrome is launched with container-safe flags (own profile directory,
-  `--disable-dev-shm-usage`, no first-run), waits up to 30 s for DevTools, and if a browser still cannot
-  start the suite is *skipped* with Chrome's log instead of erroring. No product change.
-
-## [1.1.5] — 2026-08-21
-
-### Fixed
-- End-to-end tests: wait for MQTT delivery of state/availability instead of reading immediately after the
-  interview flag flips; the assertion could run a few milliseconds early on slower CI runners. No product
-  change.
-
-## [1.1.4] — 2026-08-21
-
-### Changed
-- Own Zigbee mark for the add-on icon, logo and the web UI favicon: a stylised "Z" with a radio arc on the
-  One Roof orange tile (an original glyph, not the trademarked Zigbee logo).
-
-## [1.1.3] — 2026-08-21
-
-### Changed — add-on page like the rest of the family
-- Add-on logo now reads "One Roof Zigbee" (same house mark and lockup as One Roof Bridge).
-- `CHANGELOG.md` ships inside the add-on folder, so the add-on page shows the "(Changelog)" link. The
-  release workflow checks it matches the repository changelog.
-
-## [1.1.2] — 2026-08-21
-
-### Fixed — add-on still not appearing in the store
-- The add-on's `config.yaml` had never reached the repository: the `.gitignore` rule for the standalone
-  `config.yaml` also matched `oneroof-zigbee/config.yaml`. The rule is now anchored to the repository root
-  and the add-on config is committed. Without it the Supervisor cannot see an add-on at all.
-
-## [1.1.1] — 2026-08-21
-
-### Fixed — add-on not appearing in the Home Assistant store
-- `serial_port` no longer has a default value. The Supervisor's `device()` validator rejects a default
-  path that does not exist on the host (e.g. `/dev/ttyUSB0` when the adapter is under `/dev/serial/by-id/`),
-  which could keep the add-on from loading at all. The port is picked from the dropdown; if neither a
-  serial port nor a network coordinator is set, the add-on stops with a clear message instead of crashing.
-
-### Changed — store presentation
-- Repository name "One Roof Zigbee Add-ons" and add-on name "One Roof Zigbee", the family icon and logo,
-  and a `DOCS.md` for the add-on's Documentation tab — so it sits next to "One Roof Bridge Add-ons" in
-  the store as a sibling.
+### Fixed — everything found bringing the add-on up on a real Home Assistant
+- Store visibility: `serial_port` has no default (the Supervisor rejects a non-existent default device);
+  the add-on `config.yaml` is committed (a `.gitignore` rule had excluded it).
+- Build on the Supervisor's Alpine base (Python and compiled dependencies from Alpine packages).
+- No host ports claimed by default (an existing broker add-on usually owns 8883/1883).
+- Config folder mounted at `/config` (the Supervisor owns `/data`); root-owned `options.json` readable.
+- `network_coordinator` accepts `host:port` or `tcp://host:port`; unreadable coordinators and missing
+  broker logins are reported as one clear instruction.
+- Test suite robust on CI (MQTT delivery waits, container-safe Chrome launch with skip).
 
 ## [1.1.0] — 2026-08-21
 

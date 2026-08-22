@@ -39,7 +39,7 @@ LocalCallback = Callable[[str, bytes, "str | None"], Awaitable[None]]
 """(topic, payload, publisher_username) — username is None for in-process publishes
 and retained replays, the authenticated broker user otherwise."""
 
-MAX_SUBSCRIPTIONS = 64
+MAX_SUBSCRIPTIONS = 2048  # Home Assistant subscribes to one topic per entity plus ~80 discovery filters
 MAX_INFLIGHT = 1000
 MAX_OUTBOUND_QUEUE = 1000
 CONNECT_TIMEOUT = 10.0
@@ -83,6 +83,7 @@ class _Session:
         self.connected = False
         self.clean_disconnect = False
         self._closing = False
+        self.version = 4  # protocol level from CONNECT: 4 = MQTT 3.1.1, 5 = MQTT 5
 
     # -- outbound ---------------------------------------------------------
 
@@ -90,7 +91,7 @@ class _Session:
         if self._closing:
             return
         try:
-            self._outq.put_nowait(pk.encode(packet))
+            self._outq.put_nowait(pk.encode(packet, self.version, connack_props=pk.SERVER_CONNACK_PROPS))
         except asyncio.QueueFull:
             log.warning("client %r (%s): outbound queue full, dropping connection", self.client_id, self.ip)
             self.close()
@@ -149,8 +150,14 @@ class _Session:
             await self._handshake()
             if self.connected:
                 await self._loop()
+        except pk.UnacceptableProtocol as exc:
+            log.warning("client %r (%s): %s — only MQTT 3.1.1 and 5 are supported", self.client_id, self.ip, exc)
+            self.version = 4
+            self.send(pk.Connack(session_present=False, return_code=pk.CONNACK_UNACCEPTABLE_PROTOCOL))
         except pk.MalformedPacket as exc:
             log.warning("client %r (%s): protocol error: %s", self.client_id, self.ip, exc)
+            if self.connected and self.version == 5:
+                self.send(pk.Disconnect(pk.RC_MALFORMED))
         except (asyncio.TimeoutError, asyncio.IncompleteReadError, ConnectionError, OSError) as exc:
             log.info("client %r (%s): connection lost: %s", self.client_id, self.ip, exc)
         finally:
@@ -167,7 +174,7 @@ class _Session:
         buf = bytearray()
         while True:
             try:
-                packet, _ = pk.decode_one(bytes(buf))
+                packet, _ = pk.decode_one(bytes(buf), self.version)
                 return packet
             except pk.NeedMoreData:
                 pass
@@ -184,22 +191,32 @@ class _Session:
         first = await self._read_packet(CONNECT_TIMEOUT)
         if not isinstance(first, pk.Connect):
             raise pk.MalformedPacket("first packet was not CONNECT")
+        self.version = first.version
         broker = self.broker
-        if broker._is_locked_out(self.ip):
-            log.warning("auth: %s is locked out, rejecting", self.ip)
+        if broker._is_locked_out(self.ip, first.username or ""):
+            log.warning("auth: %s (user %r) is locked out, rejecting", self.ip, first.username or "")
             await self._reject(pk.CONNACK_NOT_AUTHORIZED)
             return
         if not first.username:
             log.warning("auth: anonymous connect from %s rejected", self.ip)
-            broker._record_auth_failure(self.ip)
+            broker._record_auth_failure(self.ip, "")
             await self._reject(pk.CONNACK_NOT_AUTHORIZED)
             return
         ok = await broker._verify_credentials(self.ip, first.username, first.password or b"")
+        if not ok and broker.adopt_login is not None and not broker._is_locked_out(self.ip, first.username):
+            ok = broker.adopt_login(self.ip, first.username, first.password or b"")
         if not ok:
             log.warning("auth: bad credentials for user %r from %s", first.username, self.ip)
+            if first.username == "addons" and not broker._hinted_addons:
+                # The login a previous broker add-on handed to Home Assistant's MQTT integration.
+                broker._hinted_addons = True
+                log.warning("Home Assistant's MQTT integration still uses the previous broker's login ('addons'). "
+                            "One-time fix: Settings → Devices & services → MQTT → Configure/Reconfigure → broker = this "
+                            "add-on's hostname, port 1883 (or 8883 with TLS), user 'homeassistant' and its password "
+                            "(set one under Settings → Users & access in the web UI).")
             await self._reject(pk.CONNACK_BAD_CREDENTIALS)
             return
-        broker._clear_auth_failures(self.ip)
+        broker._clear_auth_failures(self.ip, first.username)
         self.username = first.username
         self.client_id = first.client_id or f"auto-{id(self):x}"
         self.keepalive = first.keepalive
@@ -234,10 +251,13 @@ class _Session:
                 case pk.Subscribe():
                     self._on_subscribe(packet)
                 case pk.Unsubscribe(packet_id=pid, topics=topics):
+                    codes = []
                     for tf in topics:
-                        if self.subscriptions.pop(tf, None) is not None:
+                        existed = self.subscriptions.pop(tf, None) is not None
+                        if existed:
                             self.broker._unsubscribe_session(self, tf)
-                    self.send(pk.Unsuback(pid))
+                        codes.append(0x00 if existed else 0x11)  # MQTT 5: 0x11 = no subscription existed
+                    self.send(pk.Unsuback(pid, codes))
                 case pk.Pingreq():
                     self.send(pk.Pingresp())
                 case pk.Disconnect():
@@ -276,8 +296,9 @@ class _Session:
             codes.append(granted)
         self.send(pk.Suback(s.packet_id, codes))
         # Retained messages are sent after SUBACK (3.8.4 allows either order).
-        for (tf, _), code in zip(s.topics, codes):
-            if code != pk.SUBACK_FAILURE:
+        handling = s.retain_handling or [0] * len(s.topics)
+        for (tf, _), code, rh in zip(s.topics, codes, handling):
+            if code != pk.SUBACK_FAILURE and rh != 2:  # MQTT 5 retain handling 2: never send retained
                 self.broker._send_retained(self, tf, code)
 
 
@@ -309,10 +330,14 @@ class Broker:
         self._retained: dict[str, _Retained] = {}
         self._auth_failures: dict[str, list[float]] = {}
         self._lockouts: dict[str, float] = {}
+        # Optional (ip, username, password) -> bool hook consulted after a failed login; True admits
+        # the client (the hook created the user). Used by the add-on to adopt Home Assistant's login.
+        self.adopt_login: Callable[[str, str, bytes], bool] | None = None
         # DoS limits: total connections, concurrent scrypt verifications, retained store size.
         self._conn_sem = asyncio.Semaphore(MAX_CONNECTIONS)
         self._verify_sem = asyncio.Semaphore(MAX_CONCURRENT_VERIFY)
         self._retained_bytes = 0
+        self._hinted_addons = False  # one-time log hint when HA still uses a previous broker login
 
     # -- lifecycle --------------------------------------------------------
 
@@ -369,8 +394,8 @@ class Broker:
     async def _verify_credentials(self, ip: str, username: str, password: bytes) -> bool:
         """scrypt is deliberately expensive; bound concurrency and count the attempt
         toward the lockout *before* doing the work so parallel guesses cannot bypass it."""
-        self._record_auth_attempt(ip)
-        if self._is_locked_out(ip):
+        self._record_auth_attempt(ip, username)
+        if self._is_locked_out(ip, username):
             return False
         async with self._verify_sem:
             return await asyncio.get_running_loop().run_in_executor(None, self.auth.verify, username, password)
@@ -381,6 +406,8 @@ class Broker:
             if other.client_id == session.client_id:
                 log.info("client %r: taken over by new connection from %s", session.client_id, session.ip)
                 self._sessions.discard(other)  # count/route to the new session immediately, not when the old task unwinds
+                if other.version == 5:
+                    other.send(pk.Disconnect(pk.RC_SESSION_TAKEN_OVER))
                 other.close()
         self._sessions.add(session)
         await self._publish_client_count()
@@ -405,32 +432,42 @@ class Broker:
 
     # -- auth rate limiting -----------------------------------------------
 
-    def _is_locked_out(self, ip: str) -> bool:
-        until = self._lockouts.get(ip)
+    # Lockouts are keyed by (address, username): many clients share one address (everything inside
+    # Home Assistant arrives from the Supervisor gateway), and a stored login that keeps failing must
+    # not block a different, correct login from the same address. Guessing many usernames from one
+    # address is still bounded by the per-connection cost and the concurrency cap on verification.
+    @staticmethod
+    def _auth_key(ip: str, username: str) -> str:
+        return f"{ip}|{username}"
+
+    def _is_locked_out(self, ip: str, username: str) -> bool:
+        key = self._auth_key(ip, username)
+        until = self._lockouts.get(key)
         if until is None:
             return False
         if time.monotonic() >= until:
-            del self._lockouts[ip]
+            del self._lockouts[key]
             return False
         return True
 
-    def _record_auth_attempt(self, ip: str) -> None:
+    def _record_auth_attempt(self, ip: str, username: str) -> None:
         """Count an attempt; successes clear the history afterwards (see _clear_auth_failures)."""
-        self._record_auth_failure(ip)
+        self._record_auth_failure(ip, username)
 
-    def _record_auth_failure(self, ip: str) -> None:
+    def _record_auth_failure(self, ip: str, username: str) -> None:
         now = time.monotonic()
-        hist = [t for t in self._auth_failures.get(ip, []) if now - t < AUTH_FAILURE_WINDOW]
+        key = self._auth_key(ip, username)
+        hist = [t for t in self._auth_failures.get(key, []) if now - t < AUTH_FAILURE_WINDOW]
         hist.append(now)
         if len(hist) >= AUTH_FAILURES_BEFORE_LOCKOUT:
-            self._lockouts[ip] = now + AUTH_LOCKOUT_SECONDS
-            self._auth_failures.pop(ip, None)
-            log.warning("auth: %s locked out for %.0f s after %d failures", ip, AUTH_LOCKOUT_SECONDS, len(hist))
+            self._lockouts[key] = now + AUTH_LOCKOUT_SECONDS
+            self._auth_failures.pop(key, None)
+            log.warning("auth: %s (user %r) locked out for %.0f s after %d failures", ip, username, AUTH_LOCKOUT_SECONDS, len(hist))
         else:
-            self._auth_failures[ip] = hist
+            self._auth_failures[key] = hist
 
-    def _clear_auth_failures(self, ip: str) -> None:
-        self._auth_failures.pop(ip, None)
+    def _clear_auth_failures(self, ip: str, username: str) -> None:
+        self._auth_failures.pop(self._auth_key(ip, username), None)
 
     # -- authorisation ----------------------------------------------------
 

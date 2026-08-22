@@ -17,6 +17,11 @@ from collections.abc import Awaitable, Callable
 
 from .unpi import Frame, FrameType, Parser, Subsystem
 
+# Frames whose payload carries key material never reach the log, even at DEBUG.
+_SYS_NV_CMDS = (0x07, 0x08, 0x09)          # OSAL_NV_ITEM_INIT / READ / WRITE
+_SECRET_NV_ITEMS = {0x003A, 0x003B, 0x0062, 0x0082, 0x0101}  # active/alternate key info, PRECFGKEY, NWKKEY, TCLK table
+_SECRET_APP_CNF = {0x04, 0x07}              # BDB_ADD_INSTALLCODE, BDB_SET_ACTIVE_DEFAULT_CENTRALIZED_KEY
+
 log = logging.getLogger("oneroof_zigbee.znp.transport")
 
 Listener = Callable[[Frame], Awaitable[None] | None]
@@ -40,6 +45,7 @@ class Transport:
     def __init__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, *, timeout: float = 6.0) -> None:
         self._reader = reader
         self._writer = writer
+        self._redact_srsp = False
         self._timeout = timeout
         self._parser = Parser()
         self._lock = asyncio.Lock()
@@ -130,9 +136,21 @@ class Transport:
             raise ValueError("send() is for AREQ frames")
         self._write(frame)
 
+    def _secret(self, frame: Frame) -> bool:
+        """True when the frame (or the reply it will get) carries key material."""
+        if frame.subsystem is Subsystem.SYS and frame.command in _SYS_NV_CMDS and len(frame.data) >= 2:
+            item = int.from_bytes(frame.data[0:2], "little")
+            if frame.type is FrameType.SREQ:
+                self._redact_srsp = item in _SECRET_NV_ITEMS and frame.command == 0x08
+            return item in _SECRET_NV_ITEMS
+        if frame.subsystem is Subsystem.APP_CNF and frame.command in _SECRET_APP_CNF:
+            return True
+        return False
+
     def _write(self, frame: Frame) -> None:
         raw = frame.encode()
-        log.debug("TX %s:%#04x %s", frame.subsystem.name, frame.command, frame.data.hex())
+        log.debug("TX %s:%#04x %s", frame.subsystem.name, frame.command,
+                  "<redacted>" if self._secret(frame) else frame.data.hex())
         self._writer.write(raw)
 
     # -- receive -----------------------------------------------------------
@@ -156,7 +174,11 @@ class Transport:
                 self._pending[1].set_exception(ZnpError("transport closed"))
 
     def _dispatch(self, frame: Frame) -> None:
-        log.debug("RX %s %s:%#04x %s", frame.type.name, frame.subsystem.name, frame.command, frame.data.hex())
+        redact = False
+        if frame.type is FrameType.SRSP and frame.subsystem is Subsystem.SYS and frame.command == 0x08:
+            redact, self._redact_srsp = self._redact_srsp, False
+        log.debug("RX %s %s:%#04x %s", frame.type.name, frame.subsystem.name, frame.command,
+                  "<redacted>" if redact else frame.data.hex())
         if frame.type is FrameType.SRSP and frame.subsystem is Subsystem.RPC_ERR:
             pending = self._pending
             if pending and not pending[1].done():

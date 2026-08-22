@@ -15,3 +15,5 @@ tls/
 firmware/
 *.ozbk
 .DS_Store
+build/
+*.egg-info/

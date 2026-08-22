@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 import secrets
 import sys
 from pathlib import Path
@@ -277,6 +278,8 @@ async def main_async() -> int:
         fd = os.open(secret_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as f:
             f.write(new_pw)
+        # First start: for one hour, adopt the login Home Assistant's MQTT integration already uses.
+        (DATA / ".adopt-login-until").write_text(str(int(time.time()) + 3600))
     ensure_password(cfg, "admin", "for pairing devices and the web UI", "admin", True)
     ha_pw = secret_file.read_text().strip() if secret_file.exists() else ""
 

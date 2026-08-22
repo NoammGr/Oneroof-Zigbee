@@ -5,6 +5,8 @@ import pytest
 from oneroof_zigbee.security import Audit, JoinGuard, JoinPolicy, JoinPolicyError, NetworkSecrets, parse_install_code
 from oneroof_zigbee.znp import Coordinator, Transport
 from oneroof_zigbee.znp import commands as c
+from oneroof_zigbee.znp.unpi import Subsystem
+from oneroof_zigbee.znp.wire import Writer
 from tests.fake_znp import FakeZnp
 
 IEEE = 0x00124B00DEADBEEF
@@ -174,4 +176,58 @@ async def test_policy_denial_does_not_register_install_code():
     with pytest.raises(JoinPolicyError):
         await coord.permit_join(5, "test", ieee=IEEE + 1, install_code=code)
     assert fake.install_codes == []
+    await t.close()
+
+
+async def test_alert_when_firmware_keeps_a_previous_network():
+    """If the radio comes up on a different PAN/channel than the keystore (formation ignored by
+    the firmware), a security alert is raised instead of silently running with the old key."""
+    fake = FakeZnp()
+    # the radio keeps reporting an old network whatever NV says
+    orig = fake._handle
+
+    def stubborn(f):
+        if f.subsystem is Subsystem.ZDO and f.command == c.ZdoCmd.EXT_NWK_INFO:
+            fake.requests.append(f)
+            fake._srsp(f, Writer().u16(0).u8(9).u16(0x1A62).u16(0).u64(0).u64(0).u8(11).bytes())
+            return
+        orig(f)
+    fake._handle = stubborn
+    alerts = []
+    audit = Audit(None)
+    audit.subscribe(lambda r: alerts.append(r) if r["level"] == "security" else None)
+    t = Transport(fake.reader, fake.writer, timeout=2.0)
+    t.start()
+    s = NetworkSecrets.generate(channel=15)
+    guard = JoinGuard(JoinPolicy(cooldown_seconds=0), audit)
+    coord = Coordinator(t, s, guard, audit)
+    await asyncio.wait_for(coord.start(), 5)
+    m = [a for a in alerts if a["type"] == "network_parameters_mismatch"]
+    assert m and m[0]["radio_pan_id"] == "0x1a62" and m[0]["radio_channel"] == 11 and m[0]["keystore_channel"] == 15
+    await t.close()
+
+
+@pytest.mark.parametrize("firmware_keeps_set", [True, False])
+async def test_frame_counter_is_verified_after_start(firmware_keeps_set):
+    """An imported counter must end up on the coordinator — via the SET command when the firmware
+    keeps it, otherwise by writing the key item and restarting the network."""
+    import dataclasses
+    from oneroof_zigbee.znp.coordinator import FRAME_COUNTER_MARGIN
+    fake = FakeZnp()
+    fake.ignore_set_frame_counter = not firmware_keeps_set
+    events = []
+    audit = Audit(None)
+    audit.subscribe(lambda r: events.append(r))
+    t = Transport(fake.reader, fake.writer, timeout=2.0)
+    t.start()
+    s = dataclasses.replace(NetworkSecrets.generate(channel=15), frame_counter=44_000_000)
+    guard = JoinGuard(JoinPolicy(cooldown_seconds=0), audit)
+    coord = Coordinator(t, s, guard, audit)
+    await asyncio.wait_for(coord.start(), 10)
+    want = 44_000_000 + FRAME_COUNTER_MARGIN
+    assert fake.frame_counter == want, "coordinator really carries the imported counter"
+    verified = [e for e in events if e["type"] == "frame_counter_verified"]
+    assert verified and verified[-1]["value"] == want
+    assert (verified[-1].get("method") == "nv") is (not firmware_keeps_set)
+    assert not [e for e in events if e["type"] == "frame_counter_unverified"]
     await t.close()

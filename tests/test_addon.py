@@ -117,10 +117,27 @@ def test_no_plaintext_port_skips_registration(tmp_path, monkeypatch, supervisor,
 
 
 def test_package_ships_the_ui():
-    """The add-on installs the package from a tarball; the UI must be package data, not a repo-only file."""
+    """The add-on copies the package into the image; the UI must be package data, not a repo-only file."""
     import importlib.resources
     from oneroof_zigbee import ui
     assert (importlib.resources.files(ui) / "static" / "index.html").is_file()
     import tomllib
     pyproject = tomllib.loads((Path(__file__).resolve().parent.parent / "pyproject.toml").read_text())
     assert "ui/static/*" in pyproject["tool"]["setuptools"]["package-data"]["oneroof_zigbee"]
+
+
+def test_changing_the_ha_users_password_updates_the_service_login(tmp_path):
+    """Add-on: the password announced to Home Assistant as the MQTT service must follow UI changes."""
+    from oneroof_zigbee.admin import Admin
+    from oneroof_zigbee.config import Config
+    from oneroof_zigbee.mqtt import Acl, PasswordFile
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(f"serial:\n  port: /dev/null\ndata_dir: {tmp_path}\nmqtt:\n  password_file: {tmp_path}/passwd\n")
+    cfg = Config.load(cfg_path)
+    admin = Admin(cfg, cfg_path, PasswordFile(cfg.mqtt.password_file), Acl(), set(), managed=True)
+    admin.upsert_user("homeassistant", role="homeassistant", password="first-password-123", control=False, subscribe=None, publish=None)
+    assert (tmp_path / ".service-login").read_text() == "first-password-123"
+    admin.upsert_user("homeassistant", role="homeassistant", password="second-password-456", control=False, subscribe=None, publish=None)
+    assert (tmp_path / ".service-login").read_text() == "second-password-456"
+    admin.upsert_user("other", role="client", password="client-password-789", control=False, subscribe=None, publish=None)
+    assert (tmp_path / ".service-login").read_text() == "second-password-456", "only the Home Assistant user is announced"

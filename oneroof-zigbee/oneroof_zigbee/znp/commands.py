@@ -33,6 +33,8 @@ class NvId(IntEnum):
     STARTUP_OPTION = 0x0003
     EXTPANID = 0x002D
     APS_USE_EXT_PANID = 0x0047
+    NWK_ACTIVE_KEY_INFO = 0x003A  # keySeqNum u8, key[16], frameCounter u32 — read back to verify the counter
+    NWK_ALTERN_KEY_INFO = 0x003B
     PRECFGKEY = 0x0062
     PRECFGKEYS_ENABLE = 0x0063
     SECURITY_MODE = 0x0064

@@ -20,7 +20,7 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - run: pip install -e ".[dev]"
-      - run: ruff check oneroof_zigbee tests oneroof-zigbee --select E,F,B --ignore E501,B905
+      - run: ruff check oneroof-zigbee tests --select E,F,B --ignore E501,B905
       - run: pytest -q --timeout=180
       - name: Tag must match the package version
         run: |

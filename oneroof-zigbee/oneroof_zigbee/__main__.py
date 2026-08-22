@@ -37,6 +37,8 @@ def _tls_context(cfg: Config, tls: "TlsConfig") -> ssl.SSLContext | None:
 
 
 async def run(cfg: Config, config_path: Path | None = None, *, managed: bool = False, on_broker_ready=None) -> int:
+    from . import __version__
+    log.info("One Roof Zigbee %s starting (%s)", __version__, "add-on" if managed else "standalone")
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
     audit = Audit(cfg.data_dir / "audit.log")
     secrets = Keystore(cfg.data_dir / "network.keystore").load_or_create(cfg.zigbee.channel)
@@ -92,6 +94,9 @@ async def run(cfg: Config, config_path: Path | None = None, *, managed: bool = F
 
     from .admin import Admin
     admin = Admin(cfg, config_path, passwords, acl, control_users, managed=managed)  # also loads users.yaml (UI-managed users)
+    admin.audit = audit
+    if managed and isinstance(broker, Broker):
+        broker.adopt_login = admin.adopt_login  # adopt Home Assistant's existing broker login (time-boxed)
     if control_users == {cfg.mqtt.gateway_user}:
         log.warning("no control users yet — add one under Settings → Users & access before pairing")
 

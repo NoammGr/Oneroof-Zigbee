@@ -39,6 +39,7 @@ a{color:var(--accent)}
 svg.i{width:1em;height:1em;flex:none;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;vertical-align:-.15em}
 /* ---------- layout ---------- */
 #app{display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:auto 1fr;min-height:100vh}
+header .ver{color:var(--faint);font-size:12px;padding-left:6px;border-left:1px solid var(--line)}
 header{display:flex;align-items:center;gap:18px;padding:0 24px;height:60px;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:5}
 .brand{font-family:var(--head);font-weight:800;letter-spacing:-.02em;font-size:19px;display:flex;align-items:center;gap:8px;white-space:nowrap}
 .brand i{width:26px;height:26px;border-radius:9px;background:var(--accent);display:inline-grid;place-items:center;color:var(--accent-ink)}
@@ -290,7 +291,7 @@ dialog .acts{display:flex;gap:8px;justify-content:flex-end;margin-top:16px}
   .tabs a.active{color:var(--accent);background:var(--accent-soft)}
   .tabs a svg.i{font-size:22px}
   .notice.restart{top:60px}
-  header{padding:0 14px;gap:8px;overflow:hidden;height:54px}header .badge{max-width:38vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:inline-block;line-height:20px}header .mute{display:none}
+  header{padding:0 14px;gap:8px;overflow:hidden;height:54px}header .badge{max-width:38vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:inline-block;line-height:20px}header .mute{display:none}header .ver{display:none}
   .brand span{display:none}
   .rail{gap:8px;min-width:0}.rail .item.devs{display:none}
   #h-bridge span{display:none}
@@ -320,6 +321,7 @@ dialog .acts{display:flex;gap:8px;justify-content:flex-end;margin-top:16px}
     <div class="item devs" id="h-devs">— devices</div>
     <span class="badge" id="h-join">join closed</span>
     <span class="badge sec hidden" id="h-sec" role="button" tabindex="0" title="Open security log"></span>
+    <span class="item ver mono" id="h-ver" title="One Roof Zigbee version"></span>
   </div>
 </header>
 <div class="shell">
@@ -549,6 +551,7 @@ function renderHeader(txt){
   const j=$('#h-join');clear(j);
   if(S.pj.open){j.className='badge open';j.append(el('i',{class:'dot on pulse'}),'join open · '+(S.pj.seconds_left|0)+' s');}else{j.className='badge';j.textContent='join closed';}
   const s=$('#h-sec');if(S.lastSec){s.classList.remove('hidden');s.textContent='⚠ '+(S.lastSec.type||'security alert');}
+  $('#h-ver').textContent=S.bridge&&S.bridge.version?'v'+S.bridge.version:'';
 }
 function buildNav(){$('#brand-i').append(svg('home',15));for(const id of['#nav','#tabs']){const n=$(id);clear(n);for(const[p,label,ic]of PAGES)n.append(el('a',{href:'#'+p,'data-p':p},svg(ic),el('span',{text:label})));}}
 function route(){const h=(location.hash||'#dashboard').slice(1);const[p,...rest]=h.split('/');const page=views[p]?p:'dashboard';let arg=null;try{arg=rest.length?decodeURIComponent(rest.join('/')):null;}catch(e){arg=rest.join('/');}const navP=page==='device'?'devices':page;document.querySelectorAll('nav a').forEach(a=>a.classList.toggle('active',a.dataset.p===navP));if(S.page&&views[S.page].leave)views[S.page].leave();S.page=page;const m=clear($('#main'));views[page].enter(m,arg);}

@@ -16,6 +16,7 @@ import glob
 import hashlib
 import io
 import json
+import contextlib
 import logging
 import os
 import secrets as pysecrets
@@ -59,6 +60,7 @@ class Admin:
         self.acl = acl
         self.control_users = control_users
         self.managed = managed  # True in the HA add-on: config.yaml is generated from add-on options
+        self.audit: Any = None  # set by the runtime so adoption is recorded
         self.restart_required: list[str] = []
         self.users_path = cfg.data_dir / "users.yaml"
         self._on_restart: Any = None
@@ -136,6 +138,8 @@ class Admin:
             if len(password) < 12:
                 raise ValueError("password must be at least 12 characters")
             self.passwords.set_password(name, password)
+            if self.managed and role == "homeassistant":
+                self._sync_service_login(password)
         entry: dict[str, Any] = {"role": role}
         if role == "custom":
             entry["subscribe"] = [str(s) for s in (subscribe if subscribe is not None else existing.get("subscribe", []))]
@@ -145,6 +149,19 @@ class Admin:
         users[name] = entry
         self._write_users_file(users)
         self.load_users()
+
+    def _sync_service_login(self, password: str) -> None:
+        """Add-on only: the password handed to Home Assistant as the MQTT service lives in
+        <data>/.service-login so it can be re-announced on every start; keep it current when the
+        user changes it in the UI."""
+        import os
+        path = self.cfg.data_dir / ".service-login"
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as f:
+                f.write(password)
+        except OSError as e:
+            log.warning("could not update the service login file (%s); the next start announces the old password", e)
 
     def remove_user(self, name: str) -> None:
         if name == self.cfg.mqtt.gateway_user:
@@ -397,8 +414,55 @@ class Admin:
                 compat_changes.append(f"user:{plan.mqtt.user}")
             except ValueError as e:
                 log.warning("could not recreate previous broker login %r: %s", plan.mqtt.user, e)
+        if self.managed:
+            self.open_login_adoption_window()
         return {"devices": len(plan.devices), "network_adopted": secrets is not current_secrets, "summary": plan.summary(),
                 "compat": compat_changes}
+
+    # ------------------------------------------------- login adoption (add-on) --
+    # Home Assistant keeps the login its MQTT integration was set up with (the previous broker's) and
+    # retries it every few seconds from its own address inside the add-on network. For one hour after
+    # an import (or the first start) the add-on adopts that login instead of rejecting it: the user
+    # is created with the Home Assistant role and the event is recorded. Trust-on-first-use, limited
+    # to Home Assistant's own address and to that window; nothing outside can reach this listener.
+
+    ADOPT_WINDOW_SECONDS = 3600
+    ADOPT_FROM = ("172.30.32.1", "172.30.32.2")  # Supervisor gateway / Home Assistant core addresses
+
+    def _adopt_file(self) -> Path:
+        return self.cfg.data_dir / ".adopt-login-until"
+
+    def open_login_adoption_window(self, seconds: int = ADOPT_WINDOW_SECONDS) -> None:
+        try:
+            self._adopt_file().write_text(str(int(time.time()) + seconds))
+        except OSError as e:
+            log.warning("could not open the login adoption window (%s)", e)
+
+    def login_adoption_open(self) -> bool:
+        try:
+            return time.time() < float(self._adopt_file().read_text().strip())
+        except (OSError, ValueError):
+            return False
+
+    def adopt_login(self, ip: str, username: str, password: bytes) -> bool:
+        """Called by the broker on a failed login. True = user created, let the connection in."""
+        if not self.managed or ip not in self.ADOPT_FROM or not self.login_adoption_open():
+            return False
+        if self.passwords.has_user(username) or username in (self.cfg.mqtt.gateway_user, *self.cfg.mqtt.users):
+            return False  # a real user with a wrong password is never "adopted"
+        try:
+            pw = password.decode("utf-8")
+            self.upsert_user(username, role="homeassistant", password=pw, control=False, subscribe=None, publish=None)
+        except (UnicodeDecodeError, ValueError) as e:
+            log.warning("login %r from %s not adopted: %s", username, ip, e)
+            return False
+        with contextlib.suppress(OSError):
+            self._adopt_file().unlink()  # one adoption per window
+        log.warning("Adopted Home Assistant's existing broker login %r (from %s): the MQTT integration is connected "
+                    "without any change on the Home Assistant side. Review it under Settings → Users & access.", username, ip)
+        if self.audit:
+            self.audit.security("broker_login_adopted", user=username, ip=ip)
+        return True
 
     # --------------------------------------------------------------- restart --
 

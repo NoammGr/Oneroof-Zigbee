@@ -137,13 +137,18 @@ class Gateway:
         for dev in devices:
             if dev.context.get("reporting_done") or dev.ieee in self._interview_tasks:
                 continue
-            try:
-                nwk = await self.coord.nwk_lookup(dev.ieee)
-            except Exception as e:  # transport hiccup: keep going with the next device
-                log.info("%s: address lookup failed (%s)", dev.ieee_str, e)
-                nwk = None
-            if nwk is None:
-                continue
+            if dev.nwk:
+                # Address known from the previous setup's backup: talk to the device directly. A
+                # sleepy device simply does not answer (interview_failed) and is retried on contact.
+                nwk = dev.nwk
+            else:
+                try:
+                    nwk = await self.coord.nwk_lookup(dev.ieee)
+                except Exception as e:  # transport hiccup: keep going with the next device
+                    log.info("%s: address lookup failed (%s)", dev.ieee_str, e)
+                    nwk = None
+                if nwk is None:
+                    continue
             if nwk != dev.nwk:
                 self.registry.add_or_update(dev.ieee, nwk)
             dev.available = True
@@ -289,6 +294,7 @@ class Gateway:
         except Exception as e:
             log.warning("interview of %s failed: %s", dev.ieee_str, e)
             dev.interview_error = str(e)
+            dev.context.pop("reporting_done", None)  # try again when the device next talks
             self.audit.event("interview_failed", ieee=dev.ieee_str, error=str(e))
             self.registry.save()
         finally:

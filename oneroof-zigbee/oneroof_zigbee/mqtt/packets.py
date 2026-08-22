@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import struct
 from dataclasses import dataclass, field
+from typing import Any
 
 MAX_REMAINING_LENGTH = 256 * 1024  # project hard cap (spec allows 268 435 455)
 MAX_PACKET_ID = 0xFFFF
@@ -159,6 +160,7 @@ class _Reader:
 class Connect:
     client_id: str
     clean_session: bool = True
+    version: int = 4  # 4 = MQTT 3.1.1, 5 = MQTT 5.0 (as sent by the client)
     keepalive: int = 60
     username: str | None = None
     password: bytes | None = None
@@ -193,6 +195,7 @@ class Puback:
 class Subscribe:
     packet_id: int
     topics: list[tuple[str, int]] = field(default_factory=list)
+    retain_handling: list[int] = field(default_factory=list)  # MQTT 5 per-filter option (0 send, 1 if new, 2 never)
 
 
 @dataclass(slots=True)
@@ -210,6 +213,7 @@ class Unsubscribe:
 @dataclass(slots=True)
 class Unsuback:
     packet_id: int
+    reason_codes: list[int] = field(default_factory=list)  # MQTT 5: one per filter
 
 
 @dataclass(slots=True)
@@ -224,7 +228,7 @@ class Pingresp:
 
 @dataclass(slots=True)
 class Disconnect:
-    pass
+    reason: int = 0  # MQTT 5 reason code (0 = normal)
 
 
 Packet = (
@@ -296,6 +300,117 @@ def topic_matches(topic_filter: str, topic: str) -> bool:
     return len(f_levels) == len(t_levels)
 
 
+
+# ---------------------------------------------------------------------------
+# MQTT 5 properties (2.2.2). We parse every property so a packet is validated,
+# keep the few that change behaviour and ignore the rest.
+# ---------------------------------------------------------------------------
+
+_PROP_BYTE = {0x01, 0x17, 0x19, 0x24, 0x25, 0x28, 0x29, 0x2A}
+_PROP_U16 = {0x13, 0x21, 0x22, 0x23}
+_PROP_U32 = {0x02, 0x11, 0x18, 0x27}
+_PROP_VARINT = {0x0B}
+_PROP_BINARY = {0x09, 0x16}
+_PROP_STRING = {0x03, 0x08, 0x12, 0x15, 0x1A, 0x1C, 0x1F}
+_PROP_PAIR = {0x26}
+
+PROP_SESSION_EXPIRY = 0x11
+PROP_ASSIGNED_CLIENT_ID = 0x12
+PROP_TOPIC_ALIAS_MAX = 0x22
+PROP_TOPIC_ALIAS = 0x23
+PROP_MAXIMUM_QOS = 0x24
+PROP_RETAIN_AVAILABLE = 0x25
+PROP_WILDCARD_AVAILABLE = 0x28
+PROP_SUBSCRIPTION_IDS_AVAILABLE = 0x29
+PROP_SHARED_AVAILABLE = 0x2A
+PROP_REASON_STRING = 0x1F
+
+# MQTT 5 reason codes used by the broker
+RC_SUCCESS = 0x00
+RC_UNSPECIFIED = 0x80
+RC_MALFORMED = 0x81
+RC_PROTOCOL_ERROR = 0x82
+RC_UNSUPPORTED_PROTOCOL = 0x84
+RC_CLIENT_ID_INVALID = 0x85
+RC_BAD_CREDENTIALS = 0x86
+RC_NOT_AUTHORIZED = 0x87
+RC_SERVER_UNAVAILABLE = 0x88
+RC_SESSION_TAKEN_OVER = 0x8E
+RC_TOPIC_ALIAS_INVALID = 0x94
+
+_CONNACK_V3_TO_V5 = {
+    CONNACK_ACCEPTED: RC_SUCCESS, CONNACK_UNACCEPTABLE_PROTOCOL: RC_UNSUPPORTED_PROTOCOL,
+    CONNACK_IDENTIFIER_REJECTED: RC_CLIENT_ID_INVALID, CONNACK_SERVER_UNAVAILABLE: RC_SERVER_UNAVAILABLE,
+    CONNACK_BAD_CREDENTIALS: RC_BAD_CREDENTIALS, CONNACK_NOT_AUTHORIZED: RC_NOT_AUTHORIZED,
+}
+
+
+def _read_properties(r: _Reader) -> dict[int, Any]:
+    """Parse a properties block; repeated user properties (0x26) are collected in a list."""
+    length, used = decode_remaining_length(r.data, r.pos)
+    r.pos += used
+    end = r.pos + length
+    if end > len(r.data):
+        raise MalformedPacket("properties overrun")
+    out: dict[int, Any] = {}
+    while r.pos < end:
+        pid = r.u8()
+        if pid in _PROP_BYTE:
+            val: Any = r.u8()
+        elif pid in _PROP_U16:
+            val = r.u16()
+        elif pid in _PROP_U32:
+            val = struct.unpack("!I", r.take(4))[0]
+        elif pid in _PROP_VARINT:
+            val, used = decode_remaining_length(r.data, r.pos)
+            r.pos += used
+        elif pid in _PROP_BINARY:
+            val = r.binary()
+        elif pid in _PROP_STRING:
+            val = r.string()
+        elif pid in _PROP_PAIR:
+            val = (r.string(), r.string())
+            out.setdefault(pid, []).append(val)
+            continue
+        else:
+            raise MalformedPacket(f"unknown property {pid:#04x}")
+        if pid in out:
+            raise MalformedPacket(f"property {pid:#04x} repeated")
+        out[pid] = val
+    if r.pos != end:
+        raise MalformedPacket("properties length mismatch")
+    return out
+
+
+def _write_properties(props: dict[int, Any] | None) -> bytes:
+    if not props:
+        return b"\x00"
+    body = bytearray()
+    for pid, val in props.items():
+        if pid in _PROP_BYTE:
+            body += bytes([pid, val])
+        elif pid in _PROP_U16:
+            body += bytes([pid]) + struct.pack("!H", val)
+        elif pid in _PROP_U32:
+            body += bytes([pid]) + struct.pack("!I", val)
+        elif pid in _PROP_VARINT:
+            body += bytes([pid]) + encode_remaining_length(val)
+        elif pid in _PROP_BINARY:
+            body += bytes([pid]) + struct.pack("!H", len(val)) + val
+        elif pid in _PROP_STRING:
+            body += bytes([pid]) + encode_string(val)
+        else:
+            raise MalformedPacket(f"cannot encode property {pid:#04x}")
+    return encode_remaining_length(len(body)) + bytes(body)
+
+
+# What the broker tells an MQTT 5 client in CONNACK: QoS 1 max, retained messages and wildcards
+# supported, no shared subscriptions / subscription ids, no topic aliases towards us.
+SERVER_CONNACK_PROPS: dict[int, Any] = {
+    PROP_MAXIMUM_QOS: 1, PROP_RETAIN_AVAILABLE: 1, PROP_WILDCARD_AVAILABLE: 1,
+    PROP_SUBSCRIPTION_IDS_AVAILABLE: 0, PROP_SHARED_AVAILABLE: 0, PROP_TOPIC_ALIAS_MAX: 0,
+}
+
 # ---------------------------------------------------------------------------
 # Encoders
 # ---------------------------------------------------------------------------
@@ -311,19 +426,28 @@ def _check_packet_id(pid: int | None) -> int:
     return pid
 
 
-def encode(packet: Packet) -> bytes:
-    """Serialise a packet dataclass to bytes."""
+def encode(packet: Packet, version: int = 4, *, connack_props: dict[int, Any] | None = None) -> bytes:
+    """Serialise a packet dataclass to bytes, in the MQTT 3.1.1 (4) or MQTT 5 (5) wire format.
+    ``connack_props`` are the server properties for an MQTT 5 CONNACK."""
+    if version not in (4, 5):
+        raise MalformedPacket(f"unsupported protocol version {version}")
+    v5 = version == 5
     match packet:
         case Connect():
             return _encode_connect(packet)
         case Connack(session_present=sp, return_code=rc):
+            if v5:
+                code = rc if rc >= 0x80 else _CONNACK_V3_TO_V5.get(rc)
+                if code is None:
+                    raise MalformedPacket("invalid CONNACK return code")
+                return _frame(CONNACK, 0, bytes([1 if sp else 0, code]) + _write_properties(connack_props))
             if not 0 <= rc <= 5:
                 raise MalformedPacket("invalid CONNACK return code")
             return _frame(CONNACK, 0, bytes([1 if sp else 0, rc]))
         case Publish():
-            return _encode_publish(packet)
+            return _encode_publish(packet, v5)
         case Puback(packet_id=pid):
-            return _frame(PUBACK, 0, struct.pack("!H", _check_packet_id(pid)))
+            return _frame(PUBACK, 0, struct.pack("!H", _check_packet_id(pid)))  # v5: omitted reason = success
         case Subscribe(packet_id=pid, topics=topics):
             if not topics:
                 raise MalformedPacket("SUBSCRIBE needs at least one filter")
@@ -333,27 +457,35 @@ def encode(packet: Packet) -> bytes:
                 if qos not in (0, 1, 2):
                     raise MalformedPacket("invalid requested QoS")
                 body += encode_string(tf) + bytes([qos])
+            if v5:
+                body = bytearray(struct.pack("!H", pid)) + b"\x00" + bytes(body[2:])
             return _frame(SUBSCRIBE, 0x2, bytes(body))
         case Suback(packet_id=pid, return_codes=codes):
             for c in codes:
-                if c not in (0, 1, 2, SUBACK_FAILURE):
+                if c not in (0, 1, 2, SUBACK_FAILURE) and not (v5 and c >= 0x80):
                     raise MalformedPacket("invalid SUBACK return code")
-            return _frame(SUBACK, 0, struct.pack("!H", _check_packet_id(pid)) + bytes(codes))
+            head = struct.pack("!H", _check_packet_id(pid)) + (b"\x00" if v5 else b"")
+            return _frame(SUBACK, 0, head + bytes(codes))
         case Unsubscribe(packet_id=pid, topics=topics):
             if not topics:
                 raise MalformedPacket("UNSUBSCRIBE needs at least one filter")
             body = bytearray(struct.pack("!H", _check_packet_id(pid)))
+            if v5:
+                body += b"\x00"
             for tf in topics:
                 validate_filter(tf)
                 body += encode_string(tf)
             return _frame(UNSUBSCRIBE, 0x2, bytes(body))
-        case Unsuback(packet_id=pid):
-            return _frame(UNSUBACK, 0, struct.pack("!H", _check_packet_id(pid)))
+        case Unsuback(packet_id=pid, reason_codes=codes):
+            head = struct.pack("!H", _check_packet_id(pid))
+            return _frame(UNSUBACK, 0, head + b"\x00" + bytes(codes) if v5 else head)
         case Pingreq():
             return _frame(PINGREQ, 0, b"")
         case Pingresp():
             return _frame(PINGRESP, 0, b"")
-        case Disconnect():
+        case Disconnect(reason=reason):
+            if v5 and reason:
+                return _frame(DISCONNECT, 0, bytes([reason]) + b"\x00")
             return _frame(DISCONNECT, 0, b"")
     raise MalformedPacket(f"cannot encode {type(packet).__name__}")
 
@@ -395,7 +527,7 @@ def _encode_connect(p: Connect) -> bytes:
     return _frame(CONNECT, 0, bytes(body))
 
 
-def _encode_publish(p: Publish) -> bytes:
+def _encode_publish(p: Publish, v5: bool = False) -> bytes:
     validate_topic(p.topic)
     if p.qos not in (0, 1, 2):
         raise MalformedPacket("invalid QoS")
@@ -409,6 +541,8 @@ def _encode_publish(p: Publish) -> bytes:
         body += struct.pack("!H", _check_packet_id(p.packet_id))
     elif p.packet_id is not None:
         raise MalformedPacket("packet identifier present for QoS 0")
+    if v5:
+        body += b"\x00"  # no properties
     body += p.payload
     return _frame(PUBLISH, flags, bytes(body))
 
@@ -436,10 +570,12 @@ def decode_fixed_header(buf: bytes) -> tuple[int, int, int, int]:
     return ptype, flags, length, 1 + consumed
 
 
-def decode(ptype: int, flags: int, body: bytes) -> Packet:
-    """Decode a packet given its type, fixed-header flags and variable body."""
+def decode(ptype: int, flags: int, body: bytes, version: int = 4) -> Packet:
+    """Decode a packet given its type, fixed-header flags and variable body.
+    ``version`` is the protocol level negotiated for the connection (CONNECT carries its own)."""
+    v5 = version == 5
     if ptype == PUBLISH:
-        return _decode_publish(flags, body)
+        return _decode_publish(flags, body, v5)
     if ptype in (SUBSCRIBE, UNSUBSCRIBE):
         if flags != 0x2:
             raise MalformedPacket("SUBSCRIBE/UNSUBSCRIBE flags must be 0010")
@@ -451,35 +587,53 @@ def decode(ptype: int, flags: int, body: bytes) -> Packet:
     if ptype == CONNACK:
         ack_flags = r.u8()
         rc = r.u8()
+        if v5:
+            _read_properties(r)
         r.done()
-        if ack_flags & 0xFE or rc > 5:
+        if ack_flags & 0xFE or (rc > 5 and not v5):
             raise MalformedPacket("invalid CONNACK")
         return Connack(bool(ack_flags & 1), rc)
     if ptype == PUBACK:
         pid = _check_packet_id(r.u16())
+        if v5 and r.remaining():
+            r.u8()  # reason code
+            if r.remaining():
+                _read_properties(r)
         r.done()
         return Puback(pid)
     if ptype == SUBSCRIBE:
         pid = _check_packet_id(r.u16())
+        if v5:
+            _read_properties(r)
         topics: list[tuple[str, int]] = []
+        handling: list[int] = []
         while r.remaining():
             tf = r.string()
             validate_filter(tf)
-            qos = r.u8()
-            if qos > 2:
-                raise MalformedPacket("requested QoS > 2")
+            opts = r.u8()
+            qos = opts & 0x03
+            if qos > 2 or (not v5 and opts & 0xFC) or (v5 and opts & 0xC0):
+                raise MalformedPacket("invalid subscription options")
+            rh = (opts >> 4) & 0x03
+            if rh == 3:
+                raise MalformedPacket("invalid retain handling")
             topics.append((tf, qos))
+            handling.append(rh)
         if not topics:
             raise MalformedPacket("SUBSCRIBE with no filters")
-        return Subscribe(pid, topics)
+        return Subscribe(pid, topics, handling if v5 else [])
     if ptype == SUBACK:
         pid = _check_packet_id(r.u16())
+        if v5:
+            _read_properties(r)
         codes = list(r.take(r.remaining()))
-        if not codes or any(c not in (0, 1, 2, SUBACK_FAILURE) for c in codes):
+        if not codes or any(c not in (0, 1, 2, SUBACK_FAILURE) and not (v5 and c >= 0x80) for c in codes):
             raise MalformedPacket("invalid SUBACK return codes")
         return Suback(pid, codes)
     if ptype == UNSUBSCRIBE:
         pid = _check_packet_id(r.u16())
+        if v5:
+            _read_properties(r)
         filters: list[str] = []
         while r.remaining():
             tf = r.string()
@@ -490,11 +644,22 @@ def decode(ptype: int, flags: int, body: bytes) -> Packet:
         return Unsubscribe(pid, filters)
     if ptype == UNSUBACK:
         pid = _check_packet_id(r.u16())
+        if v5:
+            _read_properties(r)
+            return Unsuback(pid, list(r.take(r.remaining())))
         r.done()
         return Unsuback(pid)
-    if ptype in (PINGREQ, PINGRESP, DISCONNECT):
+    if ptype == DISCONNECT:
+        reason = 0
+        if v5 and r.remaining():
+            reason = r.u8()
+            if r.remaining():
+                _read_properties(r)
         r.done()
-        return {PINGREQ: Pingreq, PINGRESP: Pingresp, DISCONNECT: Disconnect}[ptype]()
+        return Disconnect(reason)
+    if ptype in (PINGREQ, PINGRESP):
+        r.done()
+        return {PINGREQ: Pingreq, PINGRESP: Pingresp}[ptype]()
     if ptype in (PUBREC, PUBREL, PUBCOMP):
         raise MalformedPacket("QoS 2 flow is not supported")
     raise MalformedPacket(f"unknown packet type {ptype}")
@@ -504,9 +669,10 @@ def _decode_connect(r: _Reader) -> Connect:
     if r.string() != "MQTT":
         raise MalformedPacket("bad protocol name")
     level = r.u8()
-    if level != 4:
+    if level not in (4, 5):
         # Caller should answer CONNACK 0x01; we signal via a dedicated subclass.
         raise UnacceptableProtocol(f"protocol level {level}")
+    v5 = level == 5
     flags = r.u8()
     if flags & 0x01:
         raise MalformedPacket("CONNECT reserved flag set")
@@ -523,12 +689,19 @@ def _decode_connect(r: _Reader) -> Connect:
     if has_pass and not has_user:
         raise MalformedPacket("password flag without username flag")
     keepalive = r.u16()
+    if v5:
+        props = _read_properties(r)
+        # A session that expires the moment the connection ends is a clean session for us.
+        if not props.get(PROP_SESSION_EXPIRY, 0):
+            clean = True
     client_id = r.string()
     if not client_id and not clean:
         raise MalformedPacket("empty client id requires clean session")
     will_topic: str | None = None
     will_payload = b""
     if has_will:
+        if v5:
+            _read_properties(r)  # will properties (delay, expiry, content type …) are not used
         will_topic = r.string()
         validate_topic(will_topic)
         will_payload = r.binary()
@@ -538,6 +711,7 @@ def _decode_connect(r: _Reader) -> Connect:
     return Connect(
         client_id=client_id,
         clean_session=clean,
+        version=level,
         keepalive=keepalive,
         username=username,
         password=password,
@@ -549,10 +723,10 @@ def _decode_connect(r: _Reader) -> Connect:
 
 
 class UnacceptableProtocol(MalformedPacket):
-    """CONNECT with a protocol level other than 4 (answer CONNACK 0x01)."""
+    """CONNECT with a protocol level other than 4 or 5 (answer CONNACK 0x01)."""
 
 
-def _decode_publish(flags: int, body: bytes) -> Publish:
+def _decode_publish(flags: int, body: bytes, v5: bool = False) -> Publish:
     dup = bool(flags & 0x08)
     qos = (flags >> 1) & 0x03
     retain = bool(flags & 0x01)
@@ -566,11 +740,15 @@ def _decode_publish(flags: int, body: bytes) -> Publish:
     pid: int | None = None
     if qos > 0:
         pid = _check_packet_id(r.u16())
+    if v5:
+        props = _read_properties(r)
+        if PROP_TOPIC_ALIAS in props:
+            raise MalformedPacket("topic alias used although Topic Alias Maximum is 0")
     payload = r.take(r.remaining())
     return Publish(topic=topic, payload=payload, qos=qos, retain=retain, dup=dup, packet_id=pid)
 
 
-def decode_one(buf: bytes) -> tuple[Packet, int]:
+def decode_one(buf: bytes, version: int = 4) -> tuple[Packet, int]:
     """Decode the first complete packet in ``buf``.
 
     Returns ``(packet, bytes_consumed)``; raises NeedMoreData if incomplete.
@@ -579,4 +757,4 @@ def decode_one(buf: bytes) -> tuple[Packet, int]:
     total = hsize + length
     if len(buf) < total:
         raise NeedMoreData
-    return decode(ptype, flags, bytes(buf[hsize:total])), total
+    return decode(ptype, flags, bytes(buf[hsize:total]), version), total
