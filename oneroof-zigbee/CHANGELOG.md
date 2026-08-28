@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.8.1] — 2026-08-28
+
+### Fixed
+- Coordinator page layout: the cards used the dashboard's multi-column (masonry)
+  grid, which split the different-height cards across columns and made them
+  overlap. Switched to a responsive auto-fit grid so each card stays whole.
+
 ## [1.8.0] — 2026-08-28
 
 ### Added — Coordinator page

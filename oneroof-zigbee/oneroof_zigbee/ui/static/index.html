@@ -1085,7 +1085,7 @@ views.coordinator={
     this.stamp=el('span',{class:'sub'});
     m.append(el('div',{class:'bar'},el('button',{class:'btn',text:'Re-check',onclick:()=>this.load(true)}),el('span',{class:'grow'}),this.stamp));
     this.banner=el('div');m.append(this.banner);
-    this.box=el('div',{class:'dgrid'});m.append(this.box);this.load();
+    this.box=el('div',{style:'display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;align-items:start'});m.append(this.box);this.load();
   },
   kv(k,v,mono){return[el('dt',{text:k}),el('dd',{class:mono?'mono':''},String(v??'—'))];},
   chk(label,ok,okText,badText){return[el('dt',{text:label}),el('dd',null,el('i',{class:'dot'+(ok?' on':''),style:'margin-right:8px'}),ok?(okText||'matches'):(badText||'differs'))];},

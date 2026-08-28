@@ -98,6 +98,18 @@ class Browser:
 
     async def go(self, base: str, hash_: str, settle: float = 1.5):
         await self.cmd("Page.navigate", url=f"{base}#{hash_}")
+        # Wait for the SPA to boot and render a heading before settling, instead
+        # of trusting a fixed sleep: a cold first load (parse the ~170 KB script,
+        # connect the SSE stream) can exceed `settle` under CI load, which made
+        # this flaky on the first page. Every view renders an <h1>, so it is a
+        # reliable readiness marker.
+        for _ in range(100):  # up to ~10 s
+            try:
+                if await self.js("!!(document.querySelector('h1') && document.querySelector('h1').textContent)"):
+                    break
+            except RuntimeError:
+                pass  # a navigation is still in flight; retry
+            await asyncio.sleep(0.1)
         await asyncio.sleep(settle)
 
     async def size(self, w: int, h: int):
