@@ -251,7 +251,16 @@ class UiApi:
         })
 
     async def devices(self, req: Request) -> Response:
-        return Response.json([self._dev_json(d) for d in self.gw.registry.all()])
+        out = []
+        for d in self.gw.registry.all():
+            try:
+                out.append(self._dev_json(d))
+            except Exception:
+                # One broken record must not empty the whole list.
+                log.exception("device %s could not be serialized", d.ieee_str)
+                out.append({"ieee": d.ieee_str, "friendly_name": d.friendly_name, "error": "unserializable",
+                            "interviewed": d.interviewed, "available": d.available, "state": {}, "endpoints": {}})
+        return Response.json(out)
 
     async def device(self, req: Request) -> Response:
         return Response.json(self._dev_json(self._find(req), detail=True))

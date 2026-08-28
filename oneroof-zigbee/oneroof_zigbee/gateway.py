@@ -114,6 +114,7 @@ class Gateway:
                 d.context.pop("reporting_done", None)
                 self.registry.save()
         for d in self.registry.all():
+            d.state = self._json_safe(d.state)  # heal records written before state sanitising existed
             lq = d.state.get("linkquality")
             if d.lqi is None and isinstance(lq, int) and 0 <= lq <= 255:
                 d.lqi = lq  # last known value from the imported state until the device talks
@@ -773,7 +774,20 @@ class Gateway:
     _IDENTITY_KEYS = {"manufacturer_name", "model_id", "date_code", "sw_build_id", "zcl_version", "app_version",
                       "stack_version", "hw_version", "power_source", "battery_backup"}
 
+    @staticmethod
+    def _json_safe(v: Any) -> Any:
+        """State must always be JSON-serializable: one bytes value would break the device list,
+        state publishing and backups for every device."""
+        if isinstance(v, (bytes, bytearray)):
+            return bytes(v).hex()
+        if isinstance(v, dict):
+            return {k: Gateway._json_safe(x) for k, x in v.items()}
+        if isinstance(v, (list, tuple)):
+            return [Gateway._json_safe(x) for x in v]
+        return v
+
     def _apply_changes(self, dev: Device, changed: dict[str, Any]) -> list[dict[str, Any]]:
+        changed = {k: self._json_safe(v) for k, v in changed.items()}
         now = time.time()
         identity = {k: v for k, v in changed.items() if k in self._IDENTITY_KEYS or k.startswith("basic_0x")}
         if identity:

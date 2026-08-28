@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.7.3] — 2026-08-28
+
+### Fixed — empty device list, alert storms
+- A single non-serializable value in one device's state (e.g. a raw vendor datapoint delivered as
+  bytes) emptied the whole device list with "internal error". State values are now always made
+  JSON-safe on ingest (bytes become hex), existing records are healed at start, and one broken
+  record can no longer take down the list.
+- The sequence-number check understands that devices run several independent counters (Tuya plugs
+  interleave time requests and reports): a value near any recent counter is normal, counters only
+  move forward, and only a value matching none of them twice in a row is an anomaly. The
+  plug "sequence jump" storm was this.
+- "Went silent" alerts once per outage and again only after the device has been heard in between —
+  a bulb cut from power by a wall switch no longer alerts every 15 minutes for days.
+
 ## [1.7.2] — 2026-08-22
 
 ### Changed

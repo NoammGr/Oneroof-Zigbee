@@ -45,6 +45,9 @@ ALERT_COOLDOWN_S = 900   # one alert per kind per device per 15 min
 class Profile:
     frames: int = 0
     last_seq: int | None = None
+    seq_heads: list[int] = field(default_factory=list)  # devices run several independent counters (per cluster/endpoint)
+    seq_pending: int = 0
+    silent_alerted: bool = False
     lqi_mean: float = 0.0
     lqi_n: int = 0
     commands_seen: bool = False
@@ -100,15 +103,37 @@ class Monitor:
                 p.lqi_n += 1
                 p.lqi_mean += (lqi - p.lqi_mean) / min(p.lqi_n, 50)
             p.last_seen = now
+            p.silent_alerted = False
             return raised
         p.frames += 1
+        p.silent_alerted = False
 
-        if seq is not None and p.last_seq is not None and p.frames > 20:
-            delta = (seq - p.last_seq) % 256
-            # A counter that restarts near zero is a device reboot/resync, not an impersonator
-            # (who keeps a counter of their own somewhere in the middle of the range).
-            if SEQ_JUMP < delta < 256 - SEQ_JUMP and seq >= 16:
-                raised += self._raise(p, ieee, "sequence_jump", now, last=p.last_seq, seen=seq)
+        if seq is not None and p.frames > 20:
+            # Devices legitimately run several independent counters (one per cluster/endpoint), so a
+            # value close to ANY recent head is normal. A restart near zero is a reboot. Only a value
+            # matching no head, twice in a row, is an anomaly.
+            matched = False
+            for i, h in enumerate(p.seq_heads):
+                fwd = (seq - h) % 256
+                back = (h - seq) % 256
+                # Counters only advance: accept a bounded step forward, or a tiny step back (retry).
+                if fwd <= SEQ_JUMP or back <= 8:
+                    if fwd <= SEQ_JUMP:
+                        p.seq_heads[i] = seq
+                    matched = True
+                    break
+            if matched or seq < 16 or len(p.seq_heads) < 4:
+                if not matched:
+                    p.seq_heads.append(seq)
+                    del p.seq_heads[:-4]
+                p.seq_pending = 0
+            else:
+                p.seq_pending += 1
+                if p.seq_pending >= 2:
+                    raised += self._raise(p, ieee, "sequence_jump", now, heads=list(p.seq_heads), seen=seq)
+                    p.seq_pending = 0
+                p.seq_heads.append(seq)
+                del p.seq_heads[:-4]
         if seq is not None:
             p.last_seq = seq
 
@@ -151,9 +176,12 @@ class Monitor:
             if p.burst_at and p.last_seen <= p.burst_at + 5 and silent > SILENCE_AFTER_BURST_S:
                 raised += self._raise(p, ieee, "silence_after_burst", now, silent_s=int(silent))
                 p.burst_at = 0.0
-            if mains and p.typical_gap and p.frames >= 20:
+            if mains and p.typical_gap and p.frames >= 20 and not p.silent_alerted:
                 limit = max(LIVENESS_MIN_S, LIVENESS_FACTOR * p.typical_gap)
                 if silent > limit:
+                    # Once per outage: the flag clears when the device is heard again, so a bulb cut
+                    # from power (wall switch) alerts once, not every sweep until eternity.
+                    p.silent_alerted = True
                     raised += self._raise(p, ieee, "went_silent", now, silent_s=int(silent), typical_s=int(p.typical_gap))
         return raised
 
