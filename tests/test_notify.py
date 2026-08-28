@@ -197,6 +197,13 @@ def test_describe_every_category_uses_names_not_addresses():
     assert "Kitchen plug (0x0000000000000001)" in describe({"type": "device_joined", "ieee": IEEE_A}, res, True)[1]
     assert describe({"type": "command", "ieee": IEEE_A}, res, False) is None  # routine events are not notifications
     assert "sequence jump" in describe(cases["anomalies"][0], res, False)[1] and "jump 120" in describe(cases["anomalies"][0], res, False)[1]
+    # coordinator link loss/recovery: immediate ("anomalies"), on by default
+    off = describe({"type": "coordinator_offline", "reason": "serial link closed"}, res, False)
+    assert off is not None and off[0] == "anomalies" and "OFFLINE" in off[1] and "serial link closed" in off[1]
+    on = describe({"type": "coordinator_online"}, res, False)
+    assert on is not None and on[0] == "anomalies" and "back online" in on[1]
+    from oneroof_zigbee.notify.telegram import IMMEDIATE
+    assert "anomalies" in IMMEDIATE
 
 
 # ---------------------------------------------------------------- batching --

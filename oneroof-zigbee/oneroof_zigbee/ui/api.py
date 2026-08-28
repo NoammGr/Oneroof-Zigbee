@@ -247,6 +247,7 @@ class UiApi:
             "pan_id": f"{c.secrets.pan_id:#06x}", "strict_install_codes": c.strict,
             "require_install_code": c.guard.policy.require_install_code, "max_join_seconds": c.guard.policy.max_seconds,
             "device_count": len(self.gw.registry.all()), "permit_join": self._permit_state(),
+            "coordinator_online": self.gw.coordinator_online,
             "uptime_s": int(time.time() - self.started), "ui_user": self.acts_as, "ui_can_control": self.can_control,
             "log_level": logging.getLevelName(logging.getLogger().level),
             "restart_required": (self.admin.restart_required if self.admin else []), "managed": (self.admin.managed if self.admin else False),

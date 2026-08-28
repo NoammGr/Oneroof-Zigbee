@@ -105,6 +105,16 @@ class Coordinator:
     def on_device_left(self, cb: LeaveCb) -> None:
         self._leave_cbs.append(cb)
 
+    def rebind(self, transport: Transport) -> None:
+        """Point the coordinator at a fresh transport after the serial link was
+        lost and reopened, and re-register the frame listeners on it. The
+        registered callbacks (on_aps/on_device_joined/...) and known_ieee live
+        on this object, so the gateway keeps its Coordinator reference across a
+        reconnect — only the underlying transport changes. Call start() after.
+        """
+        self.t = transport
+        self._wire_listeners()
+
     def _wire_listeners(self) -> None:
         self.t.on(Subsystem.AF, AfCmd.INCOMING_MSG, self._on_incoming)
         self.t.on(Subsystem.AF, AfCmd.DATA_CONFIRM, self._on_confirm)

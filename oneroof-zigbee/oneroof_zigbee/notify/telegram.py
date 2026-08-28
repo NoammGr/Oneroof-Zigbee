@@ -229,6 +229,12 @@ def describe(rec: dict[str, Any], resolve: Resolver | None = None, include_addre
             return "liveness", f"{nm(unknown='A device')} went silent{evidence}."
         return "anomalies", f"Anomaly on {nm(unknown='a device')}: {kind.replace('_', ' ')}{evidence}."
 
+    # coordinator link (immediate, on by default)
+    if t == "coordinator_offline":
+        return "anomalies", f"⚠️ Coordinator OFFLINE: the Zigbee dongle stopped responding ({rec.get('reason', 'link lost')}). Reconnecting automatically; devices are unreachable until it returns."
+    if t == "coordinator_online":
+        return "anomalies", "✅ Coordinator back online: the dongle reconnected and the network is being served again."
+
     # security
     if t == "unexpected_join":
         return "security", f"UNEXPECTED JOIN: {nm(unknown='an unregistered device')} joined while no window was open ({rec.get('reason', 'no reason given')})."

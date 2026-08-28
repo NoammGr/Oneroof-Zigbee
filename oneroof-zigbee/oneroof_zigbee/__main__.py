@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import getpass
 import logging
 import signal
@@ -16,7 +17,7 @@ from .devices import Registry
 from .gateway import Gateway
 from .mqtt import Acl, Broker, PasswordFile
 from .security import Audit, JoinGuard, JoinPolicy, Keystore
-from .znp import Coordinator, Transport, open_serial
+from .znp import Coordinator, Transport, ZnpError, open_serial
 
 log = logging.getLogger("oneroof_zigbee")
 _last_broker: Broker | None = None  # exposed for the smoke test
@@ -146,15 +147,68 @@ async def run(cfg: Config, config_path: Path | None = None, *, managed: bool = F
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop.set)
-    closed = asyncio.create_task(transport.closed.wait())
-    await asyncio.wait({asyncio.create_task(stop.wait()), asyncio.create_task(restart.wait()), closed}, return_when=asyncio.FIRST_COMPLETED)
+    async def _fired(ev: asyncio.Event, timeout: float | None = None) -> bool:
+        try:
+            await asyncio.wait_for(ev.wait(), timeout)
+        except asyncio.TimeoutError:
+            return False
+        return True
+
+    # Coordinator connection supervisor. When the serial link to the dongle
+    # drops (unplugged, USB glitch, adapter reset) we do NOT exit: the broker,
+    # UI and notifier stay up, we alert (coordinator_offline → Telegram + UI),
+    # and reconnect in place with backoff. The gateway keeps the same
+    # Coordinator object across the reconnect (see Coordinator.rebind), and its
+    # device commands already fail gracefully while the link is down.
     rc = 0
-    if restart.is_set():
-        audit.event("restart_requested")
-        rc = 4  # RESTART_EXIT_CODE: main() re-execs, the add-on supervisor restarts the container
-    elif closed.done() and not stop.is_set():
-        log.error("serial transport closed — exiting so the supervisor restarts us")
-        rc = 3
+    stop_t = asyncio.create_task(stop.wait())
+    restart_t = asyncio.create_task(restart.wait())
+    while True:
+        closed = asyncio.create_task(transport.closed.wait())
+        await asyncio.wait({stop_t, restart_t, closed}, return_when=asyncio.FIRST_COMPLETED)
+        if not closed.done():
+            closed.cancel()
+        if restart.is_set():
+            audit.event("restart_requested")
+            rc = 4  # RESTART_EXIT_CODE: main() re-execs, the add-on supervisor restarts the container
+            break
+        if stop.is_set():
+            break
+        # Transport closed on its own: the coordinator link is gone.
+        log.error("coordinator serial link closed — reconnecting")
+        gw.coordinator_online = False
+        audit.security("coordinator_offline", reason="serial link closed")
+        await transport.close()
+        delay = 2.0
+        while not (stop.is_set() or restart.is_set()):
+            if await _fired(stop, delay) or restart.is_set():
+                break
+            try:
+                reader, writer = await open_serial(cfg.serial.port, cfg.serial.baudrate, rtscts=cfg.serial.rtscts)
+                transport = Transport(reader, writer)
+                transport.start()
+                coord.rebind(transport)
+                await coord.start()
+            except (OSError, ValueError, ZnpError, asyncio.TimeoutError) as e:
+                delay = min(delay * 2, 30.0)
+                log.warning("coordinator reconnect failed (%s); retrying in %.0fs", e, delay)
+                with contextlib.suppress(Exception):
+                    await transport.close()
+                continue
+            gw.coordinator_online = True
+            audit.event("coordinator_online")
+            log.info("coordinator reconnected")
+            break
+        if restart.is_set():
+            audit.event("restart_requested")
+            rc = 4
+            break
+        if stop.is_set():
+            break
+        # reconnected — fall through to wait on the new transport again
+    for _t in (stop_t, restart_t):
+        if not _t.done():
+            _t.cancel()
     await notifier.stop()
     await gw.stop()
     if ui_server:

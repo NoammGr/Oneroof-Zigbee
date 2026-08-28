@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.9.0] — 2026-08-29
+
+### Added — survive the coordinator going offline
+- The gateway no longer exits when the dongle's serial link drops (unplug, USB
+  glitch, adapter reset). Instead the broker, UI and Telegram notifier stay up,
+  it records a `coordinator_offline` alert, and it **reconnects the coordinator
+  in place** with backoff — the same Coordinator object is kept across the
+  reconnect (`Coordinator.rebind`), and device commands already fail gracefully
+  while the link is down. This ends the crash-restart loop that happened when
+  the dongle was absent.
+- **Telegram**: `coordinator_offline` / `coordinator_online` are sent
+  immediately (the "anomalies" category, on by default) so you know the moment
+  the radio drops and when it returns.
+- **UI**: a full-width banner appears while the coordinator is offline, driven
+  by a new `coordinator_online` flag on `/api/bridge` and updated live over the
+  event stream. The Coordinator page already showed "not answering" on offline.
+
 ## [1.8.1] — 2026-08-28
 
 ### Fixed

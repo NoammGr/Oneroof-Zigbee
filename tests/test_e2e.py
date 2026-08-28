@@ -481,18 +481,22 @@ async def test_13_ui_pages_served_and_restart_flag(stack):
     assert all("password" not in json.dumps(u) or u.get("has_password") in (True, False) for u in r["users"])
 
 
-async def test_14_dongle_disconnect_exits_for_supervisor_restart(stack):
+async def test_14_dongle_disconnect_stays_up_alerts_and_reconnects(stack):
     s = stack
-    # removing the USB dongle closes the serial stream → run() returns rc 3 (supervisor restarts the add-on)
+    gw = _gw(s)
+    assert gw.coordinator_online is True
+    # Removing the USB dongle closes the serial stream. The gateway must NOT exit
+    # (no crash-restart loop): it marks the coordinator offline, records an alert
+    # (→ Telegram + UI banner), keeps the broker/UI up, and reconnects in place.
     s.fake.reader.feed_eof()
-    rc = await asyncio.wait_for(s.task, 10)
-    assert rc == 3
-    assert s.got[f"{BASE}/bridge/state"] == b"offline", "gateway announces offline to HA on the way down"
+    await wait_for(lambda: gw.coordinator_online is False, 8)
+    assert not s.task.done(), "gateway must stay alive when the dongle drops, not exit"
+    text = (s.tmp / "audit.log").read_text()
+    assert "coordinator_offline" in text, "a coordinator_offline alert is recorded for Telegram/UI"
     ok, _ = Audit.verify(s.tmp / "audit.log")
     assert ok
-    # rotate key request recorded earlier? no — but the whole day is in the audit log, chained
-    n = sum(1 for _ in open(s.tmp / "audit.log"))
-    assert n > 40
+    # the whole session is still one intact, chained audit log
+    assert sum(1 for _ in open(s.tmp / "audit.log")) > 40
 
 
 def _gw(s: Stack):

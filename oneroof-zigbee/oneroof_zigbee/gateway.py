@@ -85,6 +85,9 @@ class Gateway:
         self._monitor_task: asyncio.Task[None] | None = None
         self._timers: dict[tuple[int, str], asyncio.Task[None]] = {}
         self._started = False
+        # Serial link health, driven by the connection supervisor in __main__:
+        # False while the dongle is disconnected/reconnecting. Surfaced in the UI.
+        self.coordinator_online = True
         # optional observers (the UI attaches here); called synchronously, must not raise
         self.on_state_change: Callable[[int, dict[str, Any]], None] | None = None
         self.on_device_event: Callable[[str, Device], None] | None = None

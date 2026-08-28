@@ -96,6 +96,8 @@ input[type=number].sm{width:78px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:20px 22px;box-shadow:var(--shadow)}
 .notice{border-left:3px solid var(--accent);padding:12px 16px;background:var(--accent-soft);border-radius:0 var(--rb) var(--rb) 0;margin-bottom:16px}
 .notice.warn{border-color:var(--warn);background:var(--warn-soft)}
+.coord-banner{background:var(--warn);color:#1a1205;font-weight:600;text-align:center;padding:10px 16px;font-size:14px}
+.coord-banner.hidden{display:none}
 /* ---------- tables ---------- */
 table{width:100%;border-collapse:separate;border-spacing:0;background:var(--card)}
 .devname{color:var(--accent);font-weight:600;text-decoration:none}.devname:hover{text-decoration:underline}
@@ -328,6 +330,7 @@ dialog .acts{display:flex;gap:8px;justify-content:flex-end;margin-top:16px}
     <span class="item ver mono" id="h-ver" title="One Roof Zigbee version"></span>
   </div>
 </header>
+<div id="coord-banner" class="coord-banner hidden">⚠️ Coordinator offline — the Zigbee dongle is disconnected. Reconnecting automatically; your devices are unreachable until it returns.</div>
 <div class="shell">
   <nav class="side" id="nav"></nav>
   <main id="main"></main>
@@ -583,13 +586,15 @@ function connectSSE(){
   on('device',d=>{const dev=d.device;if(dev){if(d.action==='left'){S.devMap.delete(dev.ieee);}else{S.devMap.set(dev.ieee,Object.assign(S.devMap.get(dev.ieee)||{},dev));}S.devices=[...S.devMap.values()];if(S.bridge)S.bridge.device_count=S.devices.length;}views.pair.feed(d.action,dev);renderHeader();if(S.page==='devices')views.devices.render();views.device.onDevice(d.action,dev);views.dashboard.onDevice(d.action,dev);});
   on('activity',d=>{views.device.onActivity(d);views.activity.push(d);});
   on('permit_join',d=>{S.pj=Object.assign(S.pj,d);renderHeader();views.pair.tick();});
-  on('audit',d=>{views.logs.pushAudit(d);if(d.type&&/join|interview|announce|leave|permit/i.test(d.type))views.pair.feed(d.type,d);});
-  on('security',d=>{d.level=d.level||'security';S.lastSec=d;if(S.page==='pair'&&/unknown_device|traffic_from_unknown/.test(d.type||''))views.pair.loadUnknown(!!(S.bridge&&S.bridge.ui_can_control));views.logs.pushAudit(d);views.pair.feed('SECURITY '+(d.type||''),d);renderHeader();toast('Security: '+(d.type||'alert'),true);});
+  on('audit',d=>{if(d.type==='coordinator_online'&&S.bridge){S.bridge.coordinator_online=true;renderHeader();}views.logs.pushAudit(d);if(d.type&&/join|interview|announce|leave|permit/i.test(d.type))views.pair.feed(d.type,d);});
+  on('security',d=>{d.level=d.level||'security';S.lastSec=d;if(d.type==='coordinator_offline'&&S.bridge)S.bridge.coordinator_online=false;if(S.page==='pair'&&/unknown_device|traffic_from_unknown/.test(d.type||''))views.pair.loadUnknown(!!(S.bridge&&S.bridge.ui_can_control));views.logs.pushAudit(d);views.pair.feed('SECURITY '+(d.type||''),d);renderHeader();toast('Security: '+(d.type||'alert'),true);});
   on('log',d=>views.logs.pushLog(d));
 }
 
 /* ============ header / nav ============ */
+function renderCoordBanner(){const on=!(S.bridge&&S.bridge.coordinator_online===false);const b=document.getElementById('coord-banner');if(b)b.classList.toggle('hidden',on);}
 function renderHeader(txt){
+  renderCoordBanner();
   const b=$('#h-bridge');b.firstChild.className='dot'+(S.online?' on':' warn');b.lastChild.textContent=txt||(S.online?'bridge online':'bridge offline');
   $('#h-devs').textContent=(S.bridge?S.bridge.device_count:S.devices.length)+' devices';
   const j=$('#h-join');clear(j);

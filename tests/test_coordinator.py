@@ -35,6 +35,29 @@ async def test_forms_network_with_random_secrets_and_closes_join():
     await t.close()
 
 
+async def test_rebind_survives_a_reconnect():
+    """When the serial link drops and reopens, rebind() points the coordinator
+    at the fresh transport; the registered callbacks and known_ieee persist,
+    and frames on the NEW transport reach them (the __main__ reconnect path)."""
+    fake1, coord, t1 = await make()
+    joined: list[int] = []
+    coord.on_device_joined(lambda d: joined.append(d.ieee))
+    coord.known_ieee.add(IEEE)  # a known device: its announce is a rejoin
+    await t1.close()
+
+    fake2 = FakeZnp()
+    t2 = Transport(fake2.reader, fake2.writer, timeout=2.0)
+    t2.start()
+    coord.rebind(t2)
+    await asyncio.wait_for(coord.start(), 5)
+    assert IEEE in coord.known_ieee  # state carried across the reconnect
+
+    fake2.emit_announce(IEEE, 0x1234)  # on the NEW transport
+    await asyncio.sleep(0.1)
+    assert IEEE in joined
+    await t2.close()
+
+
 async def test_runtime_security_applied_every_start():
     fake, coord, t = await make()
     reqs = [(f.subsystem, f.command, f.data) for f in fake.requests]
