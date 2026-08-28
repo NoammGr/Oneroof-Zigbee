@@ -17,6 +17,7 @@ from ..admin import ROLE_TEMPLATES, Admin
 from ..gateway import Gateway
 from ..config import ConfigError
 from ..security import Audit
+from ..znp.transport import ZnpError
 from ..znp.wire import ieee_int, ieee_str
 from .server import HttpError, Request, Response, Server
 
@@ -87,6 +88,7 @@ class UiApi:
         r("GET", "/favicon.ico", self.favicon)
         r("GET", "/favicon.svg", self.favicon)
         r("GET", "/api/bridge", self.bridge)
+        r("GET", "/api/coordinator", self.coordinator)
         r("GET", "/api/devices", self.devices)
         r("GET", "/api/devices/<ieee>", self.device)
         r("GET", "/api/audit", self.audit)
@@ -249,6 +251,14 @@ class UiApi:
             "log_level": logging.getLevelName(logging.getLogger().level),
             "restart_required": (self.admin.restart_required if self.admin else []), "managed": (self.admin.managed if self.admin else False),
         })
+
+    async def coordinator(self, req: Request) -> Response:
+        """Firmware identity, radio state and keystore sync — read live from the
+        stick, so a refresh genuinely re-checks the network key and counters."""
+        try:
+            return Response.json(await self.gw.coord.info())
+        except ZnpError as e:
+            raise HttpError(503, f"coordinator not answering: {e}") from e
 
     async def devices(self, req: Request) -> Response:
         out = []

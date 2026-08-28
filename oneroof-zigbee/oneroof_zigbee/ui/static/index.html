@@ -568,7 +568,7 @@ function fnm(pat,s){const re=new RegExp('^'+String(pat).toLowerCase().replace(/[
 
 /* ============ state ============ */
 const S={bridge:null,devices:[],devMap:new Map(),exposes:{},online:false,page:null,lastSec:null,pj:{open:false,seconds_left:0},pairFeed:[],audit:[],logs:[],sseBackoff:1000,es:null};
-const PAGES=[['dashboard','Dashboard','n_dash'],['devices','Devices','n_devices'],['pair','Pair','n_pair'],['map','Map','n_map'],['logs','Logs','n_logs'],['activity','Activity','n_activity'],['settings','Settings','n_settings']];
+const PAGES=[['dashboard','Dashboard','n_dash'],['devices','Devices','n_devices'],['pair','Pair','n_pair'],['map','Map','n_map'],['coordinator','Coordinator','chip'],['logs','Logs','n_logs'],['activity','Activity','n_activity'],['settings','Settings','n_settings']];
 const views={};
 const can=()=>S.bridge?S.bridge.ui_can_control!==false:true;
 
@@ -1076,6 +1076,58 @@ views.map={
   onPointer(e){if(this.drag){const r=this.cv.getBoundingClientRect();this.drag.x=e.clientX-r.left;this.drag.y=e.clientY-r.top;this.hot=30;return;}this.hover=this.pick(e);this.cv.style.cursor=this.hover?'pointer':'default';},
   table(){const h=clear(this.tableHost);const names=new Map((this.data.nodes||[]).map(n=>[n.ieee,n.friendly_name||n.ieee]));const L=this.data.links||[];if(!L.length){h.append(el('div',{class:'empty',text:'No links reported.'}));return;}
     h.append(el('div',{class:'twrap'},el('table',null,el('thead',null,el('tr',null,...['From','To','LQI','Depth','Relationship'].map(t=>el('th',{text:t})))),el('tbody',null,...L.map(l=>el('tr',null,el('td',{text:names.get(l.source)||l.source}),el('td',{text:names.get(l.target)||l.target}),el('td',{text:l.lqi}),el('td',{text:l.depth??''}),el('td',{class:'sub',text:l.relationship??''})))))));}
+};
+
+/* ============ COORDINATOR ============ */
+views.coordinator={
+  enter(m){
+    m.append(el('h1',{text:'Coordinator'}),el('p',{class:'lead',text:'The radio stick itself: what firmware it runs and whether it still agrees with the keystore. A blank or mismatched coordinator is re-formed from the keystore automatically at startup; this page makes that check visible and lets you run it again.'}));
+    this.stamp=el('span',{class:'sub'});
+    m.append(el('div',{class:'bar'},el('button',{class:'btn',text:'Re-check',onclick:()=>this.load(true)}),el('span',{class:'grow'}),this.stamp));
+    this.banner=el('div');m.append(this.banner);
+    this.box=el('div',{class:'dgrid'});m.append(this.box);this.load();
+  },
+  kv(k,v,mono){return[el('dt',{text:k}),el('dd',{class:mono?'mono':''},String(v??'—'))];},
+  chk(label,ok,okText,badText){return[el('dt',{text:label}),el('dd',null,el('i',{class:'dot'+(ok?' on':''),style:'margin-right:8px'}),ok?(okText||'matches'):(badText||'differs'))];},
+  card(title,entries){return el('div',{class:'card'},el('h3',{text:title}),el('dl',{class:'kv'},...entries.flat()));},
+  async load(manual){
+    const seq=this.seq=(this.seq||0)+1;
+    clear(this.banner);clear(this.box).append(el('div',{class:'sub',text:'Reading from the coordinator…'}));
+    let r;try{r=await api('api/coordinator');}catch(e){if(seq!==this.seq)return;clear(this.box);clear(this.banner).append(el('div',{class:'notice warn'},el('b',{text:'Coordinator not answering. '}),e.message));return;}
+    if(seq!==this.seq)return;
+    this.stamp.textContent='checked '+new Date().toLocaleTimeString();if(manual)toast('Re-checked');
+    const fw=r.firmware||{},ra=r.radio||{},ks=r.keystore||{},sy=r.sync||{};
+    clear(this.banner).append(sy.in_sync
+      ?el('div',{class:'notice'},el('b',{text:'In sync. '}),'The radio runs the network exactly as the keystore describes it: same PAN, channel and network key, and the frame counter has not gone backwards.')
+      :el('div',{class:'notice warn'},el('b',{text:'Out of sync. '}),'The radio disagrees with the keystore. Restart the gateway: startup re-forms the network from the keystore (same key and parameters, no re-pairing). If this persists, check Logs → Audit for security events.'));
+    const b=clear(this.box);
+    b.append(this.card('Firmware',[
+      this.chk('Build',!!fw.oneroof,'One Roof coordinator firmware','stock / third-party firmware'),
+      this.kv('Z-Stack',fw.version?fw.version+' (product '+fw.product+')':null),
+      this.kv('Revision',fw.revision,1),
+    ]));
+    b.append(this.card('Radio',[
+      this.chk('State',!!ra.started,'coordinator running','not started (state '+ra.device_state+')'),
+      this.kv('IEEE address',ra.ieee,1),
+      this.kv('PAN id',ra.pan_id,1),
+      this.kv('Extended PAN',ra.ext_pan_id,1),
+      this.kv('Channel',ra.channel),
+      this.kv('Frame counter',ra.frame_counter),
+    ]));
+    b.append(this.card('Keystore',[
+      this.kv('PAN id',ks.pan_id,1),
+      this.kv('Extended PAN',ks.ext_pan_id,1),
+      this.kv('Channel',ks.channel),
+      this.kv('Saved frame counter',ks.frame_counter),
+    ]));
+    b.append(this.card('Sync checks',[
+      this.chk('PAN id',!!sy.pan_id),
+      this.chk('Extended PAN',!!sy.ext_pan_id),
+      this.chk('Channel',!!sy.channel),
+      this.chk('Network key',!!sy.network_key,'radio uses the keystore key','radio uses a DIFFERENT key'),
+      this.chk('Frame counter',!!sy.frame_counter,'at or ahead of the keystore','behind the keystore'),
+    ]));
+  }
 };
 
 /* ============ LOGS ============ */

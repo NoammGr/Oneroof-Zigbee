@@ -79,6 +79,29 @@ async def test_index_and_security_headers(ui):
     assert h["X-Content-Type-Options"] == "nosniff" and "Content-Security-Policy" in h and h["Cache-Control"] == "no-store"
 
 
+async def test_coordinator_page(ui):
+    """GET /api/coordinator reports firmware identity, radio state and the keystore
+    sync verdict; a radio that drifts from the keystore turns in_sync off."""
+    from oneroof_zigbee.znp import commands as c
+    fake, _gw, server, _api = ui
+    st, _, body = await http(server.port, "GET", "/api/coordinator")
+    r = json.loads(body)
+    assert st == 200
+    assert r["firmware"]["version"] == "2.7.1" and r["firmware"]["revision"] == 20220219
+    assert r["firmware"]["oneroof"] is False  # the fake models a stock build
+    assert r["radio"]["started"] is True and r["radio"]["ieee"].startswith("0x")
+    assert r["radio"]["pan_id"] == r["keystore"]["pan_id"]
+    assert r["radio"]["ext_pan_id"] == r["keystore"]["ext_pan_id"]
+    assert r["radio"]["channel"] == r["keystore"]["channel"] == 15
+    assert r["sync"]["network_key"] is True and r["sync"]["in_sync"] is True
+    # the radio drifting off the keystore's PAN must flip the verdict
+    fake.nv[c.NvId.PANID] = b"\xdd\xdd"
+    st, _, body = await http(server.port, "GET", "/api/coordinator")
+    r = json.loads(body)
+    assert st == 200 and r["sync"]["pan_id"] is False and r["sync"]["in_sync"] is False
+    assert r["radio"]["pan_id"] == "0xdddd"
+
+
 async def test_bridge_and_devices_flow(ui):
     fake, gw, server, api = ui
     st, _, body = await http(server.port, "GET", "/api/bridge")

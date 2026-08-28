@@ -36,6 +36,9 @@ log = logging.getLogger("oneroof_zigbee.znp.coordinator")
 
 HA_PROFILE = 0x0104
 FRAME_COUNTER_MARGIN = 1 << 20  # ~1M frames of headroom over the saved counter
+# SYS_VERSION revisions are the firmware's build date (YYYYMMDD); One Roof builds
+# start 2026-08-28, everything older is a stock TI/community image.
+ONEROOF_MIN_REVISION = 20260828
 GATEWAY_ENDPOINT = 1
 # clusters we advertise on our endpoint so devices bind/report to us
 GATEWAY_IN_CLUSTERS = [0x0000, 0x0003, 0x0006, 0x000A, 0x0019, 0x0500]
@@ -743,6 +746,49 @@ class Coordinator:
         await self.t.request(c.zdo_unbind_req(nwk, src_ieee, src_ep, cluster, dst_ieee, dst_ep))
         rsp = await task
         return rsp.data[2] if len(rsp.data) >= 3 else 0xFF
+
+    async def info(self) -> dict:
+        """Live coordinator status for the UI's Coordinator page: firmware identity,
+        radio state, and whether the radio agrees with the keystore — the same sync
+        the gateway enforces at startup, made visible and re-checkable on demand."""
+        di = c.decode_device_info((await self.t.request(c.util_get_device_info())).data)
+        nwk = c.decode_ext_nwk_info((await self.t.request(c.zdo_ext_nwk_info(), check_status=False)).data)
+        counter = await self.nwk_frame_counter()
+        key_ok = await self.active_key_matches()
+        s, v = self.secrets, self.version
+        sync = {
+            "pan_id": nwk.pan_id == s.pan_id,
+            "ext_pan_id": nwk.ext_pan_id == s.ext_pan_id,
+            "channel": nwk.channel == s.channel,
+            "network_key": key_ok,
+            # equal is fine right after a restore; behind the keystore means devices
+            # will drop our frames (the exact failure the startup margin prevents)
+            "frame_counter": counter is not None and counter >= (s.frame_counter or 0),
+        }
+        return {
+            "firmware": {
+                "product": v.product if v else None,
+                "version": f"{v.major}.{v.minor}.{v.maint}" if v else None,
+                "revision": v.revision if v else None,
+                "oneroof": bool(v and v.revision and v.revision >= ONEROOF_MIN_REVISION),
+            },
+            "radio": {
+                "ieee": f"0x{self.ieee:016x}",
+                "device_state": di.device_state,
+                "started": di.device_state == c.DeviceState.ZB_COORD,
+                "pan_id": f"{nwk.pan_id:#06x}",
+                "ext_pan_id": f"0x{nwk.ext_pan_id:016x}",
+                "channel": nwk.channel,
+                "frame_counter": counter,
+            },
+            "keystore": {
+                "pan_id": f"{s.pan_id:#06x}",
+                "ext_pan_id": f"0x{s.ext_pan_id:016x}",
+                "channel": s.channel,
+                "frame_counter": s.frame_counter,
+            },
+            "sync": {**sync, "in_sync": all(sync.values())},
+        }
 
     async def neighbors(self, nwk: int, timeout: float = 10.0) -> list[c.Neighbor]:
         out: list[c.Neighbor] = []

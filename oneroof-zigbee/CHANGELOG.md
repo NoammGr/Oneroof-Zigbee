@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.8.0] — 2026-08-28
+
+### Added — Coordinator page
+- New Coordinator tab in the UI: firmware identity (One Roof build vs stock, Z-Stack version,
+  build revision), live radio state (IEEE, PAN, extended PAN, channel, NWK frame counter) and a
+  keystore sync verdict — PAN, extended PAN, channel, active network key and frame counter each
+  checked live against the keystore, with a Re-check button.  This is the same agreement the
+  gateway enforces at every startup (a blank or mismatched coordinator is re-formed from the
+  keystore), now visible instead of a log line.
+- `GET /api/coordinator` serves it: reads the radio on demand (device info, extended network
+  info, security material table, active key compare) and answers 503 when the coordinator does
+  not respond.
+- The fake coordinator's extended-network-info now reports the extended PAN id it was formed
+  with instead of zeros, so the sync verdict is honest in tests.
+
+
 ## [1.7.3] — 2026-08-28
 
 ### Fixed — empty device list, alert storms

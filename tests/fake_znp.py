@@ -194,9 +194,10 @@ class FakeZnp:
                 self.emit(Frame(FrameType.AREQ, Subsystem.ZDO, c.ZdoCmd.PERMIT_JOIN_IND, bytes([f.data[3]])))
             elif cmd == c.ZdoCmd.EXT_NWK_INFO:
                 pan = int.from_bytes(self.nv.get(c.NvId.PANID, b"\x00\x00"), "little")
+                extpan = int.from_bytes(self.nv.get(c.NvId.EXTPANID, b"\x00" * 8), "little")
                 ch_mask = int.from_bytes(self.nv.get(c.NvId.CHANLIST, b"\x00\x00\x00\x00"), "little")
                 ch = ch_mask.bit_length() - 1 if ch_mask else 0
-                self._srsp(f, Writer().u16(0).u8(self.device_state).u16(pan).u16(0).u64(0).u64(0).u8(ch).bytes())
+                self._srsp(f, Writer().u16(0).u8(self.device_state).u16(pan).u16(0).u64(extpan).u64(0).u8(ch).bytes())
             elif cmd == c.ZdoCmd.ACTIVE_EP_REQ:
                 nwk = int.from_bytes(f.data[0:2], "little")
                 self._srsp(f, b"\x00")
