@@ -5,7 +5,7 @@ One process, one UI: pair your Zigbee devices, and Home Assistant connects strai
 
 [![CI](https://github.com/NoammGr/Oneroof-Zigbee/actions/workflows/ci.yml/badge.svg)](https://github.com/NoammGr/Oneroof-Zigbee/actions/workflows/ci.yml)
 
-> Part of the OneRoof family, alongside OneRoof Bridge and OneRoof NVR.
+> Part of the OneRoof family, alongside [OneRoof Bridge](https://github.com/NoammGr/oneroof-bridge), [OneRoof NVR](https://github.com/NoammGr/oneroof-nvr) and [OneRoof Energy](https://github.com/NoammGr/Oneroof-Energy).
 
 ---
 
