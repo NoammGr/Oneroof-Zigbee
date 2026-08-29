@@ -121,8 +121,8 @@ you press *Update* for that one device. The gateway never downloads firmware.
 ## Layout
 
 ```
-oneroof-zigbee/          Home Assistant add-on: config, Dockerfile, run.py — and the gateway itself:
-oneroof-zigbee/oneroof_zigbee/
+addon/                   Home Assistant add-on: config, Dockerfile, run.py — and the gateway itself:
+addon/oneroof_zigbee/
   znp/        UNPI framing, ZNP commands, async transport, coordinator bring-up
   zcl/        ZCL codec, data types, global commands, cluster converters
   mqtt/       MQTT broker for 3.1.1 and 5 clients (auth, ACL, TLS, retained, QoS1) + client
@@ -161,4 +161,4 @@ Source-available, see [LICENSE](LICENSE).
 
 Releases are tagged `vX.Y.Z` and listed in [CHANGELOG.md](CHANGELOG.md). Pushing `main` auto-creates
 the tag for the version in `pyproject.toml`; the tag triggers the release workflow: tests → add-on images on GHCR (amd64, aarch64) → GitHub Release. The add-on's
-`version` in `oneroof-zigbee/config.yaml` and `oneroof_zigbee.__version__` must match the tag.
+`version` in `addon/config.yaml` and `oneroof_zigbee.__version__` must match the tag.

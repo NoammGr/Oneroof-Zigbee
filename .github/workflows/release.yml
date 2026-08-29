@@ -20,14 +20,14 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - run: pip install -e ".[dev]"
-      - run: ruff check oneroof-zigbee tests --select E,F,B --ignore E501,B905
+      - run: ruff check addon tests --select E,F,B --ignore E501,B905
       - run: pytest -q --timeout=180
       - name: Tag must match the package version
         run: |
           V=$(python -c "import oneroof_zigbee;print(oneroof_zigbee.__version__)")
           [ "v$V" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} != package v$V"; exit 1; }
-          grep -q "version: \"$V\"" oneroof-zigbee/config.yaml || { echo "add-on config.yaml version != $V"; exit 1; }
-          cmp -s CHANGELOG.md oneroof-zigbee/CHANGELOG.md || { echo "oneroof-zigbee/CHANGELOG.md is out of sync with CHANGELOG.md (cp CHANGELOG.md oneroof-zigbee/)"; exit 1; }
+          grep -q "version: \"$V\"" addon/config.yaml || { echo "add-on config.yaml version != $V"; exit 1; }
+          cmp -s CHANGELOG.md addon/CHANGELOG.md || { echo "addon/CHANGELOG.md is out of sync with CHANGELOG.md (cp CHANGELOG.md addon/)"; exit 1; }
 
   image:
     needs: verify
@@ -53,8 +53,8 @@ jobs:
       - name: Build & push ${{ matrix.arch }}
         uses: docker/build-push-action@v6
         with:
-          context: oneroof-zigbee
-          file: oneroof-zigbee/Dockerfile
+          context: addon
+          file: addon/Dockerfile
           platforms: ${{ matrix.platform }}
           push: true
           build-args: |

@@ -1,4 +1,4 @@
-"""The add-on entrypoint (oneroof-zigbee/run.py), exercised without a Supervisor: option mapping,
+"""The add-on entrypoint (addon/run.py), exercised without a Supervisor: option mapping,
 overrides written by the import, and registration as Home Assistant's MQTT service against a fake
 Supervisor endpoint."""
 
@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-RUN_PY = Path(__file__).resolve().parent.parent / "oneroof-zigbee" / "run.py"
+RUN_PY = Path(__file__).resolve().parent.parent / "addon" / "run.py"
 
 
 def load_run(tmp_path, monkeypatch):

@@ -3,5 +3,5 @@
 set -e
 cd "$(dirname "$0")/.."
 PY=${PY:-.venv/bin/python}
-$PY -m ruff check oneroof-zigbee tests --select E,F,B --ignore E501,B905
+$PY -m ruff check addon tests --select E,F,B --ignore E501,B905
 $PY -m pytest -q --timeout=120 "$@"
