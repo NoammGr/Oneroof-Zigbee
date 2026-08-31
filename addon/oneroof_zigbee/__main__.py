@@ -17,7 +17,7 @@ from .devices import Registry
 from .gateway import Gateway
 from .mqtt import Acl, Broker, PasswordFile
 from .security import Audit, JoinGuard, JoinPolicy, Keystore
-from .znp import Coordinator, Transport, ZnpError, open_serial
+from .znp import AbsentTransport, Coordinator, Transport, ZnpError, open_serial
 
 log = logging.getLogger("oneroof_zigbee")
 _last_broker: Broker | None = None  # exposed for the smoke test
@@ -89,16 +89,36 @@ async def run(cfg: Config, config_path: Path | None = None, *, managed: bool = F
     if cfg.compat.legacy_layout:
         log.info("legacy layout: topics %s/<friendly name> and legacy discovery identities", cfg.mqtt.base_topic)
 
-    reader, writer = await open_serial(cfg.serial.port, cfg.serial.baudrate, rtscts=cfg.serial.rtscts)
-    transport = Transport(reader, writer)
-    transport.start()
+    coordinator_present = True
+    try:
+        reader, writer = await open_serial(cfg.serial.port, cfg.serial.baudrate, rtscts=cfg.serial.rtscts)
+        transport = Transport(reader, writer)
+        transport.start()
+    except (FileNotFoundError, PermissionError, OSError, ValueError) as e:
+        # The dongle is not there at boot (unplugged, USB passthrough not attached yet). Exiting
+        # would take the broker — the house's MQTT backbone — and the UI down with it, and the
+        # add-on would crash-loop. Come up in the same degraded mode as losing the link at
+        # runtime: everything but the radio runs, and the connection supervisor below keeps
+        # trying to open the port with backoff.
+        log.error("coordinator not present at start (%s) — broker and UI come up without it; retrying in the background", e)
+        transport = AbsentTransport()
+        coordinator_present = False
     guard = JoinGuard(JoinPolicy(max_seconds=cfg.zigbee.permit_join_max_seconds,
                                  cooldown_seconds=cfg.zigbee.permit_join_cooldown_seconds,
                                  require_install_code=cfg.zigbee.permit_join_require_install_code,
                                  close_after_first_join=cfg.zigbee.permit_join_close_after_first_join), audit)
     coord = Coordinator(transport, secrets, guard, audit, strict_install_codes=cfg.zigbee.strict_install_codes)
     coord.keystore = Keystore(cfg.data_dir / "network.keystore")  # key-sequence fixes found at start are persisted
-    await coord.start()
+    if coordinator_present:
+        try:
+            await coord.start()
+        except ZnpError as e:
+            # The port opened but the radio does not answer (dead stick, wrong device). Same
+            # degraded mode: everything else runs, the supervisor loop below keeps retrying.
+            log.error("coordinator not answering at start (%s) — broker and UI come up without it; retrying in the background", e)
+            with contextlib.suppress(Exception):
+                await transport.close()
+            coordinator_present = False
 
     if isinstance(broker, Broker):
         broker.audit = audit  # login failures / lockouts as security records (notifications, Activity)
@@ -109,6 +129,8 @@ async def run(cfg: Config, config_path: Path | None = None, *, managed: bool = F
 
     registry = Registry(cfg.data_dir / "devices.json")
     gw = Gateway(cfg, coord, broker, audit, registry, control_users=control_users)
+    if not coordinator_present:
+        gw.coordinator_online = False
     await gw.start()
 
     # Telegram notifications: the only outbound connection, behind the egress allow-list (off until enabled in the UI).

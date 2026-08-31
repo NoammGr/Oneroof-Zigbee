@@ -153,9 +153,9 @@ CASES = [
     ("oneroof_irblaster", "NoammGr", "IRBlaster", {1: ([0x0000, 0x0003, 0x0201, 0x0202, 0xFC00], [0x0019], 0x0301), 2: ([0x0006], [], 0x0002),
                                                     3: ([0x0402, 0x0405], [], 0x0302)}, "mains", True, None,
      "AC IR blaster", "climate",
-     {"target_temperature", "system_mode", "fan_mode", "swing", "local_temperature", "temperature", "humidity", "learn_key", "send_key", "protocol",
+     {"current_heating_setpoint", "system_mode", "fan_mode", "swing", "local_temperature", "temperature", "humidity", "learn_key", "send_key", "protocol",
       "hold", "last_result", "code_count", "temperature_offset", "led_brightness", "led_quiet"},
-     {"state", "countdown", "power_on_behavior", "running_state", "current_heating_setpoint", "current_cooling_setpoint"},
+     {"state", "countdown", "power_on_behavior", "running_state", "current_cooling_setpoint", "target_temperature"},
      {"climate": ("climate", None), "swing": ("switch", None), "protocol": ("select", None), "learn_key": ("text", None), "send_key": ("text", None),
       "hold": ("switch", None), "led_quiet": ("switch", None), "temperature_offset": ("number", None), "led_brightness": ("number", None),
       "last_result": ("sensor", None), "code_count": ("sensor", None), "temperature": ("sensor", "temperature"), "humidity": ("sensor", "humidity")}),
@@ -709,7 +709,7 @@ def test_plain_trv_is_unchanged():
 def test_irblaster_features_exposes_and_discovery():
     dev = irblaster()
     f = keys(dev)
-    tt = f["target_temperature"]
+    tt = f["current_heating_setpoint"]
     assert (tt["min"], tt["max"], tt["step"], tt["cluster"], tt["endpoint"]) == (16, 30, 1, 0x0201, 1)
     assert f["system_mode"]["values"] == ["off", "auto", "cool", "heat", "dry", "fan_only"]
     assert f["swing"]["base"] == "state" and f["swing"]["endpoint"] == 2 and f["swing"]["cluster"] == 0x0006 and f["swing"]["name"] == "Swing"
@@ -718,8 +718,8 @@ def test_irblaster_features_exposes_and_discovery():
     assert f["temperature_offset"]["category"] == "config" and f["temperature_offset"]["step"] == 0.1
     disc = ha(dev)
     cl = disc["climate"][1]
-    assert cl["temperature_state_template"] == "{{ value_json.target_temperature }}"
-    assert cl["temperature_command_template"] == '{"target_temperature": {{ value }} }' and (cl["min_temp"], cl["max_temp"], cl["temp_step"]) == (16, 30, 1)
+    assert cl["temperature_state_template"] == "{{ value_json.current_heating_setpoint }}"
+    assert cl["temperature_command_template"] == '{"current_heating_setpoint": {{ value }} }' and (cl["min_temp"], cl["max_temp"], cl["temp_step"]) == (16, 30, 1)
     assert cl["modes"] == ["off", "auto", "cool", "heat", "dry", "fan_only"] and cl["fan_modes"] == ["low", "medium", "high", "auto"]
     assert cl["fan_mode_command_template"] == '{"fan_mode": "{{ value }}" }'
     sw = disc["swing"][1]
@@ -732,7 +732,7 @@ def test_irblaster_features_exposes_and_discovery():
     from oneroof_zigbee.ha.exposes import exposes_for
     ex = {e.get("property") or e["type"]: e for e in exposes_for(dev)}
     climate = ex["climate"]["features"]
-    assert [x["property"] for x in climate] == ["local_temperature", "target_temperature", "system_mode", "fan_mode"]
+    assert [x["property"] for x in climate] == ["local_temperature", "current_heating_setpoint", "system_mode", "fan_mode"]
     assert ex["learn_key"]["type"] == "text" and ex["learn_key"]["access"] == 2
     assert ex["switch"]["features"][0]["property"] == "swing"
 
@@ -750,7 +750,7 @@ def test_irblaster_private_cluster_reports_decode_by_model_not_globally():
     assert quirks.decode_vendor_attributes(hue, 1, 0xFC00, [(0x0003, 0x42, b"x", None)]) == ({}, set())
     # standard thermostat / fan reports land on the family keys; both setpoints are one target
     st = quirks.translate_state(dev, 1, decode_attributes(0x0201, [(0x0011, 2400), (0x0012, 2400), (0x001C, 3), (0x0000, 2315)], dev.context))
-    assert st == {"target_temperature": 24.0, "system_mode": "cool", "local_temperature": 23.15}
+    assert st == {"current_heating_setpoint": 24.0, "system_mode": "cool", "local_temperature": 23.15}
     assert quirks.translate_state(dev, 1, decode_attributes(0x0202, [(0x0000, 5)])) == {"fan_mode": "auto"}
     assert quirks.translate_state(dev, 1, decode_attributes(0x0202, [(0x0000, 6)])) == {"fan_mode": "smart"}
     assert quirks.translate_state(dev, 2, decode_attributes(0x0006, [(0x0000, 1)])) == {"swing": "ON"}
@@ -788,7 +788,7 @@ async def test_gateway_irblaster_commands_write_the_right_attributes(tmp_path):
     reqs = [f for f in fake.requests if f.subsystem is Subsystem.AF and f.command == c.AfCmd.DATA_REQUEST]
     assert len(reqs) == 1 and reqs[0].data[2] == 2 and int.from_bytes(reqs[0].data[4:6], "little") == 0x0006 and reqs[0].data[10:][2] == 0x01  # swing = On on ep 2
     state = json.loads(broker.last(f"oneroof/zigbee/{dev.ieee_str}/state"))
-    assert state["system_mode"] == "cool" and state["target_temperature"] == 24 and state["fan_mode"] == "auto" and state["swing"] == "ON"
+    assert state["system_mode"] == "cool" and state["current_heating_setpoint"] == 24 and state["fan_mode"] == "auto" and state["swing"] == "ON"
     # in heat the single target goes to the heating setpoint
     writes.clear()
     await broker.inject(f"oneroof/zigbee/{dev.ieee_str}/set", b'{"system_mode": "heat", "target_temperature": 22}')
@@ -811,3 +811,70 @@ async def test_gateway_irblaster_commands_write_the_right_attributes(tmp_path):
     assert state["last_result"] == body.decode() and state["code_count"] == 8
     assert json.loads(broker.last("oneroof/zigbee/bridge/devices"))[0]["kind"] == "AC IR blaster"
     await t.close()
+
+
+async def test_gateway_gang_alias_routes_old_style_keys(tmp_path):
+    """A HomeKit bridge built on an older exposes generation may say state_left where the device
+    now exposes state_l1: the command routes by gang position instead of being dropped silently."""
+    fake, broker, gw, dev, t = await _gateway_with(tmp_path, lambda: mk("_TZ3000_owgcnkrh", "TS0012", {1: ([0x0000, 0x0004, 0x0005, 0x0006], [0x0019], 0x0100),
+                                                                                                        2: ([0x0004, 0x0005, 0x0006], [], 0x0100)}, power="mains", router=True, ieee=0x00158D0000000031))
+    from oneroof_zigbee.znp import commands as c
+    from oneroof_zigbee.znp.unpi import Subsystem
+    fake.requests.clear()
+    await broker.inject(f"oneroof/zigbee/{dev.ieee_str}/set", b'{"state_left": "ON"}')
+    reqs = [f for f in fake.requests if f.subsystem is Subsystem.AF and f.command == c.AfCmd.DATA_REQUEST]
+    assert len(reqs) == 1 and reqs[0].data[2] == 1, "state_left lands on gang 1 (state_l1)"
+    state = json.loads(broker.last(f"oneroof/zigbee/{dev.ieee_str}/state"))
+    assert state["state_l1"] == "ON" and "state_left" not in state
+    await t.close()
+
+
+async def test_gateway_color_accepts_hue_saturation_payload(tmp_path):
+    """HomeKit bridges publish zigbee2mqtt-style {"color":{"hue","saturation"}}; the gateway must
+    turn it into a move_to_hue_and_saturation, not silently ignore it."""
+    fake, broker, gw, dev, t = await _gateway_with(tmp_path, lambda: mk("IKEA of Sweden", "TRADFRI bulb E27 CWS", {1: ([0x0000, 0x0006, 0x0008, 0x0300], [], 0x0100)},
+                                                                        power="mains", router=True, ieee=0x00158D0000000032))
+    from oneroof_zigbee.znp import commands as c
+    from oneroof_zigbee.znp.unpi import Subsystem
+    fake.requests.clear()
+    await broker.inject(f"oneroof/zigbee/{dev.ieee_str}/set", b'{"color": {"hue": 120, "saturation": 50}}')
+    reqs = [f for f in fake.requests if f.subsystem is Subsystem.AF and f.command == c.AfCmd.DATA_REQUEST]
+    assert any(int.from_bytes(f.data[4:6], "little") == 0x0300 for f in reqs), "a colour-cluster command was sent"
+    await t.close()
+
+
+async def test_climate_device_is_polled_on_its_thermostat_cluster(tmp_path):
+    """A thermostat whose firmware refuses to report its setpoints (ZCL 0x8c) must still refresh:
+    the poll asks the thermostat cluster, not the on/off one, which says nothing about temperature."""
+    fake, broker, gw, dev, t = await _gateway_with(tmp_path, lambda: mk("NoammGr", "IRBlaster",
+        {1: ([0x0000, 0x0201, 0x0202], [], 0x0301), 2: ([0x0006], [], 0x0100)}, power="mains", router=True,
+        ieee=0x00158D0000000041))
+    from oneroof_zigbee.znp import commands as c
+    from oneroof_zigbee.znp.unpi import Subsystem
+    dev.last_seen = 0.0          # long silent
+    dev.reporting = [{"endpoint": 1, "cluster": 0x0201, "attribute": 0x0012, "status": "status 0x8c"}]
+    assert gw._poll_after(dev) == gw.UNREPORTED_POLL_AFTER_S, "a device that cannot report is polled often"
+    fake.requests.clear()
+    await gw._poll_silent_routers()
+    sent = [f for f in fake.requests if f.subsystem is Subsystem.AF and f.command == c.AfCmd.DATA_REQUEST]
+    assert sent, "the device was polled"
+    assert any(int.from_bytes(f.data[4:6], "little") == 0x0201 for f in sent), "on the thermostat cluster"
+    await t.close()
+
+
+def test_air_conditioner_description_is_what_other_apps_expect():
+    """The contract with everything downstream (Home Assistant, the One Roof Bridge on its way to
+    Apple Home): the one set temperature under the property name the world knows, whole degrees
+    only, the louver as a plain switch, and the on-board sensors as their own readings — so a
+    consumer that never heard of this device still shows temperature, humidity, swing and a
+    setpoint it can actually change."""
+    from oneroof_zigbee.ha.exposes import exposes_for
+    dev = irblaster()
+    ex = {e.get("property") or e["type"]: e for e in exposes_for(dev)}
+    sp = next(x for x in ex["climate"]["features"] if x["property"] == "current_heating_setpoint")
+    assert sp["value_step"] == 1 and sp["value_min"] == 16 and sp["value_max"] == 30, sp
+    assert sp["access"] & 2, "the setpoint must be settable"
+    assert "target_temperature" not in ex, "no invented property name that other apps cannot find"
+    assert ex["switch"]["features"][0]["property"] == "swing", "the louver is a switch anyone can toggle"
+    assert ex["temperature"]["type"] == "numeric" and ex["temperature"]["unit"] == "°C"
+    assert ex["humidity"]["type"] == "numeric" and ex["humidity"]["unit"] == "%"

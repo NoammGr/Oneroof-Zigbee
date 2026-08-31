@@ -875,9 +875,13 @@ def shape_features(dev: Device, generic: list[dict[str, Any]], info: DeviceInfo)
             ref = next((f for f in sps if f["base"] == "current_cooling_setpoint"), sps[0])
             at = out.index(sps[0])
             out = [f for f in out if f["base"] not in ("current_cooling_setpoint", "current_heating_setpoint")]
-            out.insert(at, _f("target_temperature", "Temperature", "Target temperature — one setpoint for cooling and heating", "numeric", "rw",
+            # An air conditioner has ONE set temperature, but it is published under the property
+            # name the rest of the world uses for a settable setpoint: every Zigbee consumer —
+            # Home Assistant, the One Roof Bridge on its way to Apple Home, anything speaking the
+            # usual dialect — looks for this name and would otherwise find no control at all.
+            out.insert(at, _f("current_heating_setpoint", "Temperature", "Target temperature — one setpoint for cooling and heating", "numeric", "rw",
                               icon="thermometer", category="control", endpoint=ref["endpoint"], cluster=0x0201,
-                              min=ref.get("min", 16), max=ref.get("max", 30), step=1, unit="°C"))
+                              min=ref.get("min", 16), max=ref.get("max", 30), step=1, unit="°C", single_setpoint=True))
 
     if q and q.ias_key:
         for f in out:
@@ -1005,10 +1009,9 @@ def translate_state(dev: Device, ep: int, changed: dict[str, Any], features: lis
             # a report from an endpoint we have no feature for (e.g. the shared ep 0xF2): keep the plain key
             key = k
         out[key or k] = v
-    if q and q.single_setpoint:
-        for k in ("current_cooling_setpoint", "current_heating_setpoint"):
-            if k in out:
-                out["target_temperature"] = out.pop(k)
+    if q and q.single_setpoint and "current_cooling_setpoint" in out:
+        # both ZCL setpoints mean the same thing here: report them as the one set temperature
+        out["current_heating_setpoint"] = out.pop("current_cooling_setpoint")
     if q and q.vendor == "Aqara":
         v = out.get("voltage")
         if isinstance(v, (int, float)) and not isinstance(v, bool) and v < 100:

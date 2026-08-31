@@ -1,5 +1,61 @@
 # Changelog
 
+## [2.0.0] — 2026-08-31
+
+A network that survives its own repair. Everything below came out of one long weekend of running
+this gateway on a real home: a key rotation that lost the house, a coordinator that had to be
+carried to a bench, and every failure it exposed on the way back.
+
+### Added
+- **Network health & recovery tools** in Maintenance: scan the air (beacons answer whatever key
+  anyone holds; the network state is parked for the seconds of the scan so the firmware actually
+  reports them) and every roll-back — to the previous key on the radio or in the keystore, to the
+  key inside an encrypted backup, or to the key of a previous setup's files, read in place.
+- **State is fetched, not remembered.** A few seconds after every start the gateway asks each
+  device that can answer what it actually is — on or off, how bright, which setpoint and mode,
+  where a cover sits — and publishes that. Devices that answer are marked online at once.
+- Starting **without the dongle** no longer crash-loops the add-on: the broker, the panel and the
+  registry come up, the banner says the coordinator is offline, and the port is retried for ever.
+
+### Fixed — the network
+- A device that announces a **leave with rejoin** — routine Zigbee life — was deleted and then
+  evicted as an intruder when it came back, leaving it searching for a network for ever. A leave
+  now marks a device offline and keeps everything; forgetting one is the user's decision.
+- A **stalled rotation** re-offered the key to unreachable devices every thirty seconds for hours;
+  the gap now grows per device, so a fragile device is never flooded with security frames.
+- A key restored onto the stick **from outside** is no longer wiped by a start-up re-formation,
+  and a fresh formation is never claimed on an identity the radio refused.
+- Two different keys sharing one **sequence number** are detected and repaired by re-labelling.
+- Firmware that refuses attribute reporting is retried with a one-second minimum and, if it still
+  refuses, polled often enough that a switch pressed by hand still reaches the app. A thermostat
+  is polled on its thermostat cluster, not on on/off, which says nothing about temperature.
+- Every **join re-runs the interview**: a device that rejoins was factory-reset, and its
+  reporting, bindings and alarm enrolment died with its old life.
+
+### Fixed — what you see
+- **Availability is evidence, not memory**: a green badge survives a restart only for a device
+  heard within the hour (mains) or the day (battery); everything else starts offline and turns
+  green the moment it is heard.
+- The **dashboard** is a grid of equal cards showing what a device is for, at most five rows, with
+  the settings on the device page where they belong — measured by a browser test: one height for
+  every card, nothing spilling out, no label under the control beside it.
+- The offline banner keeps to a slim strip instead of claiming the page; the map's link table
+  drops duplicates and explains what a row means.
+
+### Fixed — what other apps see
+- An air conditioner's single setpoint is published under the **standard property name** every
+  consumer understands, with its whole-degree step and range, instead of a name we invented that
+  left Apple Home with no temperature control at all. The old name is still accepted on `/set`.
+- Multi-gang commands from an older description (`state_left` where the device now says
+  `state_l1`) are routed by gang position instead of dropped without a trace, and colour commands
+  in the usual dialect are understood.
+- A device whose description cannot be built keeps an empty definition instead of vanishing from
+  downstream apps, and device names may no longer contain the characters that break MQTT topics.
+
+### Security
+- The radio's **network information base** never reaches a log: it carries key-descriptor fields
+  on some stack generations, and the air scan moves it through NV.
+
 ## [1.10.16] — 2026-08-31
 
 ### Fixed — the offline banner and the network map

@@ -143,8 +143,31 @@ class Gateway:
         self._load_activity()
         self._load_profiles()
         self._monitor_task = asyncio.create_task(self._monitor_loop(), name="monitor")
+        self._refresh_task = asyncio.create_task(self._refresh_all_states(), name="state-refresh")
         self._resume_rotation()
         await self.broker.publish(f"{b}/bridge/state", self.topics.bridge_state_payload(True), retain=True)
+        # Availability is evidence, not memory. The registry remembers what was true when the
+        # gateway last ran, and that memory used to be restored as fact — devices that were never
+        # re-paired kept a green badge for days. At start a badge is only kept for a device we
+        # actually heard from recently, or one that has spoken since this network was formed;
+        # everything else starts offline and turns green the moment it is heard again.
+        formed_now = getattr(self.coord, "network_was_formed", False)
+        born = getattr(self.coord.secrets, "formed_ts", None) or 0
+        now = time.time()
+        stale = []
+        for d in self.registry.all():
+            if not d.available:
+                continue
+            heard = d.last_seen or 0
+            grace = self.STARTUP_ONLINE_MAINS_S if (d.is_router or d.rx_on_when_idle) else self.STARTUP_ONLINE_BATTERY_S
+            if formed_now or heard < born or now - heard > grace:
+                stale.append(d)
+        for d in stale:
+            d.available = False
+            await self._publish_availability(d, False)
+        if stale:
+            self.registry.save()
+            self.audit.event("devices_marked_offline_at_start", count=len(stale))
         await self._publish_bridge_info()
         if self.cfg.homeassistant.discovery:
             for topic, payload in bridge_discovery(b, self.cfg.homeassistant.discovery_prefix, legacy=self.legacy):
@@ -217,6 +240,9 @@ class Gateway:
             log.debug("profiles.json not saved", exc_info=True)
 
     ROUTER_POLL_AFTER_S = 900  # a mains device silent this long is asked for one attribute
+    # A device whose firmware refused to configure reporting cannot announce a physical press.
+    # Ask it often enough that its tile still follows the wall switch within about a minute.
+    UNREPORTED_POLL_AFTER_S = 60
 
     async def _monitor_loop(self) -> None:
         tick = 0
@@ -224,14 +250,77 @@ class Gateway:
             await asyncio.sleep(60)
             tick += 1
             try:
-                self.monitor.sweep([(d.ieee, bool(d.is_router or d.rx_on_when_idle)) for d in self.registry.all()])
+                gone = self.monitor.sweep([(d.ieee, bool(d.is_router or d.rx_on_when_idle)) for d in self.registry.all()])
+                for ieee, kind in gone:
+                    if kind != "went_silent":
+                        continue
+                    dev = self.registry.get(ieee)
+                    if dev and dev.available:
+                        # The green badge must tell the truth: silent past its own typical
+                        # rhythm means offline until it is heard again.
+                        dev.available = False
+                        await self._publish_availability(dev, False)
                 self._save_profiles()
+                await self._poll_silent_routers()  # cheap: it only acts on devices past their own interval
                 if tick % 5 == 0:
-                    await self._poll_silent_routers()
                     await self.coord.refresh_frame_counter()
                     self._maybe_scheduled_rotation()
             except Exception:
                 log.debug("monitor sweep failed", exc_info=True)
+
+    _REFRESH_CLUSTERS = (0x0006, 0x0008, 0x0102, 0x0201, 0x0202, 0x0300)  # what a device IS, not what it measures
+
+    async def _refresh_state(self, dev: Device) -> bool:
+        """Ask a device what it actually is right now — switched on or off, how bright, which
+        setpoint, where the cover sits — and publish the answer. A device keeps its own state
+        across our restarts and its own power cuts; the gateway must not carry a remembered one
+        around as if it were true."""
+        changed = False
+        for ep in dev.endpoints.values():
+            for cluster in self._REFRESH_CLUSTERS:
+                attrs = _READ_ON_JOIN.get(cluster) if cluster in ep.in_clusters else None
+                if not attrs:
+                    continue
+                try:
+                    state = await self.read_attributes(dev, ep.id, cluster, list(attrs))
+                except (ZnpError, asyncio.TimeoutError):
+                    return changed  # asleep or gone: leave the rest alone
+                if state and self._apply_changes(dev, quirks.translate_state(dev, ep.id, state)):
+                    changed = True
+        if changed or dev.endpoints:
+            dev.last_seen = time.time()
+            if not dev.available:
+                dev.available = True
+                await self._publish_availability(dev, True)
+            await self._publish_state(dev)
+        return changed
+
+    async def _refresh_all_states(self) -> None:
+        """After a restart of ours, ask every device that can answer where it stands. Sleepy
+        battery devices cannot answer and are left to report in their own time."""
+        await asyncio.sleep(8.0)  # let the network settle first
+        asked = 0
+        for dev in self.registry.all():
+            if not (dev.is_router or dev.rx_on_when_idle) or not dev.nwk or not dev.endpoints:
+                continue
+            if dev.ieee in self._interview_tasks:
+                continue
+            try:
+                await self._refresh_state(dev)
+                asked += 1
+            except Exception:  # noqa: BLE001 - one difficult device must not stop the sweep
+                log.debug("%s: state refresh failed", dev.ieee_str, exc_info=True)
+            await asyncio.sleep(0.4)  # a queue, not a burst
+        if asked:
+            self.audit.event("device_states_refreshed", devices=asked)
+
+    def _poll_after(self, dev: Device) -> float:
+        """How long a device may stay silent before we ask it for an attribute. A device whose
+        reporting the firmware refused cannot tell us about a physical press, so it is asked far
+        more often than one that reports for itself."""
+        if any(not str(r.get("status", "")).startswith("ok") for r in (dev.reporting or [])):
+            return self.UNREPORTED_POLL_AFTER_S
+        return self.ROUTER_POLL_AFTER_S
 
     async def _poll_silent_routers(self) -> None:
         """Mains devices that do not report by themselves (not yet bound, or models that only answer)
@@ -241,16 +330,23 @@ class Gateway:
         for dev in self.registry.all():
             if not (dev.is_router or dev.rx_on_when_idle) or not dev.nwk or not dev.endpoints:
                 continue
-            if dev.last_seen and now - dev.last_seen < self.ROUTER_POLL_AFTER_S:
+            if dev.last_seen and now - dev.last_seen < self._poll_after(dev):
                 continue
             if dev.ieee in self._interview_tasks:
                 continue
-            ep = next((e for e in dev.endpoints.values() if 0x0006 in e.in_clusters), None) or dev.primary_endpoint()
+            # Ask for what this device actually is. A thermostat that cannot report its setpoints
+            # (some firmware refuses: ZCL "unreportable attribute") would otherwise never refresh
+            # its temperature or mode at all, because on/off says nothing about either.
+            ep = next((e for e in dev.endpoints.values() if 0x0201 in e.in_clusters), None)
+            attrs = [0x0000, 0x0011, 0x0012, 0x001C]  # local temperature, both setpoints, system mode
+            cluster = 0x0201
             if ep is None:
-                continue
-            cluster, attr = (0x0006, 0x0000) if 0x0006 in ep.in_clusters else (0x0000, 0x0004)
+                ep = next((e for e in dev.endpoints.values() if 0x0006 in e.in_clusters), None) or dev.primary_endpoint()
+                if ep is None:
+                    continue
+                cluster, attrs = (0x0006, [0x0000]) if 0x0006 in ep.in_clusters else (0x0000, [0x0004])
             try:
-                state = await self.read_attributes(dev, ep.id, cluster, [attr])
+                state = await self.read_attributes(dev, ep.id, cluster, attrs)
                 if state:
                     self._apply_changes(dev, state)
                     await self._publish_state(dev)
@@ -318,11 +414,11 @@ class Gateway:
             self._rotation.note_new_device(dev)
         if j.plain_join and self.cfg.zigbee.rotate_key_after_plain_join:
             dev.context["rotate_after_join"] = True
-        if not dev.interviewed:
-            self._start_interview(dev)
-        else:
-            await self._publish_bridge_info()
-            await self._maybe_rotate_after_join(dev)
+        # A device that JOINS was factory-reset or re-paired: its reporting configuration,
+        # bindings and IAS enrolment died with its old life, even when the registry remembers it
+        # as interviewed. Re-run the interview on every join — it is idempotent, and the device
+        # keeps its name and identity either way.
+        self._start_interview(dev)
 
     async def _maybe_rotate_after_join(self, dev: Device) -> None:
         """A device paired without an install code received the network key under the public key,
@@ -384,10 +480,23 @@ class Gateway:
         except ValueError as e:
             log.info("policy rotation not started: %s", e)
 
-    async def _on_left(self, ieee: int, nwk: int) -> None:
+    async def _on_left(self, ieee: int, nwk: int, rejoin: bool = False) -> None:
+        """A device announced that it is leaving. That is routine Zigbee life, not a goodbye: a
+        leave with the rejoin flag IS how a device re-attaches (new parent, recovered link, a key
+        change), and even a plain leave is usually someone resetting a device that will come back
+        wanting its name and its room. So the device is kept and marked offline. Forgetting one is
+        the user's decision (Remove), never a side effect of a frame on the air — and because it
+        stays known, its rejoin is recognised instead of being evicted as an intruder."""
         dev = self.registry.get(ieee)
-        if dev:
-            await self._forget(dev)
+        if dev is None:
+            return
+        was = dev.available
+        dev.available = False
+        self.registry.save()
+        if was:
+            await self._publish_availability(dev, False)
+        self.audit.event("device_offline_after_leave", ieee=dev.ieee_str, rejoin=rejoin)
+        self._emit_device_event("offline", dev)
 
     def _start_interview(self, dev: Device) -> None:
         old = self._interview_tasks.pop(dev.ieee, None)
@@ -550,22 +659,40 @@ class Gateway:
         rows += [r for r in quirks.extra_reporting(dev).get(cluster, ()) if r[0] not in have]
         return rows
 
+    async def _configure_reporting(self, dev: Device, ep: int, cluster: int,
+                                   rows: list[tuple[int, Any, int, int, Any]]) -> str:
+        records = [gc.ReportingConfigRecord(attr=a, dtype=int(dt), min_interval=mn, max_interval=mx, reportable_change=ch)
+                   for a, dt, mn, mx, ch in rows]
+        seq = self._next_seq()
+        rsp = await self._request(dev, ep, cluster, gc.build_configure_reporting(seq, records), seq, gc.CMD_CONFIGURE_REPORTING_RSP)
+        try:
+            dec = gc.decode_global_command(rsp)
+            bad = [r for r in getattr(dec, "records", []) if getattr(r, "status", 0) != 0]
+            if bad:
+                return f"status {bad[0].status:#04x}"
+        except Exception:
+            pass
+        return "ok"
+
     async def _setup_reporting(self, dev: Device, ep: int, cluster: int) -> None:
         rows = self._reporting_records(dev, cluster)
         try:
             await self.coord.bind(dev.nwk, dev.ieee, ep, cluster)
-            records = [gc.ReportingConfigRecord(attr=a, dtype=int(dt), min_interval=mn, max_interval=mx, reportable_change=ch)
-                       for a, dt, mn, mx, ch in rows]
-            seq = self._next_seq()
-            rsp = await self._request(dev, ep, cluster, gc.build_configure_reporting(seq, records), seq, gc.CMD_CONFIGURE_REPORTING_RSP)
-            status = "ok"
-            try:
-                dec = gc.decode_global_command(rsp)
-                bad = [r for r in getattr(dec, "records", []) if getattr(r, "status", 0) != 0]
-                if bad:
-                    status = f"status {bad[0].status:#04x}"
-            except Exception:
-                pass
+            status = await self._configure_reporting(dev, ep, cluster, rows)
+            if status != "ok":
+                # Some firmware refuses a zero minimum interval with a generic failure — Aqara wall
+                # switches do it on their secondary gang. One second between reports is immediate
+                # in practice and is accepted where zero is not, so it is worth one retry before
+                # the device is written off as unable to report.
+                retry = [(a, dt, max(1, mn), mx, ch) for a, dt, mn, mx, ch in rows]
+                if retry != rows:
+                    again = await self._configure_reporting(dev, ep, cluster, retry)
+                    log.info("%s: reporting on endpoint %d %s refused (%s); retry with a one second minimum: %s",
+                             dev.ieee_str, ep, zcl.cluster_name(cluster), status, again)
+                    if again == "ok":
+                        rows, status = retry, "ok"
+                    else:
+                        status = f"{status} (retry {again})"
             self._record_bindings(dev, ep, cluster, "coordinator", 1)
             for a, _dt, mn, mx, ch in rows:
                 self._record_reporting(dev, ep, cluster, a, mn, mx, ch, status)
@@ -1002,6 +1129,8 @@ class Gateway:
                 entry.update(device_description(d))  # the exposes description other One Roof apps build on
             except Exception:
                 log.exception("exposes for %s", d.ieee_str)
+                entry.setdefault("definition", {"vendor": d.vendor or "Zigbee", "model": d.model or "unknown",
+                                                "description": d.kind, "exposes": []})
             devices.append(entry)
         await self.broker.publish(f"{self.base}/bridge/devices", json.dumps(devices).encode(), retain=True)
 
@@ -1106,8 +1235,19 @@ class Gateway:
         for k, v in cmd.items():
             if k in ("endpoint", "transition"):
                 continue
-            if k == "heating_setpoint":  # accepted alias of the published key
+            if k in ("heating_setpoint", "target_temperature"):  # accepted aliases of the published key
                 k = "current_heating_setpoint"
+            if k not in by_key and k.startswith("state_"):
+                # Historical gang aliases: a consumer built on an older exposes generation may say
+                # state_left where this device now exposes state_l1 (or the reverse). Route by gang
+                # position instead of dropping the tap silently.
+                order = {"left": 0, "l1": 0, "1": 0, "right": 1, "l2": 1, "2": 1,
+                         "center": 2, "middle": 2, "l3": 2, "3": 2, "l4": 3, "4": 3}
+                idx = order.get(k[6:])
+                gangs = [g["key"] for g in feats if g.get("base") == "state" and g.get("access") == "rw"]
+                if idx is not None and idx < len(gangs) and gangs[idx] != k:
+                    log.info("command key %r mapped to gang %r on %s", k, gangs[idx], dev.friendly_name)
+                    k = gangs[idx]
             f = by_key.get(k)
             if f is not None and f.get("base"):
                 ep = forced_ep if forced_ep is not None else (f["endpoint"] or ep_obj.id)
@@ -1115,6 +1255,8 @@ class Gateway:
                 if f["cluster"] == vz.TUYA_CLUSTER:
                     per_ep[ep].setdefault("__dp__", {})[k] = v
             else:
+                log.warning("command key %r is not a feature of %s — sent to its primary endpoint as-is and may be ignored",
+                            k, dev.friendly_name)
                 per_ep.setdefault(forced_ep if forced_ep is not None else ep_obj.id, {})[k] = v
         transition = int(float(cmd.get("transition", 0)) * 10)
         for ep, body in per_ep.items():
@@ -1178,22 +1320,25 @@ class Gateway:
                 self._apply_changes(dev, {key_of("color"): {"x": float(col["x"]), "y": float(col["y"])}})
             elif "h" in col and "s" in col:
                 await send(0x0300, "move_to_hue_and_saturation", {"hue": int(col["h"] * 254 / 360), "saturation": int(col["s"] * 254 / 100), "transition_time": transition})
+            elif "hue" in col and "saturation" in col:  # zigbee2mqtt-style payload, sent by HomeKit bridges
+                await send(0x0300, "move_to_hue_and_saturation", {"hue": int(float(col["hue"]) * 254 / 360), "saturation": int(float(col["saturation"]) * 254 / 100), "transition_time": transition})
         if "position" in cmd and 0x0102 in ins:
             pos = max(0, min(100, int(cmd["position"])))
             await send(0x0102, "go_to_lift_percentage", {"percentage": 100 - pos})
         if "current_heating_setpoint" in cmd and 0x0201 in ins:
-            await self._write_attr(dev, ep, 0x0201, 0x0012, zcl.DataType.int16, int(round(float(cmd["current_heating_setpoint"]) * 100)))
-            self._apply_changes(dev, {key_of("current_heating_setpoint"): float(cmd["current_heating_setpoint"])})
+            value = float(cmd["current_heating_setpoint"])
+            attr = 0x0012
+            if feats.get("current_heating_setpoint", {}).get("single_setpoint"):
+                # One set temperature (an air conditioner keeps both ZCL setpoints equal): write the
+                # one that matches the mode being set or already in force — heating in heat, cooling
+                # otherwise.
+                mode = str(cmd.get("system_mode") or dev.state.get(key_of("system_mode")) or "")
+                attr = 0x0012 if mode == "heat" else 0x0011
+            await self._write_attr(dev, ep, 0x0201, attr, zcl.DataType.int16, int(round(value * 100)))
+            self._apply_changes(dev, {key_of("current_heating_setpoint"): value})
         if "current_cooling_setpoint" in cmd and 0x0201 in ins:
             await self._write_attr(dev, ep, 0x0201, 0x0011, zcl.DataType.int16, int(round(float(cmd["current_cooling_setpoint"]) * 100)))
             self._apply_changes(dev, {key_of("current_cooling_setpoint"): float(cmd["current_cooling_setpoint"])})
-        if "target_temperature" in cmd and 0x0201 in ins:
-            # one target temperature (air conditioners keep both ZCL setpoints equal): write the setpoint
-            # that matches the mode being set or in force — heating in heat, cooling otherwise
-            mode = str(cmd.get("system_mode") or dev.state.get(key_of("system_mode")) or "")
-            attr = 0x0012 if mode == "heat" else 0x0011
-            await self._write_attr(dev, ep, 0x0201, attr, zcl.DataType.int16, int(round(float(cmd["target_temperature"]) * 100)))
-            self._apply_changes(dev, {key_of("target_temperature"): float(cmd["target_temperature"])})
         if "system_mode" in cmd and 0x0201 in ins:
             mode = str(cmd["system_mode"])
             allowed = feats.get("system_mode", {}).get("values") or list(zcl.SYSTEM_MODE_BY_NAME)
@@ -1360,6 +1505,10 @@ class Gateway:
 
     CONTROL_ACTIONS = ("permit_join", "rotate_network_key", "remove", "scan_air")
     ROTATE_AFTER_JOIN_QUIET_S = 120.0  # one rotation per pairing session, not one per device
+    # At start a green badge is only kept for a device heard this recently. Mains devices talk
+    # often; battery devices may sleep for hours between reports, so they get a longer grace.
+    STARTUP_ONLINE_MAINS_S = 3600.0
+    STARTUP_ONLINE_BATTERY_S = 86400.0
     _rotate_debounce: "asyncio.Task[None] | None" = None
 
     async def _on_request(self, topic: str, payload: bytes, user: str | None = None) -> None:

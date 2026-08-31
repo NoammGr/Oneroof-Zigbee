@@ -60,6 +60,7 @@ class NetworkSecrets:
     previous_key_seq: int | None = None        # the sequence the devices know the previous key by
     pending_rotation: dict[str, Any] | None = None  # a rotation in progress (new key, sequence, who has it): resumed after a restart
     last_rotation_ts: float | None = None  # when the network key last changed — the scheduled-rotation clock
+    formed_ts: float | None = None  # when this network was formed — devices silent since then cannot be online
 
     @property
     def tc_link_key(self) -> bytes:

@@ -157,7 +157,14 @@ async def test_transport_debug_log_never_shows_key_material(caplog):
     from oneroof_zigbee.security.installcode import crc16
     await t.request(c.appcnf_set_default_centralized_key(False, key + crc16(key).to_bytes(2, "little")))
     await t.request(c.nv_read(c.NvId.PANID), check_status=False)  # harmless items stay readable
+    # The NIB travels through NV during an air scan and carries key-descriptor fields on some
+    # stack generations: its bytes must never reach a log either.
+    nib = bytes(range(0x40, 0x70))
+    await t.request(c.nv_write(c.NvId.NIB, nib))
+    await t.request(c.nv_read(c.NvId.NIB), check_status=False)
+    await t.request(c.nv_delete(c.NvId.NIB, len(nib)), check_status=False)
     text = caplog.text
+    assert nib.hex() not in text, "the NIB blob was printed"
     assert key.hex() not in text and "<redacted>" in text
     assert "RX SRSP SYS:0x08 <redacted>" in text
     assert any(line for line in text.splitlines() if "TX SYS:0x08 " in line and "<redacted>" not in line), "PANID read not redacted"

@@ -284,3 +284,37 @@ async def test_b07_datapoints_tab_teaches_a_tuya_model(stack, browser):  # noqa:
 def _gw(s: Stack):
     from tests.test_e2e import _find_gateway
     return _find_gateway(s.ui)
+
+
+async def test_b08_dashboard_cards_are_one_size_and_nothing_overlaps(stack, browser):  # noqa: F811
+    """The dashboard is a grid of equal cards: same height whatever the device, every card's
+    content inside its own box, and no label running under the control beside it."""
+    from tests.sim import SimDevice
+    s, b = stack, browser
+    base = f"http://127.0.0.1:{s.ui.port}/"
+    # two devices of different shape: a plug with power metering and a battery sensor
+    for dev in (plug(PLUG_IEEE, PLUG_NWK),
+                SimDevice(0x00158D00000000C8, 0x7C08, "LUMI", "lumi.weather",
+                          [0x0000, 0x0001, 0x0402, 0x0405, 0x0403], [], 0x0302, router=False, power_source=3)):
+        if _gw(s).registry.get(dev.ieee) is None:
+            await api(s, "POST", "/api/permit_join", {"seconds": 30})
+            s.world.announce(s.world.add(dev))
+            await wait_for(lambda i=dev.ieee: (lambda x: x and x.interviewed)(_gw(s).registry.get(i)), 8)
+    await b.go(base, "dashboard", 2.5)
+    await asyncio.sleep(1.5)  # cards fill themselves from the exposes endpoint
+    n = await b.js("document.querySelectorAll('.dcard').length")
+    assert n >= 2, f"need a few devices to compare, saw {n}"
+    sizes = await b.js("(()=>{const h=[...document.querySelectorAll('.dcard')].map(c=>c.offsetHeight);"
+                       "return h.length+':'+[...new Set(h)].join(',');})()")
+    assert len(sizes.split(":")[1].split(",")) == 1, f"cards differ in height: {sizes}"
+    assert await b.js("[...document.querySelectorAll('.dbody')].every(x=>x.scrollHeight<=x.clientHeight+1)"), \
+        "a card's content spills out of its box"
+    overlap = await b.js("""(()=>{for(const r of document.querySelectorAll('.dcard .frow')){
+        const fn=r.querySelector('.fn'),ctl=r.lastElementChild;
+        if(!fn||!ctl||ctl===fn)continue;
+        const a=fn.getBoundingClientRect(),c=ctl.getBoundingClientRect();
+        if(a.right>c.left+1)return 'overlap: '+fn.textContent.trim();}
+      return 'ok';})()""")
+    assert overlap == "ok", overlap
+    assert await b.js("document.documentElement.scrollWidth <= window.innerWidth"), "dashboard overflows sideways"
+    assert b.errors == [], f"console errors: {b.errors}"

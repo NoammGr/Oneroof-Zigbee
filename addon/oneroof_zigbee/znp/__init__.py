@@ -1,5 +1,5 @@
 from .coordinator import Coordinator, IncomingAps, JoinedDevice
-from .transport import Transport, ZnpError, ZnpStatusError, ZnpTimeout, open_serial
+from .transport import AbsentTransport as AbsentTransport, Transport, ZnpError, ZnpStatusError, ZnpTimeout, open_serial
 from .unpi import Frame, FrameType, Parser, Subsystem
 
 __all__ = [

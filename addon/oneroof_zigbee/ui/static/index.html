@@ -258,8 +258,15 @@ dialog .acts{display:flex;gap:8px;justify-content:flex-end;margin-top:16px}
 .btn.text:hover:not(:disabled){background:var(--danger-soft);border-color:transparent}
 .plain-note{font-size:12px;color:var(--danger)}
 /* ---------- dashboard ---------- */
-.dgrid{columns:300px;column-gap:16px}
-.dcard{break-inside:avoid;margin-bottom:16px;padding:14px 16px;display:flow-root}
+.dgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(272px,1fr));gap:16px;align-items:stretch}
+.dcard{height:288px;padding:14px 16px;display:flex;flex-direction:column;min-width:0}
+.dbody{flex:1;min-height:0;overflow:hidden}
+.dcard .frow{padding:5px 0;font-size:12.5px}
+.dcard .frow .fn{min-width:76px}
+.dcard .frow>:last-child{flex:0 1 auto;min-width:0;max-width:64%}
+.dcard .range{max-width:150px}
+.dcard select,.dcard input[type=number],.dcard input[type=text]{padding:3px 8px;font-size:12px}
+.dmore{font-size:11.5px;color:var(--mute)}
 .dcard.hl{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
 .dcard.dim{opacity:.4}
 .dh{display:flex;align-items:center;gap:10px;margin-bottom:6px}
@@ -279,7 +286,7 @@ dialog .acts{display:flex;gap:8px;justify-content:flex-end;margin-top:16px}
 .sw i::after{content:'';position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:#fff;transition:transform .15s;box-shadow:0 1px 2px rgba(0,0,0,.25)}
 .sw input:checked+i{background:var(--ok)}.sw input:checked+i::after{transform:translateX(16px)}
 .sw input:focus-visible+i{outline:2px solid var(--accent);outline-offset:2px}
-.dfoot{display:flex;gap:6px;align-items:center;margin-top:10px;padding-top:8px;border-top:1px solid var(--line2)}
+.dfoot{display:flex;gap:6px;align-items:center;margin-top:auto;padding-top:8px;border-top:1px solid var(--line2)}
 .dfoot .grow{flex:1}.dfoot .back{margin:0}
 /* ---------- activity ---------- */
 .arow{display:grid;grid-template-columns:32px minmax(120px,200px) 150px minmax(0,1fr);gap:12px;align-items:center;padding:9px 14px;border-bottom:1px solid var(--line2)}
@@ -291,7 +298,7 @@ dialog .acts{display:flex;gap:8px;justify-content:flex-end;margin-top:16px}
 .arow .chg b{font-weight:600;color:var(--mute)}
 .prog{height:8px;background:var(--line);border-radius:4px;overflow:hidden}.prog i{display:block;height:100%;background:var(--accent);transition:width .4s}
 @media (max-width:760px){
-  .dgrid{columns:1}
+  .dgrid{grid-template-columns:1fr}
   .arow{grid-template-columns:28px minmax(0,1fr);gap:6px 10px}.arow .chg{grid-column:1/-1}.arow .sub{font-size:11px}
   .tabs{overflow-x:auto;padding-left:2px;padding-right:2px}.tabs a{padding:5px 4px;font-size:10px;letter-spacing:-.01em;flex:1;min-width:0;white-space:nowrap}
   .shell{grid-template-columns:minmax(0,1fr)}
@@ -754,11 +761,26 @@ views.dashboard={
     h.className='dgrid';for(const d of list)h.append(this.card(d));this.applyHl();
   },
   applyHl(){const q=this.hl;this.cards.forEach(c=>{const m=!!q&&[c.d.friendly_name,c.d.model,c.d.manufacturer,c.d.ieee].join(' ').toLowerCase().includes(q);c.card.classList.toggle('hl',m);c.card.classList.toggle('dim',!!q&&!m);});},
+  // What belongs on a card at a glance, in the order it is worth seeing. Settings (power-on
+  // behaviour, countdown, indicator, child lock, colour) and IR tooling live on the device page:
+  // a card that shows everything shows nothing.
+  DASH_ORDER:['state','brightness','local_temperature','target_temperature','current_heating_setpoint','current_cooling_setpoint',
+              'system_mode','fan_mode','position','cover','temperature','humidity','illuminance','occupancy','contact','smoke',
+              'water_leak','gas','vibration','pressure','power','energy','voltage','current','action'],
+  DASH_ROWS:5,
+  headline(ex){
+    const rank=f=>{const i=this.DASH_ORDER.indexOf(f.base||f.key);return i<0?99:i;};
+    const usable=ex.filter(f=>f.category!=='diagnostic'&&f.category!=='config'&&f.category!=='ir'&&f.key!=='identify'&&(f.base||f.key)!=='battery');
+    let pick=usable.filter(f=>rank(f)<99).sort((a,b)=>rank(a)-rank(b)||String(a.key).localeCompare(String(b.key)));
+    if(!pick.length)pick=usable;                       // an unusual device still shows something
+    return {rows:pick.slice(0,this.DASH_ROWS),hidden:Math.max(0,usable.length-Math.min(pick.length,this.DASH_ROWS))};
+  },
   card(d){
-    const body=el('div');const lqi=el('span',{class:'badge',title:'Link quality'}),bat=el('span',{class:'badge hidden',title:'Battery'}),avail=el('i',{class:'dot'});
-    const card=el('div',{class:'card dcard','data-ieee':d.ieee},el('div',{class:'dh'},el('div',{class:'thumb'},svg(catGlyph(d))),el('a',{href:dlink(d),text:d.friendly_name||d.ieee,title:(d.model||'')+' · open device'}),avail),body,
-      el('div',{class:'dfoot'},lqi,bat,el('span',{class:'grow'}),el('a',{class:'back',href:dlink(d)},'Open ',svg('open'))));
-    const c={d,card,body,ups:[],foot(){const st=d.state||{};clear(lqi).append(svg('signal'),String(d.lqi??'—'));avail.className='dot'+(d.available?' on':'');avail.title=d.available?'online':'offline';if(typeof st.battery==='number'){bat.classList.remove('hidden');clear(bat).append(svg('battery'),st.battery+'%');}}};
+    const body=el('div',{class:'dbody'});const lqi=el('span',{class:'badge',title:'Link quality'}),bat=el('span',{class:'badge hidden',title:'Battery'}),avail=el('i',{class:'dot'});
+    const more=el('span',{class:'dmore'});
+    const card=el('div',{class:'card dcard','data-ieee':d.ieee},el('div',{class:'dh'},el('div',{class:'thumb'},svg(catGlyph(d))),el('a',{href:dlink(d),text:d.friendly_name||d.ieee,title:(d.friendly_name||d.ieee)+(d.model?' · '+d.model:'')+' · open device'}),avail),body,
+      el('div',{class:'dfoot'},lqi,bat,more,el('span',{class:'grow'}),el('a',{class:'back',href:dlink(d)},'Open ',svg('open'))));
+    const c={d,card,body,more,ups:[],foot(){const st=d.state||{};clear(lqi).append(svg('signal'),String(d.lqi??'—'));avail.className='dot'+(d.available?' on':'');avail.title=d.available?'online':'offline';if(typeof st.battery==='number'){bat.classList.remove('hidden');clear(bat).append(svg('battery'),st.battery+'%');}}};
     c.foot();this.cards.set(d.ieee,c);this.fill(c);return card;
   },
   exposes(d){return S.exposes[d.ieee]||(S.exposes[d.ieee]=api(dpath(d,'')).then(full=>{const m=S.devMap.get(d.ieee);if(m)Object.assign(m,full);return full.exposes||[];}).catch(e=>{delete S.exposes[d.ieee];throw e;}));},
@@ -766,7 +788,8 @@ views.dashboard={
     const d=c.d;let ex;c.body.append(el('div',{class:'sub',text:'Loading…'}));
     try{ex=await this.exposes(d);}catch(e){clear(c.body).append(el('div',{class:'sub',text:e.message}));return;}
     if(this.cards.get(d.ieee)!==c)return;clear(c.body);c.ups=[];
-    const list=ex.filter(f=>f.category!=='diagnostic'&&f.key!=='identify');
+    const {rows:list,hidden}=this.headline(ex);
+    if(c.more)c.more.textContent=hidden?'+'+hidden+' more':'';
     if(!list.length){c.body.append(el('div',{class:'sub',text:d.interviewed===false?(d.interview_error?'Not interviewed yet':'Interviewing…'):(stateSummary(d.state)||'No features exposed.')}));return;}
     for(const f of list){const r=featureControl(d,f,{compact:true,set:p=>api(dpath(d,'/set'),p).catch(e=>toast(e.message,true))});c.ups.push(r.update);c.body.append(el('div',{class:'frow','data-key':f.key},el('div',{class:'fn',title:f.description||''},svg(featIcon(f)),el('span',{text:f.name||f.key})),r.ctrl));}
   },
@@ -1069,7 +1092,7 @@ views.map={
     m.append(el('div',{class:'bar'},this.refreshBtn,el('span',{class:'sub',text:'Walking the tables takes a few seconds per router.'})));
     this.cv=el('canvas',{id:'mapc'});m.append(this.cv);
     m.append(el('div',{class:'legend'},el('span',null,el('i',{style:'background:var(--ink)'}),'coordinator'),el('span',null,el('i',{style:'background:var(--accent)'}),'router'),el('span',null,el('i',{style:'background:var(--faint)'}),'end device')));
-    this.tableHost=el('div');m.append(el('h2',{text:'Links'}),this.tableHost);
+    this.tableHost=el('div');m.append(el('h2',{text:'Links'}),el('p',{class:'sub',style:'margin:0 0 8px',text:'Each row is one device\u2019s own report: FROM walked its neighbour table and lists TO with the relationship and signal it measured. Devices sometimes mislabel the relationship \u2014 the lines and LQI are the part to trust.'}),this.tableHost);
     this.hover=null;this.drag=null;
     this.cv.addEventListener('pointermove',e=>this.onPointer(e));this.cv.addEventListener('pointerdown',e=>{const n=this.pick(e);if(n){this.drag=n;this.cv.setPointerCapture(e.pointerId);this.hot=60;}});
     this.cv.addEventListener('pointerup',()=>{this.drag=null;});this.cv.addEventListener('pointerleave',()=>{this.hover=null;});

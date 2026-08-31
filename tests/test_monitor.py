@@ -100,7 +100,7 @@ def test_mains_device_liveness():
     clock.t += 1000  # ~17 min: above 4× typical but below the 30 min floor
     assert m.sweep([(5, True)]) == []
     clock.t += 1000
-    assert m.sweep([(5, True)]) == ["went_silent"]
+    assert m.sweep([(5, True)]) == [(5, "went_silent")]
     assert alerts[-1]["kind"] == "went_silent" and alerts[-1]["typical_s"] == 120
     # battery devices are exempt from liveness
     feed(m, clock, 6, 50, gap=120.0, mains=False)
@@ -147,11 +147,11 @@ def test_went_silent_alerts_once_per_outage():
     m, alerts, clock = make()
     feed(m, clock, 11, 50, gap=120.0, mains=True)
     clock.t += 100_000
-    assert m.sweep([(11, True)]) == ["went_silent"]
+    assert m.sweep([(11, True)]) == [(11, "went_silent")]
     for _ in range(10):
         clock.t += 900
         assert m.sweep([(11, True)]) == [], "no repeat while still silent"
     clock.t += 30
     m.observe(11, seq=1, lqi=120, is_command=False, mains=True)  # heard again
     clock.t += 100_000
-    assert m.sweep([(11, True)]) == ["went_silent"], "a new outage alerts again"
+    assert m.sweep([(11, True)]) == [(11, "went_silent")], "a new outage alerts again"

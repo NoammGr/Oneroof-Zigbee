@@ -73,7 +73,7 @@ class JoinedDevice:
 
 ApsCb = Callable[[IncomingAps], Awaitable[None]]
 JoinCb = Callable[[JoinedDevice], Awaitable[None]]
-LeaveCb = Callable[[int, int], Awaitable[None]]  # ieee, nwk
+LeaveCb = Callable[[int, int, bool], Awaitable[None]]  # ieee, nwk, rejoin (the device is coming back)
 
 
 class Coordinator:
@@ -195,7 +195,7 @@ class Coordinator:
         d = c.decode_leave_ind(f.data)
         self.audit.event("device_left", ieee=f"0x{d.ieee:016x}", nwk=f"{d.src_addr:#06x}", rejoin=d.rejoin)
         for cb in self._leave_cbs:
-            await cb(d.ieee, d.src_addr)
+            await cb(d.ieee, d.src_addr, d.rejoin)
 
     def _on_permit_ind(self, f: Frame) -> None:
         d = c.decode_permit_join_ind(f.data)
@@ -408,6 +408,8 @@ class Coordinator:
             if live.ext_pan_id:
                 s.ext_pan_id = live.ext_pan_id
             self.audit.security("network_identity_adopted", pan_id=f"{live.pan_id:#06x}", channel=live.channel)
+        self.network_was_formed = True  # the gateway marks every known device offline until it rejoins
+        s.formed_ts = time.time()
         s.last_rotation_ts = time.time()  # a fresh network is a fresh key: start the rotation clock
         self._persist_secrets()
         self.audit.security("network_formed", channel=s.channel, pan_id=f"{s.pan_id:#06x}")

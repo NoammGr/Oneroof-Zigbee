@@ -893,4 +893,9 @@ class UiApi:
                                   "relationship": ["parent", "child", "sibling", "none", "former"][n.relationship] if n.relationship < 5 else "unknown"})
             except Exception as e:
                 log.info("map: neighbour table of %s failed: %s", ieee_str(ieee), e)
-        return {"nodes": list(nodes.values()), "links": links, "updated": time.time()}
+        best: dict[tuple[str, str], dict[str, Any]] = {}
+        for link in links:
+            key = (link["source"], link["target"])
+            if key not in best or link["lqi"] > best[key]["lqi"]:
+                best[key] = link
+        return {"nodes": list(nodes.values()), "links": list(best.values()), "updated": time.time()}

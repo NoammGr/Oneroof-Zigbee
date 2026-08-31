@@ -98,6 +98,7 @@ class RotationState:
 class KeyRotation:
     MIN_WINDOW_S = 30
     RETRY_EVERY_S = 30   # stragglers are offered the key again this often during the window
+    RETRY_MAX_S = 1800   # ...but a device that keeps refusing is left alone for longer and longer
     AWAKE_S = 30         # a battery device heard this recently is awake: hand it the key now
     LOOKUP_TIMEOUT_S = 6.0  # how long a router gets to answer an address query
 
@@ -114,6 +115,8 @@ class KeyRotation:
         self._seq = 0
         self._key = b""
         self._inflight: set[str] = set()
+        self._retry_at: dict[str, float] = {}      # ieee → when this device may be offered the key again
+        self._retry_misses: dict[str, int] = {}    # ieee → how many offers it has ignored
         self._dirty = False   # progress to write to the keystore (its KDF is slow: batched, off the event loop)
 
     @property
@@ -300,13 +303,29 @@ class KeyRotation:
         return True
 
     async def _retry_failed(self) -> None:
+        """Offer the key again to whoever has not taken it — with a growing gap per device. A key
+        transport is a security frame; sending one to the same unreachable (or simply stubborn)
+        device every thirty seconds for hours is a small flood aimed at the most fragile thing on
+        the network, and some devices answer it by deciding they have lost the network. A device
+        that speaks to us is still served immediately (device_heard), so backing off costs nothing."""
         st = self.state
+        now = time.time()
         for dev in self.registry.all():
-            if dev.ieee_str not in st.failed or dev.ieee_str in self._inflight:
+            key = dev.ieee_str
+            if key not in st.failed or key in self._inflight:
+                continue
+            if now < self._retry_at.get(key, 0.0):
                 continue
             if await self._deliver(dev):
                 st.retried += 1
+                self._retry_at.pop(key, None)
+                self._retry_misses.pop(key, None)
                 log.info("key delivered to %s on retry", dev.ieee_str)
+            else:
+                misses = self._retry_misses[key] = self._retry_misses.get(key, 0) + 1
+                wait = min(self.RETRY_EVERY_S * (2 ** misses), self.RETRY_MAX_S)
+                self._retry_at[key] = time.time() + wait
+                log.debug("%s has not taken the key %d time(s); next offer in %ds", key, misses, wait)
             await asyncio.sleep(0.2)
 
     # -- the rotation ---------------------------------------------------------------------------

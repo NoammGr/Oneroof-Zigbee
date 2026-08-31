@@ -692,3 +692,34 @@ async def test_18_server_side_import_from_allowed_folder(tmp_path_factory):
         admin.import_read_folder("/etc")
     with pytest.raises(PermissionError):
         admin.import_read_folder(str(share / ".." / "d"))
+
+
+async def test_18_boot_without_the_dongle_enters_degraded_mode(tmp_path_factory, monkeypatch):
+    """A missing serial device at START-UP must not crash-loop the add-on: the broker and UI come
+    up, the audit records the coordinator as offline, and the reconnect loop keeps trying — the
+    same degraded mode as losing the dongle at runtime."""
+    import contextlib
+
+    async def gone(*a, **k):
+        raise FileNotFoundError("no such device (test)")
+
+    monkeypatch.setattr(main_mod, "open_serial", gone)
+    tmp = tmp_path_factory.mktemp("noserial")
+    cfg_path = tmp / "config.yaml"
+    cfg_path.write_text(f"serial:\n  port: /dev/nonexistent-oneroof-e2e\ndata_dir: {tmp}\n"
+                        "mqtt:\n  tls: off\n  port: 0\nui:\n  enabled: false\n")
+    os.environ["ONEROOF_ZIGBEE_KEYSTORE_PASSPHRASE"] = "e2e-passphrase"
+    cfg = Config.load(cfg_path)
+    task = asyncio.create_task(main_mod.run(cfg, cfg_path))
+    audit_log = tmp / "audit.log"
+    for _ in range(400):
+        await asyncio.sleep(0.05)
+        if task.done():
+            break
+        if audit_log.exists() and "coordinator_offline" in audit_log.read_text():
+            break
+    assert not task.done(), f"run() must stay alive without the dongle (exited with: {task.exception() if task.done() else None!r})"
+    assert audit_log.exists() and "coordinator_offline" in audit_log.read_text()
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        await task

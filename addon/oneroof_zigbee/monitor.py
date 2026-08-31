@@ -164,17 +164,18 @@ class Monitor:
         p.last_seen = now
         return raised
 
-    def sweep(self, devices: list[tuple[int, bool]]) -> list[str]:
-        """Periodic liveness pass over (ieee, mains) pairs."""
+    def sweep(self, devices: list[tuple[int, bool]]) -> list[tuple[int, str]]:
+        """Periodic liveness pass over (ieee, mains) pairs. Returns (ieee, kind) per anomaly
+        raised, so the caller can act per device (e.g. mark it offline)."""
         now = self._now()
-        raised: list[str] = []
+        raised: list[tuple[int, str]] = []
         for ieee, mains in devices:
             p = self.profiles.get(ieee)
             if not p or not p.last_seen:
                 continue
             silent = now - p.last_seen
             if p.burst_at and p.last_seen <= p.burst_at + 5 and silent > SILENCE_AFTER_BURST_S:
-                raised += self._raise(p, ieee, "silence_after_burst", now, silent_s=int(silent))
+                raised += [(ieee, k) for k in self._raise(p, ieee, "silence_after_burst", now, silent_s=int(silent))]
                 p.burst_at = 0.0
             if mains and p.typical_gap and p.frames >= 20 and not p.silent_alerted:
                 limit = max(LIVENESS_MIN_S, LIVENESS_FACTOR * p.typical_gap)
@@ -182,7 +183,7 @@ class Monitor:
                     # Once per outage: the flag clears when the device is heard again, so a bulb cut
                     # from power (wall switch) alerts once, not every sweep until eternity.
                     p.silent_alerted = True
-                    raised += self._raise(p, ieee, "went_silent", now, silent_s=int(silent), typical_s=int(p.typical_gap))
+                    raised += [(ieee, k) for k in self._raise(p, ieee, "went_silent", now, silent_s=int(silent), typical_s=int(p.typical_gap))]
         return raised
 
     def _raise(self, p: Profile, ieee: int, kind: str, now: float, **evidence: Any) -> list[str]:

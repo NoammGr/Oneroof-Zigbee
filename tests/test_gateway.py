@@ -818,3 +818,247 @@ async def test_scheduled_rotation_fires_when_the_key_is_old(tmp_path):
     ok = await gw.handle_request("rotate_network_key", {"mode": "cancel"}, "admin")
     assert ok["ok"]
     await t.close()
+
+
+async def test_fresh_formation_marks_every_known_device_offline(tmp_path):
+    """After the coordinator forms a NEW network, no previously known device can be online — the
+    registry's remembered availability is from the old network and must not be shown as live."""
+    fake, coord, broker, gw, t = await make(tmp_path)
+    assert getattr(coord, "network_was_formed", False), "the test harness forms fresh"
+    d = gw.registry.add_or_update(IEEE + 7, NWK + 7, is_router=True)
+    d.available = True
+    gw.registry.save()
+    from oneroof_zigbee.gateway import Gateway
+    gw2 = Gateway(gw.cfg, coord, broker, coord.audit, gw.registry, control_users={"admin"})
+    await gw2.start()
+    assert gw.registry.get(IEEE + 7).available is False, "stale availability cleared on a fresh network"
+    await t.close()
+
+
+async def test_rejoin_of_a_known_device_reruns_the_interview(tmp_path):
+    """A device that joins again was factory-reset: its reporting config and bindings are gone,
+    whatever the registry remembers — the interview must run again (it keeps name and identity)."""
+    fake, coord, broker, gw, t = await make(tmp_path)
+    events = []
+    coord.audit.subscribe(lambda r: events.append(r))
+    await broker.inject("oneroof/zigbee/bridge/request/permit_join", b'{"seconds": 60}', user="admin")
+    fake.nwk_to_ieee[NWK] = IEEE
+    fake.emit_announce(IEEE, NWK)
+    for _ in range(100):
+        await asyncio.sleep(0.02)
+        if gw.registry.get(IEEE) and gw.registry.get(IEEE).interviewed:
+            break
+    assert sum(e["type"] == "interview_started" for e in events) == 1
+    # the same device joins again after a factory reset (new network address)
+    await broker.inject("oneroof/zigbee/bridge/request/permit_join", b'{"seconds": 60}', user="admin")
+    fake.nwk_to_ieee[NWK + 5] = IEEE
+    fake.emit_announce(IEEE, NWK + 5)
+    for _ in range(150):
+        await asyncio.sleep(0.02)
+        if sum(e["type"] == "interview_started" for e in events) >= 2:
+            break
+    assert sum(e["type"] == "interview_started" for e in events) >= 2, "rejoin re-runs the interview"
+    assert gw.registry.get(IEEE).nwk == NWK + 5
+    await t.close()
+
+
+async def test_rename_rejects_topic_breaking_characters(tmp_path):
+    import pytest
+    fake, coord, broker, gw, t = await make(tmp_path)
+    gw.registry.add_or_update(IEEE + 9, NWK + 9)
+    for bad in ("living/room", "a+b", "all#"):
+        with pytest.raises(ValueError):
+            gw.registry.rename(IEEE + 9, bad)
+    gw.registry.rename(IEEE + 9, "Living room lamp")
+    await t.close()
+
+
+async def test_devices_silent_since_formation_are_offline_on_every_start(tmp_path):
+    """The formation marking must survive restarts: a device that has not spoken since the network
+    was formed cannot be online, however many times the add-on restarts in between."""
+    import time as _t
+    fake, coord, broker, gw, t = await make(tmp_path)
+    assert (coord.secrets.formed_ts or 0) > 0, "formation stamps the birth time"
+    coord.network_was_formed = False  # later restart: the one-shot flag is gone
+    d = gw.registry.add_or_update(IEEE + 11, NWK + 11, is_router=True)
+    d.available = True
+    d.last_seen = coord.secrets.formed_ts - 100  # spoke only on the OLD network
+    gw.registry.save()
+    from oneroof_zigbee.gateway import Gateway
+    gw2 = Gateway(gw.cfg, coord, broker, coord.audit, gw.registry, control_users={"admin"})
+    await gw2.start()
+    assert gw.registry.get(IEEE + 11).available is False
+    # ...but one that spoke after formation keeps its badge
+    d2 = gw.registry.add_or_update(IEEE + 12, NWK + 12, is_router=True)
+    d2.available = True
+    d2.last_seen = _t.time()
+    gw3 = Gateway(gw.cfg, coord, broker, coord.audit, gw.registry, control_users={"admin"})
+    await gw3.start()
+    assert gw.registry.get(IEEE + 12).available is True
+    await t.close()
+
+
+async def test_went_silent_flips_the_availability_badge(tmp_path):
+    """The liveness monitor reports (ieee, kind); a mains device silent past its own rhythm is
+    marked offline so the dashboard tells the truth."""
+    from oneroof_zigbee.monitor import Monitor, Profile
+    events = []
+    mon = Monitor(lambda type_, **f: events.append((type_, f)))
+    p = mon.profiles.setdefault(0xAB, Profile())
+    p.last_seen = mon._now() - 10_000
+    p.typical_gap = 60
+    p.frames = 50
+    gone = mon.sweep([(0xAB, True)])
+    assert (0xAB, "went_silent") in gone
+
+
+async def test_startup_keeps_a_green_badge_only_for_recently_heard_devices(tmp_path):
+    """Availability is evidence, not memory: a device silent for days starts offline even when the
+    registry remembers it as online and the network's birth time is unknown (an install that formed
+    before the birth time was recorded)."""
+    import time as _t
+    fake, coord, broker, gw, t = await make(tmp_path)
+    coord.network_was_formed = False
+    coord.secrets.formed_ts = None  # older keystore: no birth time at all
+    now = _t.time()
+    quiet_router = gw.registry.add_or_update(IEEE + 21, NWK + 21, is_router=True)
+    quiet_router.available, quiet_router.last_seen = True, now - 3 * 86400
+    live_router = gw.registry.add_or_update(IEEE + 22, NWK + 22, is_router=True)
+    live_router.available, live_router.last_seen = True, now - 60
+    sleepy_sensor = gw.registry.add_or_update(IEEE + 23, NWK + 23, is_router=False)
+    sleepy_sensor.available, sleepy_sensor.last_seen = True, now - 3600  # battery: an hour is normal
+    gw.registry.save()
+    from oneroof_zigbee.gateway import Gateway
+    gw2 = Gateway(gw.cfg, coord, broker, coord.audit, gw.registry, control_users={"admin"})
+    await gw2.start()
+    assert gw.registry.get(IEEE + 21).available is False, "silent for days: offline"
+    assert gw.registry.get(IEEE + 22).available is True, "heard a minute ago: still online"
+    assert gw.registry.get(IEEE + 23).available is True, "a sleeping sensor gets a longer grace"
+    await t.close()
+
+
+async def test_refused_reporting_is_retried_and_then_polled_often(tmp_path):
+    """A device that refuses to configure reporting (Aqara wall switches do it on the second gang)
+    is retried with a one-second minimum, and if it still refuses it is polled often enough that a
+    physical press still reaches the dashboard."""
+    from oneroof_zigbee import zcl
+    fake, coord, broker, gw, t = await make(tmp_path)
+    dev = gw.registry.add_or_update(IEEE + 31, NWK + 31, is_router=True)
+    seen: list[int] = []
+
+    async def refuse_then_accept(d, ep, cluster, frame, seq, expect_cmd, timeout=10.0):
+        seen.append(seq)
+        if len(seen) == 1:
+            return zcl.decode_frame(bytes([0x18, seq & 0xFF, 0x07, 0xC1, 0x00, 0x00, 0x00]))
+        return zcl.decode_frame(bytes([0x18, seq & 0xFF, 0x07, 0x00]))
+
+    gw._request = refuse_then_accept
+    await gw._setup_reporting(dev, 2, 0x0006)
+    assert len(seen) == 2, "the refusal is retried once"
+    rec = [r for r in dev.reporting if r["endpoint"] == 2 and r["cluster"] == 0x0006]
+    assert rec and rec[0]["status"] == "ok" and rec[0]["min"] >= 1, rec
+    assert gw._poll_after(dev) == gw.ROUTER_POLL_AFTER_S, "a device that reports is left alone"
+
+    async def always_refuse(d, ep, cluster, frame, seq, expect_cmd, timeout=10.0):
+        return zcl.decode_frame(bytes([0x18, seq & 0xFF, 0x07, 0xC1, 0x00, 0x00, 0x00]))
+
+    gw._request = always_refuse
+    dev2 = gw.registry.add_or_update(IEEE + 32, NWK + 32, is_router=True)
+    await gw._setup_reporting(dev2, 2, 0x0006)
+    rec2 = [r for r in dev2.reporting if r["endpoint"] == 2][0]
+    assert not rec2["status"].startswith("ok"), rec2
+    assert gw._poll_after(dev2) == gw.UNREPORTED_POLL_AFTER_S, "it is polled often instead"
+    await t.close()
+
+
+async def test_a_leaving_device_is_kept_and_can_come_back(tmp_path):
+    """A leave frame — with or without the rejoin flag — must never delete a device. Deleting it
+    also drops it from the known set, and its rejoin would then be evicted as an intruder: the
+    device ends up searching for a network forever while its name, room and settings are gone."""
+    from oneroof_zigbee.znp.unpi import Frame, FrameType, Subsystem
+    from oneroof_zigbee.znp import commands as c
+    from oneroof_zigbee.znp.wire import Writer
+    fake, coord, broker, gw, t = await make(tmp_path)
+    dev = gw.registry.add_or_update(IEEE + 41, NWK + 41, is_router=True)
+    dev.friendly_name = "Hall light"
+    dev.available = True
+    coord.known_ieee.add(IEEE + 41)
+    gw.registry.save()
+
+    def leave(rejoin: bool) -> None:
+        w = Writer().u16(NWK + 41).ieee(IEEE + 41).u8(1).u8(0).u8(1 if rejoin else 0)
+        fake.emit(Frame(FrameType.AREQ, Subsystem.ZDO, c.ZdoCmd.LEAVE_IND, w.bytes()))
+
+    leave(True)
+    await asyncio.sleep(0.1)
+    kept = gw.registry.get(IEEE + 41)
+    assert kept is not None and kept.friendly_name == "Hall light", "a rejoining device is not forgotten"
+    assert kept.available is False, "but it is honestly offline until it is heard again"
+    assert IEEE + 41 in coord.known_ieee, "it stays known, so its rejoin is not evicted"
+
+    leave(False)
+    await asyncio.sleep(0.1)
+    assert gw.registry.get(IEEE + 41) is not None, "even a plain leave keeps the device"
+    assert IEEE + 41 in coord.known_ieee
+
+    # and it really can come back: an announce is welcomed, never evicted
+    fake.requests.clear()
+    fake.nwk_to_ieee[NWK + 41] = IEEE + 41
+    fake.emit_announce(IEEE + 41, NWK + 41)
+    await asyncio.sleep(0.2)
+    assert not any(f.subsystem is Subsystem.ZDO and f.command == c.ZdoCmd.MGMT_LEAVE_REQ for f in fake.requests), "no eviction"
+    await t.close()
+
+
+async def test_rotation_backs_off_a_device_that_keeps_refusing_the_key(tmp_path):
+    """A key transport is a security frame. A device that will not take it must not be offered the
+    key every thirty seconds for hours — some devices answer that flood by deciding they have lost
+    the network. The gap grows per device; one that talks to us is still served at once."""
+    from oneroof_zigbee.devices import Registry
+    from oneroof_zigbee.rotation import KeyRotation, RotationState
+    from oneroof_zigbee.security import Audit
+    reg = Registry(tmp_path / "devices.json")
+    dev = reg.add_or_update(0x00158D00000000AA, 0x1234, is_router=True)
+    rot = KeyRotation(None, reg, None, Audit(None))
+    rot.state = RotationState(phase="waiting", started=time.time(), window_s=60, max_window_s=600)
+    rot.state.failed[dev.ieee_str] = "unreachable"
+    tries = []
+
+    async def never(d, check=True):
+        tries.append(d.ieee_str)
+        return False
+
+    rot._deliver = never
+    await rot._retry_failed()
+    assert len(tries) == 1, "the first sweep offers the key"
+    await rot._retry_failed()
+    await rot._retry_failed()
+    assert len(tries) == 1, "the next sweeps leave the device alone"
+    rot._retry_at[dev.ieee_str] = 0.0          # its turn comes round again
+    await rot._retry_failed()
+    assert len(tries) == 2
+    assert rot._retry_at[dev.ieee_str] - time.time() > KeyRotation.RETRY_EVERY_S, "the gap grew"
+
+
+async def test_state_is_fetched_from_the_device_after_a_restart(tmp_path):
+    """The gateway must not present a remembered state as fact: after its own restart it asks each
+    device that can answer what it actually is, publishes that, and marks the device online."""
+    from oneroof_zigbee.devices import Endpoint
+    fake, coord, broker, gw, t = await make(tmp_path)
+    dev = gw.registry.add_or_update(IEEE + 51, NWK + 51, is_router=True)
+    dev.endpoints[1] = Endpoint(1, 0x0104, 0x0051, [0, 6], [], "plug")
+    dev.state = {"state": "OFF"}          # what we remembered
+    dev.available = False
+    asked = []
+
+    async def answer(d, ep, cluster, attrs):
+        asked.append((ep, cluster))
+        return {"state": "ON"} if cluster == 0x0006 else {}   # what the device really is
+
+    gw.read_attributes = answer
+    changed = await gw._refresh_state(dev)
+    assert (1, 0x0006) in asked, "the on/off cluster was asked"
+    assert changed and dev.state.get("state") == "ON", dev.state
+    assert dev.available is True, "a device that answers is online again"
+    assert json.loads(broker.last(f"oneroof/zigbee/{dev.ieee_str}/state"))["state"] == "ON"
+    await t.close()

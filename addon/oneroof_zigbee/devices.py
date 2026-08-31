@@ -195,6 +195,8 @@ class Registry:
         return dev
 
     def rename(self, ieee: int, name: str) -> None:
+        if any(c in name for c in "/+#"):
+            raise ValueError("a device name must not contain '/', '+' or '#' — it becomes an MQTT topic")
         if self.by_name(name) not in (None, self.get(ieee)):
             raise ValueError(f"name {name!r} already in use")
         dev = self._by_ieee[ieee]

@@ -18,13 +18,41 @@ from collections.abc import Awaitable, Callable
 from .unpi import Frame, FrameType, Parser, Subsystem
 
 # Frames whose payload carries key material never reach the log, even at DEBUG.
-_SYS_NV_CMDS = (0x07, 0x08, 0x09)          # OSAL_NV_ITEM_INIT / READ / WRITE (the ExNV sec-material table holds counters only)
-_SECRET_NV_ITEMS = {0x003A, 0x003B, 0x0062, 0x0082, 0x0101}  # active/alternate key info, PRECFGKEY, NWKKEY, TCLK table
+_SYS_NV_CMDS = (0x07, 0x08, 0x09, 0x12, 0x13)  # OSAL_NV_ITEM_INIT / READ / WRITE / DELETE / LENGTH (the ExNV sec-material table holds counters only)
+# Active/alternate key info, PRECFGKEY, NWKKEY, TCLK table — and the NIB (0x0021): TI's network
+# information base still carries two key-descriptor fields from older stack generations, and the
+# air scan moves the whole blob in and out of NV, so it never belongs in a log either.
+_SECRET_NV_ITEMS = {0x0021, 0x003A, 0x003B, 0x0062, 0x0082, 0x0101}
 _SECRET_APP_CNF = {0x04, 0x07}              # BDB_ADD_INSTALLCODE, BDB_SET_ACTIVE_DEFAULT_CENTRALIZED_KEY
 
 log = logging.getLogger("oneroof_zigbee.znp.transport")
 
 Listener = Callable[[Frame], Awaitable[None] | None]
+
+
+class AbsentTransport:
+    """Stands in for the serial transport when the dongle is not present at start-up. Its
+    `closed` event is already set, so the connection supervisor in __main__ immediately enters
+    the same reconnect-with-backoff loop used when the link drops at runtime — the broker, UI
+    and registry come up regardless. Every radio call fails softly until a real transport is
+    rebound."""
+
+    def __init__(self) -> None:
+        self.closed = asyncio.Event()
+        self.closed.set()
+
+    def start(self) -> None: ...
+    async def close(self) -> None: ...
+    def on(self, *a, **k) -> None: ...
+    def on_any(self, *a, **k) -> None: ...
+    def off(self, *a, **k) -> None: ...
+    def send(self, *a, **k) -> None: ...
+
+    async def wait_for(self, *a, **k):
+        raise ZnpTimeout("coordinator not connected")
+
+    async def request(self, *a, **k):
+        raise ZnpTimeout("coordinator not connected")
 
 
 class ZnpError(RuntimeError):
