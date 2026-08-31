@@ -104,22 +104,28 @@ def exposes_for(dev: Device) -> list[dict[str, Any]]:
                 features.append(_numeric(pos))
             out.append({"type": "cover", "features": features})
             handled |= {x["key"] for x in (pos, cov) if x}
-        lt, sp = bases.get("local_temperature"), bases.get("current_heating_setpoint")
-        if sp:
+        lt, sp, cp, tt = bases.get("local_temperature"), bases.get("current_heating_setpoint"), bases.get("current_cooling_setpoint"), bases.get("target_temperature")
+        if sp or cp or tt:
             features = []
             if lt:
                 features.append(_numeric(lt, ACCESS_STATE | ACCESS_GET))
-            features.append(_numeric(sp, rw))
+            for x in (tt, sp, cp):
+                if x:
+                    features.append(_numeric(x, rw))
             mode = bases.get("system_mode")
             if mode:
                 features.append(_enum(mode, rw if mode["access"] == "rw" else ACCESS_STATE))
                 handled.add(mode["key"])
+            fan = bases.get("fan_mode")
+            if fan:
+                features.append(_enum(fan, rw if fan["access"] == "rw" else ACCESS_STATE))
+                handled.add(fan["key"])
             preset = bases.get("preset")
             if preset:
                 features.append(_enum(preset, rw if preset["access"] == "rw" else ACCESS_STATE))
                 handled.add(preset["key"])
             out.append({"type": "climate", "features": features})
-            handled |= {x["key"] for x in (lt, sp) if x}
+            handled |= {x["key"] for x in (lt, sp, cp, tt) if x}
 
     for f in feats:
         key, typ = f["key"], f["type"]
@@ -144,8 +150,10 @@ def exposes_for(dev: Device) -> list[dict[str, Any]]:
         elif typ == "action":
             out.append({"type": "enum", "name": f["base"], "property": f["key"], "label": f["name"], "access": ACCESS_STATE, "values": list(f.get("values") or [])})
         elif typ == "text":
-            d = {"type": "enum", "name": f["base"], "property": f["key"], "label": f["name"], "access": ACCESS_STATE, "values": list(f.get("values") or [])}
-            out.append(d)
+            if f["access"] == "r":
+                out.append({"type": "enum", "name": f["base"], "property": f["key"], "label": f["name"], "access": ACCESS_STATE, "values": list(f.get("values") or [])})
+            else:
+                out.append({"type": "text", "name": f["base"], "property": f["key"], "label": f["name"], "access": _access(f)})
     return out
 
 

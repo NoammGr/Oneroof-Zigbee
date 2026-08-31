@@ -74,9 +74,25 @@ raw: {"<cluster_id>": {"<attr_id>": {name, value, ts}}}    # last raw attribute 
 { key: "state", name: "State", description: "On/off state of the switch", icon: "power",
   type: "binary"|"numeric"|"enum"|"composite"|"action"|"text",
   access: "r"|"rw"|"w", unit?: "W", min?, max?, step?, values?: [...], value_on?: "ON", value_off?: "OFF",
-  endpoint: 1, cluster: 6, category: "control"|"sensor"|"config"|"diagnostic" }
+  endpoint: 1, cluster: 6, category: "control"|"ir"|"sensor"|"config"|"diagnostic",
+  max_length?: 15 }                                   # text features: the device's string limit
 ```
-Generic features generated per cluster: on_off → `state` (+ `power_on_behavior` enum off/on/toggle/previous from StartUpOnOff 0x4003, + `countdown` action seconds via OnWithTimedOff), level → `brightness`, color → `color_temp`/`color_xy`, electrical/metering → power/current/voltage/energy, sensors, battery, covers `position`, thermostat `heating_setpoint` + `system_mode`, always `identify` action and `linkquality` diagnostic.
+Generic features generated per cluster: on_off → `state` (+ `power_on_behavior` enum off/on/toggle/previous from StartUpOnOff 0x4003, + `countdown` action seconds via OnWithTimedOff), level → `brightness`, color → `color_temp`/`color_xy`, electrical/metering → power/current/voltage/energy, sensors, battery, covers `position`, thermostat (below), always `identify` action and `linkquality` diagnostic.
+
+Thermostat (0x0201) features follow what the device says it can do (ControlSequenceOfOperation 0x001B and the
+Min/Max setpoint limits, read at interview): heating-capable → `current_heating_setpoint` (rw, the device's
+limits, default 5–30), cooling-capable → `current_cooling_setpoint`, `system_mode` values are
+off/heat/auto (heating only), off/cool/auto/dry/fan_only (cooling only) or off/auto/cool/heat/dry/fan_only
+(both); Fan Control (0x0202) on the same endpoint adds `fan_mode` low/medium/high/auto. A model whose two
+setpoints are one target temperature (air conditioners) gets a single `target_temperature` (rw) instead of
+the pair; writing it sets the heating setpoint in `heat` and the cooling setpoint otherwise.
+
+Category `ir` — an infrared remote section (the One Roof **IRBlaster**, manufacturer `NoammGr`): `learn_key`
+(text, w: a code key such as `c24a1`, a name, or `*` to learn the next remote press for the current AC state),
+`send_key` (text, w), `protocol` (enum rw learn/auto/coolix/gree/daikin/electra), `hold` (binary rw),
+`last_result` (text r), `code_count` (numeric r). Its `swing` is the On/Off output on endpoint 2 (binary rw ON/OFF);
+`temperature_offset`, `led_brightness`, `led_quiet` are `config`. Writes to `learn_key`/`send_key` are commands:
+the value is not kept in state; the device answers through `last_result` and `code_count`.
 
 New POST routes (all JSON + `X-OneRoof: 1`):
 

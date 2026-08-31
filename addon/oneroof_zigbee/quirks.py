@@ -38,6 +38,7 @@ from typing import Any, Callable
 
 from .devices import Device
 from .zcl import vendor as vz
+from .zcl.types import DataType
 
 # ---------------------------------------------------------------------------
 # Model
@@ -71,6 +72,19 @@ class Dp:
 
 
 @dataclass(frozen=True)
+class PrivateAttr:
+    """One attribute of a device-specific cluster, known from the model table. Read and written as a
+    *standard* attribute (no manufacturer code) with exactly this wire type."""
+
+    attr: int
+    key: str
+    dtype: DataType
+    scale: float = 1.0                     # published value = wire value / scale
+    values: dict[Any, str] | None = None   # wire value → label (bool → "ON"/"OFF", enum id → name)
+    max_len: int = 31                      # strings: the device's limit
+
+
+@dataclass(frozen=True)
 class Quirk:
     vendor: str
     kind: str
@@ -97,6 +111,12 @@ class Quirk:
     buttons: int = 0                                # Tuya-style buttons: 1 → no endpoint prefix in actions
     tuya_onoff_attrs: bool = False                  # child_lock/indicator_mode on On/Off attrs 0x8000/0x8001
     user_defined: bool = False                      # compiled from definitions.yaml rather than this table
+    relabel: dict[tuple[int, str], dict[str, Any]] = field(default_factory=dict)   # (endpoint, base) → feature overrides (key, name, icon …)
+    single_setpoint: bool = False                   # cooling and heating setpoints are one target temperature (air conditioners)
+    private_attrs: dict[int, tuple[PrivateAttr, ...]] = field(default_factory=dict)  # device-specific cluster → its attributes
+    reporting: dict[int, tuple[tuple[int, DataType, int, int, Any], ...]] = field(default_factory=dict)  # extra reporting: cluster → (attr, dtype, min, max, change)
+    read_on_join: dict[int, tuple[int, ...]] = field(default_factory=dict)         # extra attributes to read at interview: cluster → attrs
+    context_defaults: dict[str, Any] = field(default_factory=dict)                  # converter context the model is known to have (before any read)
 
     def matches(self, manufacturer: str | None, model: str | None) -> bool:
         m = (manufacturer or "").strip().lower()
@@ -236,6 +256,21 @@ _DP_PRESENCE_RADAR = (
 
 _AQ = "Aqara"
 _LUMI_SENSOR = dict(bind=(), remove=_SENSOR_CONTROLS)
+
+# One Roof IR blaster: its own cluster (§ "NoammGr IRBlaster" in the docs)
+_IRB = 0xFC00
+_ONOFF = {False: "OFF", True: "ON"}
+_IRBLASTER_ATTRS = (
+    PrivateAttr(0x0000, "learn_key", DataType.string, max_len=15),
+    PrivateAttr(0x0001, "send_key", DataType.string, max_len=15),
+    PrivateAttr(0x0002, "hold", DataType.bool_, values=_ONOFF),
+    PrivateAttr(0x0003, "last_result", DataType.string),
+    PrivateAttr(0x0004, "code_count", DataType.uint16),
+    PrivateAttr(0x0005, "temperature_offset", DataType.int16, scale=100),
+    PrivateAttr(0x0006, "protocol", DataType.string),
+    PrivateAttr(0x0007, "led_brightness", DataType.uint8),
+    PrivateAttr(0x0008, "led_quiet", DataType.bool_, values=_ONOFF),
+)
 
 
 def _lumi_sensor(kind: str, models: tuple[str, ...] | str, **kw: Any) -> Quirk:
@@ -515,6 +550,36 @@ QUIRKS: tuple[Quirk, ...] = (
     _q("Aurora", "Bulb", "light", "Aurora", ("FWG125Bulb50AU", "FWGU10Bulb50AU", "FWMT10Bulb50AU", "FWBulb51AU", "FWA60Bulb50AU", "FWST64Bulb50AU", "FWBulb50AU", "FWGU10Bulb50AU", "RGBGU10Bulb50AU", "RGBCXStrip50AU", "TWGU10Bulb50AU", "TWBulb51AU", "TWBulb50AU", "TWMPROZXBulb50AU", "TWCL50AU", "RGBBulb51AU", "RGBCCTBulb50AU"), remove=("countdown",)),
     _q("Aurora", "Motion sensor", "sensor", "Aurora", ("AU-A1ZBPIRS", "MotionSensor51AU"), remove=_SENSOR_CONTROLS),
     _q("Aurora", "Double socket", "plug", "Aurora", ("AU-A1ZBDSS", "DoubleSocket50AU"), gangs=("left", "right"), gang_labels=("Left", "Right")),
+    # ---- One Roof hardware ----------------------------------------------------------------------
+    # Zigbee infrared blaster for air conditioners. Endpoint 1 is a standard 4-pipe Thermostat +
+    # Fan Control (the AC state), endpoint 2 an On/Off output that is the louver swing, endpoint 3
+    # the on-board temperature/humidity sensor; 0xFC00 is the device's own cluster for learning and
+    # sending codes (standard attributes, no manufacturer code — see PrivateAttr).
+    _q("NoammGr", "AC IR blaster", "climate", "NoammGr", "IRBlaster",
+       description="Infrared blaster that drives an air conditioner: learn the remote's codes once, then control it like a thermostat",
+       remove=("countdown", "power_on_behavior", "running_state"),
+       relabel={(2, "state"): {"key": "swing", "name": "Swing", "description": "Louver swing / oscillation", "icon": "wind"}},
+       single_setpoint=True,
+       context_defaults={"thermostat_sequence": 4, "cool_setpoint_min": 16, "cool_setpoint_max": 30, "heat_setpoint_min": 16, "heat_setpoint_max": 30},
+       private_attrs={_IRB: _IRBLASTER_ATTRS},
+       add=(
+           _f("learn_key", "Learn code", "Write a code key or * to learn the next remote press for the current AC state (press the remote within 20 s)",
+              "text", "w", icon="remote", category="ir", cluster=_IRB, max_length=15),
+           _f("send_key", "Send code", "Transmit a stored code by its key — off, c24a1 (cool 24 °C fan auto swing on) or a named code such as light",
+              "text", "w", icon="remote", category="ir", cluster=_IRB, max_length=15),
+           _f("protocol", "IR protocol", "learn replays the learned frames; auto adopts the protocol detected from a learned frame; or a native encoder",
+              "enum", "rw", icon="sliders", category="ir", cluster=_IRB, values=["learn", "auto", "coolix", "gree", "daikin", "electra"]),
+           _f("hold", "Hold (local thermostat)", "Cycle the AC around the setpoint using the board's own temperature sensor",
+              "binary", "rw", icon="thermometer", category="ir", cluster=_IRB, value_on="ON", value_off="OFF"),
+           _f("last_result", "Last result", "Feedback from the last learn, send or remote press", "text", "r", icon="text", category="ir", cluster=_IRB),
+           _f("code_count", "Stored codes", "Number of IR codes the device has learned", "numeric", "r", icon="counter", category="ir", cluster=_IRB),
+           _f("temperature_offset", "Temperature offset", "Calibration of the on-board sensor", "numeric", "rw", icon="thermometer", category="config",
+              cluster=_IRB, min=-10, max=10, step=0.1, unit="°C"),
+           _f("led_brightness", "LED brightness", "Status LED brightness", "numeric", "rw", icon="sun", category="config", cluster=_IRB, min=1, max=100, step=1, unit="%"),
+           _f("led_quiet", "LED quiet", "LED off while joined and healthy", "binary", "rw", icon="sun", category="config", cluster=_IRB, value_on="ON", value_off="OFF"),
+       ),
+       reporting={_IRB: ((0x0003, DataType.string, 1, 3600, None),)},
+       read_on_join={_IRB: (0x0002, 0x0003, 0x0004, 0x0005, 0x0006, 0x0007, 0x0008)}),
     _q("Aurora", "Smart plug", "plug", "Aurora", ("AU-A1ZBPIAB", "SmartPlug51AU", "SingleSocket50AU", "AU-A1ZBPIA")),
     _q("Aurora", "Contact sensor", "sensor", "Aurora", ("AU-A1ZBDWS", "DoorSensor51AU", "WindowSensor51AU"), remove=_SENSOR_CONTROLS),
     _q("Aurora", "Remote", "remote", "Aurora", ("AU-A1ZBRC", "WallRemote50AU", "Remote50AU", "AU-A1ZBR2GW", "AU-A1ZB2WDM"), remove=_SENSOR_CONTROLS, add=(_battery(), _action(_GENERIC_REMOTE))),
@@ -797,6 +862,23 @@ def shape_features(dev: Device, generic: list[dict[str, Any]], info: DeviceInfo)
 
     out = [f for f in out if f["base"] not in remove]
 
+    if q and q.relabel:
+        for f in out:
+            ov = q.relabel.get((f["endpoint"], f["base"]))
+            if ov:
+                f.update(ov)
+    if q and q.single_setpoint:
+        # one target temperature: the device keeps both ZCL setpoints equal (an air conditioner has
+        # a single "set temperature"); the pair is replaced by target_temperature
+        sps = [f for f in out if f["base"] in ("current_cooling_setpoint", "current_heating_setpoint")]
+        if sps:
+            ref = next((f for f in sps if f["base"] == "current_cooling_setpoint"), sps[0])
+            at = out.index(sps[0])
+            out = [f for f in out if f["base"] not in ("current_cooling_setpoint", "current_heating_setpoint")]
+            out.insert(at, _f("target_temperature", "Temperature", "Target temperature — one setpoint for cooling and heating", "numeric", "rw",
+                              icon="thermometer", category="control", endpoint=ref["endpoint"], cluster=0x0201,
+                              min=ref.get("min", 16), max=ref.get("max", 30), step=1, unit="°C"))
+
     if q and q.ias_key:
         for f in out:
             if f["cluster"] == 0x0500 and f["base"] in {k for k, _ in _IAS_DEFAULT.values()} | {"alarm_1"}:
@@ -923,6 +1005,10 @@ def translate_state(dev: Device, ep: int, changed: dict[str, Any], features: lis
             # a report from an endpoint we have no feature for (e.g. the shared ep 0xF2): keep the plain key
             key = k
         out[key or k] = v
+    if q and q.single_setpoint:
+        for k in ("current_cooling_setpoint", "current_heating_setpoint"):
+            if k in out:
+                out["target_temperature"] = out.pop(k)
     if q and q.vendor == "Aqara":
         v = out.get("voltage")
         if isinstance(v, (int, float)) and not isinstance(v, bool) and v < 100:
@@ -949,7 +1035,11 @@ def decode_vendor_attributes(dev: Device, ep: int, cluster: int, records: list[R
     is_lumi = manuf == "lumi" or (q is not None and q.vendor == "Aqara")
 
     for attr, _dtype, value, raw in records:
-        if is_lumi and cluster == 0x0000 and attr == vz.LUMI_ATTR_REPORT_BASIC:
+        pa = _private_attr(q, cluster, attr=attr)
+        if pa is not None:
+            out[pa.key] = _decode_private(pa, value)
+            used.add(attr)
+        elif is_lumi and cluster == 0x0000 and attr == vz.LUMI_ATTR_REPORT_BASIC:
             tags = vz.decode_lumi_tlv(raw, length_prefixed=True) if raw else {}
             out.update(_lumi_state(q, tags))
             used.add(attr)
@@ -991,6 +1081,80 @@ def decode_vendor_attributes(dev: Device, ep: int, cluster: int, records: list[R
             out["power_on_behavior"] = {0: "off", 1: "on", 2: "previous"}.get(value, str(value))
             used.add(attr)
     return out, used
+
+
+def _private_attr(q: Quirk | None, cluster: int, *, attr: int | None = None, key: str | None = None) -> PrivateAttr | None:
+    if q is None or cluster not in q.private_attrs:
+        return None
+    for pa in q.private_attrs[cluster]:
+        if (attr is not None and pa.attr == attr) or (key is not None and pa.key == key):
+            return pa
+    return None
+
+
+def _decode_private(pa: PrivateAttr, value: Any) -> Any:
+    if pa.dtype in (DataType.string, DataType.long_string):
+        if isinstance(value, (bytes, bytearray)):
+            return bytes(value).decode("utf-8", "replace")
+        return "" if value is None else str(value)
+    if pa.dtype == DataType.bool_:
+        v = bool(value)
+        return pa.values.get(v, v) if pa.values else v
+    if pa.values is not None and isinstance(value, int):
+        return pa.values.get(value, str(value))
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return round(value / pa.scale, 2) if pa.scale != 1 else value
+    return value
+
+
+def private_attribute(dev: Device, cluster: int, key: str) -> PrivateAttr | None:
+    """The model-table attribute behind a feature key on a device-specific cluster, if any."""
+    return _private_attr(find_quirk(dev.manufacturer, dev.model), cluster, key=key)
+
+
+def encode_private_attribute(dev: Device, cluster: int, key: str, value: Any) -> tuple[int, DataType, Any]:
+    """``(attr, dtype, wire value)`` for writing a feature of a device-specific cluster. Raises
+    ``ValueError`` for a value the attribute cannot take (too long, not one of the choices)."""
+    pa = private_attribute(dev, cluster, key)
+    if pa is None:
+        raise ValueError(f"{key} is not writable on this device")
+    if pa.dtype in (DataType.string, DataType.long_string):
+        s = str(value)
+        if len(s.encode("utf-8")) > pa.max_len:
+            raise ValueError(f"{key} must be at most {pa.max_len} characters")
+        return pa.attr, pa.dtype, s
+    if pa.dtype == DataType.bool_:
+        on = str(value).strip().upper() in ("ON", "TRUE", "1", "LOCK") if isinstance(value, str) else bool(value)
+        return pa.attr, pa.dtype, on
+    if pa.values is not None:
+        rev = {str(v).lower(): k for k, v in pa.values.items()}
+        if str(value).lower() not in rev:
+            raise ValueError(f"{key} must be one of {sorted(pa.values.values())}")
+        return pa.attr, pa.dtype, rev[str(value).lower()]
+    return pa.attr, pa.dtype, int(round(float(value) * pa.scale))
+
+
+def extra_reporting(dev: Device) -> dict[int, tuple[tuple[int, DataType, int, int, Any], ...]]:
+    """Reporting the model table adds on top of the standard-cluster defaults."""
+    q = find_quirk(dev.manufacturer, dev.model)
+    return dict(q.reporting) if q else {}
+
+
+def extra_reads(dev: Device) -> dict[int, tuple[int, ...]]:
+    """Attributes the model table wants read at interview, on top of the standard-cluster defaults."""
+    q = find_quirk(dev.manufacturer, dev.model)
+    return dict(q.read_on_join) if q else {}
+
+
+def feedback_reads(dev: Device, cluster: int) -> tuple[int, ...]:
+    """Read-only attributes of a device-specific cluster worth re-reading after a write to it (a
+    command in disguise answers through them, e.g. last_result / code_count)."""
+    q = find_quirk(dev.manufacturer, dev.model)
+    if q is None or cluster not in q.private_attrs:
+        return ()
+    from .features import features_for
+    ro = {f["key"] for f in features_for(dev) if f["cluster"] == cluster and f["access"] == "r"}
+    return tuple(pa.attr for pa in q.private_attrs[cluster] if pa.key in ro or pa.key == "protocol")
 
 
 def _lumi_state(q: Quirk | None, tags: dict[int, Any]) -> dict[str, Any]:

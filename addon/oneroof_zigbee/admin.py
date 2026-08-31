@@ -189,7 +189,8 @@ class Admin:
         "serial": {"baudrate": 115200, "rtscts": False},
         "zigbee": {"channel": 15, "strict_install_codes": False, "permit_join_max_seconds": 120,
                    "permit_join_require_install_code": False, "permit_join_cooldown_seconds": 5,
-                   "permit_join_close_after_first_join": True, "rotate_key_after_plain_join": True},
+                   "permit_join_close_after_first_join": True, "rotate_key_after_plain_join": True,
+                   "rotation_require_all": True, "rotation_max_window_seconds": 21600, "rotation_interval_days": 30},
         "mqtt": {"listen": "0.0.0.0", "port": 8883, "plaintext_port": None, "base_topic": "oneroof/zigbee", "tls": {"mode": "auto"}},
         "homeassistant": {"discovery": True, "discovery_prefix": "homeassistant"},
         "ui": {"enabled": True, "port": 8099},
@@ -212,7 +213,9 @@ class Admin:
                        "permit_join_require_install_code": c.zigbee.permit_join_require_install_code,
                        "permit_join_cooldown_seconds": c.zigbee.permit_join_cooldown_seconds,
                        "permit_join_close_after_first_join": c.zigbee.permit_join_close_after_first_join,
-                       "rotate_key_after_plain_join": c.zigbee.rotate_key_after_plain_join},
+                       "rotate_key_after_plain_join": c.zigbee.rotate_key_after_plain_join,
+                       "rotation_require_all": c.zigbee.rotation_require_all, "rotation_max_window_seconds": c.zigbee.rotation_max_window_seconds,
+                       "rotation_interval_days": c.zigbee.rotation_interval_days},
             "mqtt": {"listen": c.mqtt.listen, "port": c.mqtt.port, "plaintext_port": c.mqtt.plaintext_port, "base_topic": c.mqtt.base_topic,
                      "tls": {"mode": c.mqtt.tls.mode, "cert": str(c.mqtt.tls.cert) if c.mqtt.tls.cert else None,
                              "key": str(c.mqtt.tls.key) if c.mqtt.tls.key else None,
@@ -235,7 +238,7 @@ class Admin:
         raw = yaml.safe_load(self.config_path.read_text()) or {}
         allowed = {"serial": {"port", "baudrate", "rtscts"},
                    "zigbee": {"channel", "strict_install_codes", "permit_join_max_seconds", "permit_join_require_install_code", "permit_join_cooldown_seconds",
-                              "permit_join_close_after_first_join", "rotate_key_after_plain_join"},
+                              "permit_join_close_after_first_join", "rotate_key_after_plain_join", "rotation_require_all", "rotation_max_window_seconds"},
                    "mqtt": {"listen", "port", "plaintext_port", "base_topic", "tls", "external"},
                    "compat": {"legacy_layout"},
                    "homeassistant": {"discovery", "discovery_prefix"},
@@ -271,13 +274,21 @@ class Admin:
     BACKUP_FILES = ("network.keystore", "network.keystore.pass", "devices.json", "users.yaml", "definitions.yaml", "mqtt.passwd",
                     "tls/ca.key", "tls/ca.crt", "tls/server.key", "tls/server.crt")
 
+    def _backup_path(self, rel: str) -> Path:
+        """Where a backed-up file lives: the keystore passphrase sits in the private folder as an
+        add-on (see security.keystore), everything else in the data folder."""
+        if rel == "network.keystore.pass":
+            from .security import Keystore
+            return Keystore(self.cfg.data_dir / "network.keystore").pass_path
+        return self.cfg.data_dir / rel
+
     def make_backup(self, password: str) -> bytes:
         if len(password) < 12:
             raise ValueError("backup password must be at least 12 characters")
         buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w:gz") as tar:
             for rel in self.BACKUP_FILES:
-                p = self.cfg.data_dir / rel
+                p = self._backup_path(rel)
                 if p.exists():
                     tar.add(p, arcname=rel)
             if self.config_path and self.config_path.exists():
@@ -289,6 +300,49 @@ class Admin:
         salt, nonce = pysecrets.token_bytes(16), pysecrets.token_bytes(12)
         key = hashlib.scrypt(password.encode(), salt=salt, **_SCRYPT)
         return _BACKUP_MAGIC + salt + nonce + AESGCM(key).encrypt(nonce, buf.getvalue(), _BACKUP_MAGIC)
+
+    def secrets_from_backup(self, blob: bytes, password: str) -> "NetworkSecrets":
+        """The network secrets inside a backup, decrypted in memory — nothing is written. Used to
+        roll the coordinator back to the key a backup was taken with."""
+        from .security import Keystore
+        if not blob.startswith(_BACKUP_MAGIC):
+            raise ValueError("not an OneRoof Zigbee backup")
+        salt, nonce, ct = blob[5:21], blob[21:33], blob[33:]
+        key = hashlib.scrypt(password.encode(), salt=salt, **_SCRYPT)
+        try:
+            raw = AESGCM(key).decrypt(nonce, ct, _BACKUP_MAGIC)
+        except Exception as e:
+            raise ValueError("wrong password or corrupt backup") from e
+        store = passphrase = None
+        with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as tar:
+            for m in tar.getmembers():
+                if m.name == "network.keystore" and m.isfile():
+                    store = tar.extractfile(m).read()  # type: ignore[union-attr]
+                elif m.name == "network.keystore.pass" and m.isfile():
+                    passphrase = tar.extractfile(m).read().strip()  # type: ignore[union-attr]
+        if store is None or passphrase is None:
+            raise ValueError("the backup holds no keystore and passphrase")
+        return Keystore.decrypt(store, passphrase)
+
+    def previous_setup_key(self, files: dict[str, str]) -> tuple[bytes, int, int | None, int | None]:
+        """The network key a previous setup (Zigbee2MQTT folder) ran with, read in place: ``(key,
+        sequence, pan_id, ext_pan_id)``. Only the key is taken — names, layout and broker settings
+        are left alone. The sequence comes from coordinator_backup.json when it has one, else 0."""
+        from .importer import build_plan
+        plan = build_plan(configuration_yaml=files.get("configuration.yaml"), database_db=None,
+                          coordinator_backup=files.get("coordinator_backup.json"))
+        n = plan.network
+        if not n.network_key:
+            raise ValueError("the previous setup's files hold no readable network key")
+        seq = 0
+        if files.get("coordinator_backup.json"):
+            try:
+                nk = (json.loads(files["coordinator_backup.json"]) or {}).get("network_key") or {}
+                if isinstance(nk.get("sequence_number"), int):
+                    seq = int(nk["sequence_number"]) & 0xFF
+            except ValueError:
+                pass
+        return n.network_key, seq, n.pan_id, n.ext_pan_id
 
     def restore_backup(self, blob: bytes, password: str) -> list[str]:
         if not blob.startswith(_BACKUP_MAGIC):
@@ -311,7 +365,7 @@ class Admin:
                         continue
                     dest = self.config_path
                 else:
-                    dest = self.cfg.data_dir / m.name
+                    dest = self._backup_path(m.name)
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 data = tar.extractfile(m).read()  # type: ignore[union-attr]
                 fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)

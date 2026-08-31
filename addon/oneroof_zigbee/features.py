@@ -21,8 +21,14 @@ ATTR_OF: dict[str, tuple[int, int]] = {
     "pressure": (0x0403, 0x0000), "illuminance_lux": (0x0400, 0x0000), "occupancy": (0x0406, 0x0000),
     "battery": (0x0001, 0x0021), "voltage": (0x0B04, 0x0505), "current": (0x0B04, 0x0508), "power": (0x0B04, 0x050B),
     "energy": (0x0702, 0x0000), "position": (0x0102, 0x0008), "local_temperature": (0x0201, 0x0000),
-    "current_heating_setpoint": (0x0201, 0x0012), "system_mode": (0x0201, 0x001C), "lock_state": (0x0101, 0x0000),
+    "current_heating_setpoint": (0x0201, 0x0012), "current_cooling_setpoint": (0x0201, 0x0011), "system_mode": (0x0201, 0x001C),
+    "fan_mode": (0x0202, 0x0000), "lock_state": (0x0101, 0x0000),
 }
+
+# Thermostat modes per ControlSequenceOfOperation (ZCL 0x001B): 0/1 cooling only, 2/3 heating only,
+# 4/5 both. Unknown → the heating-only list every radiator valve got so far.
+THERMOSTAT_MODES = {"cool": ["off", "cool", "auto", "dry", "fan_only"], "heat": ["off", "heat", "auto"],
+                    "both": ["off", "auto", "cool", "heat", "dry", "fan_only"]}
 
 POWER_ON_BEHAVIOR = {"off": 0, "on": 1, "toggle": 2, "previous": 255}
 POWER_ON_BEHAVIOR_REV = {v: k for k, v in POWER_ON_BEHAVIOR.items()}
@@ -44,9 +50,11 @@ def _f(key: str, name: str, description: str, type_: str, access: str, *, icon: 
             "category": category, "endpoint": endpoint, "cluster": cluster, "base": key, **extra}
 
 
-def generic_features(dev: Device) -> list[dict[str, Any]]:
-    """Features derived purely from clusters. Keys are not yet suffixed; see ``_assign_keys``."""
+def generic_features(dev: Device, ctx: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """Features derived purely from clusters. Keys are not yet suffixed; see ``_assign_keys``.
+    ``ctx`` is the converter context to consult (defaults to the device's own)."""
     out: list[dict[str, Any]] = []
+    ctx = dev.context if ctx is None else ctx
     eps = sorted(dev.endpoints.values(), key=lambda e: e.id)
     client_only = not any(0x0006 in e.in_clusters for e in eps) and any({0x0006, 0x0008, 0x0005} & set(e.out_clusters) for e in eps)
     for ep in eps:
@@ -80,14 +88,27 @@ def generic_features(dev: Device) -> list[dict[str, Any]]:
             out.append(_f("lock_state", "Lock state", "Reported bolt state", "enum", "r", icon="lock", category="sensor", endpoint=e,
                           cluster=0x0101, values=["locked", "unlocked", "not_fully_locked"]))
         if 0x0201 in ins:
+            seq = ctx.get("thermostat_sequence")
+            cools = seq in (0, 1, 4, 5)
+            heats = seq is None or seq in (2, 3, 4, 5)
             out.append(_f("local_temperature", "Local temperature", "Measured by the thermostat", "numeric", "r", icon="thermometer",
                           category="sensor", endpoint=e, cluster=0x0201, unit="°C"))
-            out.append(_f("current_heating_setpoint", "Heating setpoint", "Target temperature", "numeric", "rw", icon="thermometer",
-                          category="control", endpoint=e, cluster=0x0201, min=5, max=30, step=0.5, unit="°C"))
+            if cools:
+                out.append(_f("current_cooling_setpoint", "Cooling setpoint", "Target temperature when cooling", "numeric", "rw", icon="thermometer",
+                              category="control", endpoint=e, cluster=0x0201, min=ctx.get("cool_setpoint_min", 16), max=ctx.get("cool_setpoint_max", 32),
+                              step=0.5, unit="°C"))
+            if heats:
+                out.append(_f("current_heating_setpoint", "Heating setpoint", "Target temperature" if not cools else "Target temperature when heating",
+                              "numeric", "rw", icon="thermometer", category="control", endpoint=e, cluster=0x0201,
+                              min=ctx.get("heat_setpoint_min", 5), max=ctx.get("heat_setpoint_max", 30), step=0.5, unit="°C"))
+            modes = THERMOSTAT_MODES["both" if cools and heats else ("cool" if cools else "heat")]
             out.append(_f("system_mode", "Mode", "Thermostat mode", "enum", "rw", icon="sliders", category="control", endpoint=e,
-                          cluster=0x0201, values=["off", "heat", "auto"]))
+                          cluster=0x0201, values=list(modes)))
             out.append(_f("running_state", "Running state", "Whether the valve/heater is active", "enum", "r", icon="bolt", category="sensor",
                           endpoint=e, cluster=0x0201, values=["idle", "heat", "cool"]))
+            if 0x0202 in ins:
+                out.append(_f("fan_mode", "Fan", "Fan speed", "enum", "rw", icon="wind", category="control", endpoint=e, cluster=0x0202,
+                              values=["low", "medium", "high", "auto"]))
         if 0x0B04 in ins:
             out.append(_f("power", "Power", "Instantaneous active power", "numeric", "r", icon="bolt", category="sensor", endpoint=e, cluster=0x0B04, unit="W"))
             out.append(_f("current", "Current", "RMS current", "numeric", "r", icon="bolt", category="sensor", endpoint=e, cluster=0x0B04, unit="A"))
@@ -211,7 +232,8 @@ def _state_fallbacks(dev: Device, have: set[str]) -> list[dict[str, Any]]:
 def features_for(dev: Device) -> list[dict[str, Any]]:
     from . import quirks
     info = quirks.describe(dev)
-    feats = quirks.shape_features(dev, generic_features(dev), info)
+    ctx = {**info.quirk.context_defaults, **dev.context} if info.quirk and info.quirk.context_defaults else None
+    feats = quirks.shape_features(dev, generic_features(dev, ctx), info)
     have = {f["key"] for f in feats}
     feats.extend(_state_fallbacks(dev, have))
     return feats

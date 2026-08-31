@@ -90,6 +90,9 @@ class ZigbeeConfig:
     permit_join_close_after_first_join: bool = True   # one device per plain window
     rotate_key_after_plain_join: bool = True          # a key exposed during pairing must not live long
     permit_join_cooldown_seconds: int = 5
+    rotation_require_all: bool = True                 # switch keys only when every device demonstrably has the new one
+    rotation_max_window_seconds: int = 21600          # how long a rotation may wait for sleeping / unreachable devices
+    rotation_interval_days: int = 30                  # rotate on a schedule too (0 = only after joins / by hand)
 
 
 @dataclass
@@ -200,7 +203,14 @@ class Config:
             permit_join_close_after_first_join=bool(z.get("permit_join_close_after_first_join", True)),
             rotate_key_after_plain_join=bool(z.get("rotate_key_after_plain_join", True)),
             permit_join_cooldown_seconds=int(z.get("permit_join_cooldown_seconds", 5)),
+            rotation_require_all=bool(z.get("rotation_require_all", True)),
+            rotation_max_window_seconds=int(z.get("rotation_max_window_seconds", 21600)),
+            rotation_interval_days=int(z.get("rotation_interval_days", 30)),
         )
+        if not 0 <= zig.rotation_interval_days <= 3650:
+            raise ConfigError("zigbee.rotation_interval_days must be 0..3650")
+        if not 60 <= zig.rotation_max_window_seconds <= 7 * 86400:
+            raise ConfigError("zigbee.rotation_max_window_seconds must be 60..604800")
         if zig.channel not in ZIGBEE_CHANNELS:
             raise ConfigError("zigbee.channel must be 11..26")
         if not 1 <= zig.permit_join_max_seconds <= 254:

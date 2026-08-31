@@ -45,6 +45,13 @@ class FakeZnp:
         self.frame_counter = None
         self.ignore_set_frame_counter = False
         self.active_key = None  # None = whatever PRECFGKEY holds; set to model a radio on another key
+        self.local_install_on_unicast = True  # False models firmware that keeps no alternate key from per-device transports
+        self.switch_local_on_unicast = False  # True models firmware that switches the coordinator itself on any unicast switch order
+        self.devices_follow_broadcast_switch = True  # False: a broadcast switch order reaches no device (sleepers never, others ignore)
+        self.devices_follow_unicast_switch = True
+        self.device_keys: dict[int, bytes] = {}          # nwk → the key that device is on (only tracked devices are modelled)
+        self.device_pending: dict[int, tuple[int, bytes]] = {}  # nwk → (seq, key) delivered but not yet switched to
+        self.key_switches: list[tuple[int, int]] = []    # (dst, seq) of every switch order sent
         self.refuse_key_item_writes = False  # True = a firmware whose key items cannot be written at all
         self.pending_key = None
         self.key_deliveries: list[tuple[int, int]] = []
@@ -53,6 +60,14 @@ class FakeZnp:
         self.has_exnv = True  # Z-Stack 3.x.0: frame counters live in the security material table
         self.sec_material: list[tuple[int, bytes]] = [(0, b"\xff" * 8)]  # (frameCounter, extPanId LE)  # model firmware that does not keep SET_NWK_FRAME_COUNTER
         self.nwk_to_ieee: dict[int, int] = {}  # populated by emit_announce; used for IEEE_ADDR_REQ
+        self.formation_ignores_config = False  # models firmware that forms its own PAN/channel
+        self.nib_blocks_beacons = True  # real firmware: no beacon indications while a NIB exists
+        self.live_pan_id = None        # override EXT_NWK_INFO (models a NIB that differs from the config NV items)
+        self.live_channel = None
+        self.net_running = False       # like the real stack: no network between RESET and STARTUP_FROM_APP
+        self.scan_while_up = True      # False models firmware that answers 0xC2 while the network runs (the common case)
+        self.beacons: list[tuple] = []  # (src, pan, ch, permit, router_cap, dev_cap, lqi, depth, update_id, ext_pan)
+        self.refuse_scan = False
         self.on_data_request = None  # optional hook: Frame -> list[Frame] of AREQs to emit
 
     # --- emit AREQ from "the radio" ---
@@ -74,6 +89,9 @@ class FakeZnp:
         w = Writer().u16(0).u16(cluster).u16(src).u8(src_ep).u8(1).u8(0).u8(lqi).u8(1).u32(0).u8(seq).lv(payload)
         self.emit(Frame(FrameType.AREQ, Subsystem.AF, c.AfCmd.INCOMING_MSG, w.bytes()))
 
+    def _radio_key(self) -> bytes:
+        return self.active_key if self.active_key is not None else self.nv.get(c.NvId.PRECFGKEY, bytes(16))[:16]
+
     def emit_announce(self, ieee: int, nwk: int, caps: int = 0x8E) -> None:
         self.nwk_to_ieee[nwk] = ieee
         w = Writer().u16(nwk).u16(nwk).ieee(ieee).u8(caps)
@@ -92,6 +110,7 @@ class FakeZnp:
         ss, cmd = f.subsystem, f.command
         if ss is Subsystem.SYS:
             if cmd == c.SysCmd.RESET_REQ:
+                self.net_running = False
                 self.emit(Frame(FrameType.AREQ, Subsystem.SYS, c.SysCmd.RESET_IND, bytes(6)))
             elif cmd == c.SysCmd.PING:
                 self._srsp(f, b"\x79\x07")
@@ -133,6 +152,7 @@ class FakeZnp:
                     self.nv[item] = f.data[4:]
                     if item == c.NvId.NWK_ACTIVE_KEY_INFO:
                         self.active_key = f.data[4:][1:17]
+                        self.active_seq = f.data[4]
                     self._srsp(f, b"\x00")
                     return
                 self.nv[item] = f.data[4:]
@@ -141,10 +161,21 @@ class FakeZnp:
                     self.nv = {item: f.data[4:]}
                     self.formed = False
                 self._srsp(f, b"\x00")
+            elif cmd == c.SysCmd.OSAL_NV_LENGTH:
+                item = int.from_bytes(f.data[0:2], "little")
+                v = self.nv.get(item)
+                self._srsp(f, (len(v) if v else 0).to_bytes(2, "little"))
+            elif cmd == c.SysCmd.OSAL_NV_DELETE:
+                item = int.from_bytes(f.data[0:2], "little")
+                self.nv.pop(item, None)
+                self._srsp(f, b"\x00")
             elif cmd == c.SysCmd.OSAL_NV_READ:
                 item = int.from_bytes(f.data[0:2], "little")
                 if item == c.NvId.BDBNODEISONANETWORK:
                     self._srsp(f, b"\x00\x01" + (b"\x01" if self.formed else b"\x00"))
+                elif item == c.NvId.NWK_ALTERN_KEY_INFO and item in self.nv and len(self.nv[item]) >= 17:
+                    body = self.nv[item][:17]  # a distinct alternate key (written, or preset by a test)
+                    self._srsp(f, b"\x00" + bytes([len(body)]) + body)
                 elif item in (c.NvId.NWK_ACTIVE_KEY_INFO, c.NvId.NWK_ALTERN_KEY_INFO):
                     key = self.active_key if self.active_key is not None else self.nv.get(c.NvId.PRECFGKEY, bytes(16))[:16]
                     body = bytes([self.active_seq]) + key  # 17 bytes: the counter lives in the security material table
@@ -181,11 +212,17 @@ class FakeZnp:
                 # and PRECFGKEYS_ENABLE do not change that. Only the key items (17 bytes, written
                 # while stopped) set the key.
                 self.active_key = bytes(b ^ 0x5A for b in self.nv.get(c.NvId.PRECFGKEY, bytes(16))[:16])
+                if self.formation_ignores_config:
+                    self.nv[c.NvId.PANID] = (0x4CD2).to_bytes(2, "little")
+                    self.nv[c.NvId.CHANLIST] = (1 << 11).to_bytes(4, "little")
+                self.nv[c.NvId.NIB] = bytes(110)
+                self.net_running = True
                 self.device_state = 9
                 self.emit(Frame(FrameType.AREQ, Subsystem.ZDO, c.ZdoCmd.STATE_CHANGE_IND, bytes([9])))
         elif ss is Subsystem.ZDO:
             if cmd == c.ZdoCmd.STARTUP_FROM_APP:
                 self._srsp(f, b"\x00")
+                self.net_running = True
                 self.device_state = 9
                 self.emit(Frame(FrameType.AREQ, Subsystem.ZDO, c.ZdoCmd.STATE_CHANGE_IND, bytes([9])))
             elif cmd == c.ZdoCmd.MGMT_PERMIT_JOIN_REQ:
@@ -193,10 +230,10 @@ class FakeZnp:
                 self._srsp(f, b"\x00")
                 self.emit(Frame(FrameType.AREQ, Subsystem.ZDO, c.ZdoCmd.PERMIT_JOIN_IND, bytes([f.data[3]])))
             elif cmd == c.ZdoCmd.EXT_NWK_INFO:
-                pan = int.from_bytes(self.nv.get(c.NvId.PANID, b"\x00\x00"), "little")
+                pan = self.live_pan_id if self.live_pan_id is not None else int.from_bytes(self.nv.get(c.NvId.PANID, b"\x00\x00"), "little")
                 extpan = int.from_bytes(self.nv.get(c.NvId.EXTPANID, b"\x00" * 8), "little")
                 ch_mask = int.from_bytes(self.nv.get(c.NvId.CHANLIST, b"\x00\x00\x00\x00"), "little")
-                ch = ch_mask.bit_length() - 1 if ch_mask else 0
+                ch = self.live_channel if self.live_channel is not None else (ch_mask.bit_length() - 1 if ch_mask else 0)
                 self._srsp(f, Writer().u16(0).u8(self.device_state).u16(pan).u16(0).u64(extpan).u64(0).u8(ch).bytes())
             elif cmd == c.ZdoCmd.ACTIVE_EP_REQ:
                 nwk = int.from_bytes(f.data[0:2], "little")
@@ -219,6 +256,18 @@ class FakeZnp:
             elif cmd == c.ZdoCmd.UNBIND_REQ:
                 self._srsp(f, b"\x00")
                 self.emit(Frame(FrameType.AREQ, Subsystem.ZDO, c.ZdoCmd.UNBIND_RSP, f.data[0:2] + b"\x00"))
+            elif cmd == c.ZdoCmd.NETWORK_DISCOVERY_REQ:
+                if self.refuse_scan or (self.net_running and not self.scan_while_up):
+                    self._srsp(f, b"\x02")
+                    return
+                self._srsp(f, b"\x00")
+                suppressed = self.nib_blocks_beacons and not self.net_running and c.NvId.NIB in self.nv
+                if self.beacons and not suppressed:
+                    w = Writer().u8(len(self.beacons))
+                    for src, pan, ch, pj, rc, dc, lqi, depth, upd, ext in self.beacons:
+                        w.u16(src).u16(pan).u8(ch).u8(pj).u8(rc).u8(dc).u8(2).u8(2).u8(lqi).u8(depth).u8(upd).u64(ext)
+                    self.emit(Frame(FrameType.AREQ, Subsystem.ZDO, c.ZdoCmd.BEACON_NOTIFY_IND, w.bytes()))
+                self.emit(Frame(FrameType.AREQ, Subsystem.ZDO, c.ZdoCmd.NWK_DISCOVERY_CNF, b"\x00"))
             elif cmd == c.ZdoCmd.MGMT_LEAVE_REQ:
                 self._srsp(f, b"\x00")
             elif cmd == c.ZdoCmd.NWK_ADDR_REQ:
@@ -232,6 +281,8 @@ class FakeZnp:
                 nwk = int.from_bytes(f.data[0:2], "little")
                 self._srsp(f, b"\x00")
                 ieee = self.nwk_to_ieee.get(nwk)
+                if ieee is not None and nwk in self.device_keys and self.device_keys[nwk] != self._radio_key():
+                    ieee = None  # a device on another key cannot read the request: silence
                 if ieee is not None:
                     self.emit(Frame(FrameType.AREQ, Subsystem.ZDO, c.ZdoCmd.IEEE_ADDR_RSP, Writer().u8(0).ieee(ieee).u16(nwk).u8(0).u8(0).bytes()))
                 else:
@@ -241,12 +292,24 @@ class FakeZnp:
                 if dst == 0x0000:
                     self._srsp(f, b"\x01")  # the real firmware refuses a transport to itself
                 else:
-                    self.pending_key = (f.data[2], f.data[3:19])
+                    if self.local_install_on_unicast or dst == 0xFFFF:
+                        self.pending_key = (f.data[2], f.data[3:19])
+                    if dst in self.device_keys:
+                        self.device_pending[dst] = (f.data[2], bytes(f.data[3:19]))
                     self.key_deliveries.append((dst, f.data[2]))
                     self._srsp(f, b"\x00")
             elif cmd == c.ZdoCmd.EXT_SWITCH_NWK_KEY:
+                dst = int.from_bytes(f.data[0:2], "little")
                 seq = f.data[2]
-                if self.pending_key and self.pending_key[0] == seq:
+                self.key_switches.append((dst, seq))
+                targets = list(self.device_keys) if dst == 0xFFFF else [dst]
+                follow = self.devices_follow_broadcast_switch if dst == 0xFFFF else self.devices_follow_unicast_switch
+                if follow:
+                    for n in targets:
+                        p = self.device_pending.get(n)
+                        if p and p[0] == seq:
+                            self.device_keys[n] = p[1]
+                if (dst == 0xFFFF or self.switch_local_on_unicast) and self.pending_key and self.pending_key[0] == seq:
                     self.active_key = self.pending_key[1]
                     self.active_seq = seq
                 self._srsp(f, b"\x00")

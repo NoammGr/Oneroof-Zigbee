@@ -37,6 +37,7 @@ def test_mmo_hash_empty_and_length():
 
 def test_keystore_roundtrip_and_permissions(tmp_path, monkeypatch):
     monkeypatch.delenv("ONEROOF_ZIGBEE_KEYSTORE_PASSPHRASE", raising=False)
+    monkeypatch.delenv("ONEROOF_ZIGBEE_KEYSTORE_PASSPHRASE_FILE", raising=False)
     ks = Keystore(tmp_path / "net.keystore")
     s = ks.load_or_create(channel=20)
     assert (tmp_path / "net.keystore.pass").exists()
@@ -161,3 +162,73 @@ async def test_transport_debug_log_never_shows_key_material(caplog):
     assert "RX SRSP SYS:0x08 <redacted>" in text
     assert any(line for line in text.splitlines() if "TX SYS:0x08 " in line and "<redacted>" not in line), "PANID read not redacted"
     await t.close()
+
+
+def test_keystore_passphrase_lives_where_told_and_is_moved_out_of_the_store_folder(tmp_path, monkeypatch):
+    """As an add-on the passphrase belongs in the private /data, not next to the store in the
+    browsable config folder. A file left there by an older version is moved and wiped."""
+    monkeypatch.delenv("ONEROOF_ZIGBEE_KEYSTORE_PASSPHRASE", raising=False)
+    monkeypatch.delenv("ONEROOF_ZIGBEE_KEYSTORE_PASSPHRASE_FILE", raising=False)
+    store = tmp_path / "config" / "network.keystore"
+    s = Keystore(store).load_or_create(channel=15)  # older layout: passphrase next to the store
+    legacy = store.with_name("network.keystore.pass")
+    assert legacy.exists()
+    private = tmp_path / "data" / "network.keystore.pass"
+    monkeypatch.setenv("ONEROOF_ZIGBEE_KEYSTORE_PASSPHRASE_FILE", str(private))
+    ks = Keystore(store)
+    assert ks.pass_path == private
+    again = ks.load()  # decrypts with the moved passphrase
+    assert again.network_key == s.network_key
+    assert private.exists() and oct(os.stat(private).st_mode & 0o777) == "0o600"
+    assert not legacy.exists(), "nothing readable stays in the config folder"
+    assert Keystore(store).load().network_key == s.network_key
+    # a fresh store with the variable set never writes next to itself
+    fresh = tmp_path / "config" / "other.keystore"
+    Keystore(fresh).load_or_create(channel=15)
+    assert not fresh.with_name("other.keystore.pass").exists()
+
+
+def test_secrets_can_be_read_from_a_backup_without_restoring_it(tmp_path, monkeypatch):
+    """Rolling back with a backup's key must not restore or write anything: the keystore inside the
+    .ozbk is decrypted in memory with the passphrase the backup carries."""
+    from oneroof_zigbee.admin import Admin
+    from oneroof_zigbee.config import Config
+    from oneroof_zigbee.mqtt import Acl, PasswordFile
+    monkeypatch.delenv("ONEROOF_ZIGBEE_KEYSTORE_PASSPHRASE", raising=False)
+    monkeypatch.setenv("ONEROOF_ZIGBEE_KEYSTORE_PASSPHRASE_FILE", str(tmp_path / "private" / "network.keystore.pass"))
+    ks = Keystore(tmp_path / "network.keystore")
+    s = ks.load_or_create(channel=15)
+    s.key_seq = 3
+    ks.save(s)
+    cfg = Config.from_dict({"serial": {"port": "/dev/null"}, "data_dir": str(tmp_path), "mqtt": {"tls": "off", "port": 0}})
+    admin = Admin(cfg, None, PasswordFile(tmp_path / "mqtt.passwd"), Acl(), set(), managed=True)
+    blob = admin.make_backup("correct horse battery staple")
+    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    got = admin.secrets_from_backup(blob, "correct horse battery staple")
+    assert got.network_key == s.network_key and got.key_seq == 3 and got.pan_id == s.pan_id
+    assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before, "nothing written"
+    with pytest.raises(ValueError):
+        admin.secrets_from_backup(blob, "wrong password")
+    with pytest.raises(ValueError):
+        admin.secrets_from_backup(b"OZBK1" + b"x" * 40, "correct horse battery staple")
+
+
+def test_previous_setup_key_is_read_in_place_with_its_sequence(tmp_path, monkeypatch):
+    """Rolling back to the key a Zigbee2MQTT setup ran with takes the key (and the sequence number
+    from coordinator_backup.json) and nothing else — no names, no layout, no broker settings."""
+    from oneroof_zigbee.admin import Admin
+    from oneroof_zigbee.config import Config
+    from oneroof_zigbee.mqtt import Acl, PasswordFile
+    import json
+    monkeypatch.setenv("ONEROOF_ZIGBEE_KEYSTORE_PASSPHRASE", "t")
+    cfg = Config.from_dict({"serial": {"port": "/dev/null"}, "data_dir": str(tmp_path), "mqtt": {"tls": "off", "port": 0}})
+    admin = Admin(cfg, None, PasswordFile(tmp_path / "mqtt.passwd"), Acl(), set(), managed=True)
+    key = list(range(1, 17))
+    yaml_text = "advanced:\n  network_key: " + json.dumps(key) + "\n  pan_id: 0x1a62\n  ext_pan_id: [1, 2, 3, 4, 5, 6, 7, 8]\n  channel: 11\ndevices:\n  '0x00158d0000000001':\n    friendly_name: kitchen\n"
+    k, seq, pan, ext = admin.previous_setup_key({"configuration.yaml": yaml_text})
+    assert k == bytes(key) and seq == 0 and pan == 0x1A62 and ext == int.from_bytes(bytes([1, 2, 3, 4, 5, 6, 7, 8]), "big")
+    backup = json.dumps({"network_key": {"key": bytes(key).hex(), "sequence_number": 2, "frame_counter": 5}})
+    k2, seq2, _, _ = admin.previous_setup_key({"configuration.yaml": yaml_text, "coordinator_backup.json": backup})
+    assert k2 == bytes(key) and seq2 == 2
+    with pytest.raises(ValueError):
+        admin.previous_setup_key({"configuration.yaml": "advanced:\n  network_key: GENERATE\n"})

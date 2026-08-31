@@ -17,6 +17,7 @@ from oneroof_zigbee.devices import Device, Endpoint
 from oneroof_zigbee.features import features_for, generic_features
 from oneroof_zigbee.ha.discovery import discovery_messages
 from oneroof_zigbee.zcl import vendor as vz
+from oneroof_zigbee.zcl.clusters import decode_attributes
 from oneroof_zigbee.zcl.global_commands import decode_global_command
 from oneroof_zigbee.zcl.frame import decode_frame
 
@@ -149,6 +150,15 @@ CASES = [
      "Switch actuator", "switch", {"state", "battery"}, {"countdown", "power_on_behavior"}, {"switch": ("switch", None)}),
     ("danfoss_trv", "Danfoss", "eTRV0100", {1: ([0x0000, 0x0001, 0x0003, 0x000A, 0x0020, 0x0201, 0x0204, 0x0B05], [0x0000, 0x0019], 0x0301)}, "battery", False, None,
      "Thermostat/TRV", "climate", {"current_heating_setpoint", "local_temperature", "battery"}, set(), {"climate": ("climate", None)}),
+    ("oneroof_irblaster", "NoammGr", "IRBlaster", {1: ([0x0000, 0x0003, 0x0201, 0x0202, 0xFC00], [0x0019], 0x0301), 2: ([0x0006], [], 0x0002),
+                                                    3: ([0x0402, 0x0405], [], 0x0302)}, "mains", True, None,
+     "AC IR blaster", "climate",
+     {"target_temperature", "system_mode", "fan_mode", "swing", "local_temperature", "temperature", "humidity", "learn_key", "send_key", "protocol",
+      "hold", "last_result", "code_count", "temperature_offset", "led_brightness", "led_quiet"},
+     {"state", "countdown", "power_on_behavior", "running_state", "current_heating_setpoint", "current_cooling_setpoint"},
+     {"climate": ("climate", None), "swing": ("switch", None), "protocol": ("select", None), "learn_key": ("text", None), "send_key": ("text", None),
+      "hold": ("switch", None), "led_quiet": ("switch", None), "temperature_offset": ("number", None), "led_brightness": ("number", None),
+      "last_result": ("sensor", None), "code_count": ("sensor", None), "temperature": ("sensor", "temperature"), "humidity": ("sensor", "humidity")}),
     ("bosch_contact", "BOSCH", "RBSH-SWD-ZB", {1: ([0x0000, 0x0001, 0x0003, 0x0500, 0x0B05], [0x0019], 0x0402)}, "battery", False, {"zone_type": 0x0015},
      "Contact sensor", "sensor", {"contact", "battery"}, set(), {"contact": ("binary_sensor", "door")}),
     ("yale_lock", "Yale", "YRD226 TSDB", {1: ([0x0000, 0x0001, 0x0003, 0x0004, 0x0009, 0x000A, 0x0101, 0x0020], [0x000A, 0x0019], 0x000A)}, "battery", False, None,
@@ -649,3 +659,155 @@ def test_values_in_state_are_exposed_even_without_cluster_information():
     fk = {f["key"]: f for f in features_for(u)}
     assert fk["temperature"]["from_state"] and fk["temperature"]["access"] == "r" and fk["contact"]["type"] == "binary"
     assert "frobnicate" not in fk, "unknown keys are not invented into entities"
+
+
+# ---------------------------------------------------------------------------------------------
+# Thermostats that are not radiator valves: cooling, fan, one target temperature, an IR blaster
+# ---------------------------------------------------------------------------------------------
+
+IRB_EPS = {1: ([0x0000, 0x0003, 0x0201, 0x0202, 0xFC00], [0x0019], 0x0301), 2: ([0x0006], [], 0x0002), 3: ([0x0402, 0x0405], [], 0x0302)}
+
+
+def irblaster() -> Device:
+    return mk("NoammGr", "IRBlaster", IRB_EPS, power="mains", router=True, ieee=0x00124B0022AA1234)
+
+
+def test_cooling_capable_thermostat_gets_cooling_setpoint_and_full_mode_list():
+    ac = mk("Acme", "AC-1", {1: ([0x0000, 0x0201, 0x0202], [], 0x0301)}, power="mains", router=True,
+            ctx={"thermostat_sequence": 4, "cool_setpoint_min": 16, "cool_setpoint_max": 30, "heat_setpoint_min": 16, "heat_setpoint_max": 30})
+    f = keys(ac)
+    assert f["current_cooling_setpoint"]["min"] == 16 and f["current_cooling_setpoint"]["max"] == 30
+    assert f["current_heating_setpoint"]["min"] == 16
+    assert f["system_mode"]["values"] == ["off", "auto", "cool", "heat", "dry", "fan_only"]
+    assert f["fan_mode"]["values"] == ["low", "medium", "high", "auto"] and f["fan_mode"]["cluster"] == 0x0202
+    cool_only = mk("Acme", "AC-2", {1: ([0x0000, 0x0201], [], 0x0301)}, power="mains", router=True, ctx={"thermostat_sequence": 0})
+    f = keys(cool_only)
+    assert "current_heating_setpoint" not in f and f["system_mode"]["values"] == ["off", "cool", "auto", "dry", "fan_only"]
+    # two independent setpoints → Home Assistant gets a low/high range, both writable
+    cl = ha(ac)["climate"][1]
+    assert cl["temperature_low_state_template"] == "{{ value_json.current_heating_setpoint }}"
+    assert cl["temperature_high_command_template"] == '{"current_cooling_setpoint": {{ value }} }'
+    assert cl["modes"] == ["off", "auto", "cool", "heat", "dry", "fan_only"] and cl["fan_modes"] == ["low", "medium", "high", "auto"]
+    assert "temperature_command_topic" not in cl
+
+
+def test_plain_trv_is_unchanged():
+    trv = mk("SONOFF", "TRVZB", {1: ([0x0000, 0x0001, 0x0003, 0x0006, 0x0020, 0x0201, 0x0204, 0xFC11], [0x000A, 0x0019], 0x0301)})
+    f = keys(trv)
+    sp = f["current_heating_setpoint"]
+    assert (sp["min"], sp["max"], sp["step"], sp["unit"]) == (5, 30, 0.5, "°C")
+    assert f["system_mode"]["values"] == ["off", "heat", "auto"]
+    assert "current_cooling_setpoint" not in f and "fan_mode" not in f and "target_temperature" not in f and "running_state" in f
+    cl = ha(trv)["climate"][1]
+    assert cl["temperature_state_template"] == "{{ value_json.current_heating_setpoint }}" and cl["modes"] == ["off", "heat", "auto"]
+    assert "fan_modes" not in cl and "temperature_low_state_template" not in cl
+    # the generic layer alone, without a quirk, is heating-only too
+    plain = mk("Nobody", "T1", {1: ([0x0000, 0x0201], [], 0x0301)})
+    assert {f["key"] for f in generic_features(plain)} == {"local_temperature", "current_heating_setpoint", "system_mode", "running_state", "linkquality"}
+
+
+def test_irblaster_features_exposes_and_discovery():
+    dev = irblaster()
+    f = keys(dev)
+    tt = f["target_temperature"]
+    assert (tt["min"], tt["max"], tt["step"], tt["cluster"], tt["endpoint"]) == (16, 30, 1, 0x0201, 1)
+    assert f["system_mode"]["values"] == ["off", "auto", "cool", "heat", "dry", "fan_only"]
+    assert f["swing"]["base"] == "state" and f["swing"]["endpoint"] == 2 and f["swing"]["cluster"] == 0x0006 and f["swing"]["name"] == "Swing"
+    assert {k for k, x in f.items() if x["category"] == "ir"} == {"learn_key", "send_key", "protocol", "hold", "last_result", "code_count"}
+    assert f["learn_key"]["access"] == "w" and f["learn_key"]["max_length"] == 15 and f["learn_key"]["cluster"] == 0xFC00
+    assert f["temperature_offset"]["category"] == "config" and f["temperature_offset"]["step"] == 0.1
+    disc = ha(dev)
+    cl = disc["climate"][1]
+    assert cl["temperature_state_template"] == "{{ value_json.target_temperature }}"
+    assert cl["temperature_command_template"] == '{"target_temperature": {{ value }} }' and (cl["min_temp"], cl["max_temp"], cl["temp_step"]) == (16, 30, 1)
+    assert cl["modes"] == ["off", "auto", "cool", "heat", "dry", "fan_only"] and cl["fan_modes"] == ["low", "medium", "high", "auto"]
+    assert cl["fan_mode_command_template"] == '{"fan_mode": "{{ value }}" }'
+    sw = disc["swing"][1]
+    assert sw["name"] == "Swing" and sw["payload_on"] == '{"swing": "ON"}' and sw["value_template"] == "{{ value_json.swing }}"
+    assert disc["learn_key"][1]["command_template"] == '{"learn_key": "{{ value }}" }' and disc["learn_key"][1]["max"] == 15
+    assert disc["protocol"][1]["options"] == ["learn", "auto", "coolix", "gree", "daikin", "electra"]
+    assert disc["hold"][1]["payload_on"] == '{"hold": "ON"}'
+    assert disc["temperature_offset"][1]["min"] == -10 and disc["temperature_offset"][1]["step"] == 0.1
+    assert "switch" not in disc and "running_state" not in disc
+    from oneroof_zigbee.ha.exposes import exposes_for
+    ex = {e.get("property") or e["type"]: e for e in exposes_for(dev)}
+    climate = ex["climate"]["features"]
+    assert [x["property"] for x in climate] == ["local_temperature", "target_temperature", "system_mode", "fan_mode"]
+    assert ex["learn_key"]["type"] == "text" and ex["learn_key"]["access"] == 2
+    assert ex["switch"]["features"][0]["property"] == "swing"
+
+
+def test_irblaster_private_cluster_reports_decode_by_model_not_globally():
+    dev = irblaster()
+    recs = [(0x0003, 0x42, b"learned c24a1: gree protocol verified & enabled", None), (0x0004, 0x21, 7, None),
+            (0x0005, 0x29, -150, None), (0x0006, 0x42, "gree", None), (0x0002, 0x10, 1, None), (0x0008, 0x10, 0, None), (0x0007, 0x20, 40, None)]
+    state, used = quirks.decode_vendor_attributes(dev, 1, 0xFC00, recs)
+    assert state == {"last_result": "learned c24a1: gree protocol verified & enabled", "code_count": 7, "temperature_offset": -1.5, "protocol": "gree",
+                     "hold": "ON", "led_quiet": "OFF", "led_brightness": 40}
+    assert used == {0x0002, 0x0003, 0x0004, 0x0005, 0x0006, 0x0007, 0x0008}
+    # the same cluster id on a Hue device is still Philips' button cluster: nothing is claimed
+    hue = mk("Signify Netherlands B.V.", "RWL021", {1: ([0x0000, 0x0001, 0x0003, 0xFC00], [0x0006, 0x0008], 0x0830)})
+    assert quirks.decode_vendor_attributes(hue, 1, 0xFC00, [(0x0003, 0x42, b"x", None)]) == ({}, set())
+    # standard thermostat / fan reports land on the family keys; both setpoints are one target
+    st = quirks.translate_state(dev, 1, decode_attributes(0x0201, [(0x0011, 2400), (0x0012, 2400), (0x001C, 3), (0x0000, 2315)], dev.context))
+    assert st == {"target_temperature": 24.0, "system_mode": "cool", "local_temperature": 23.15}
+    assert quirks.translate_state(dev, 1, decode_attributes(0x0202, [(0x0000, 5)])) == {"fan_mode": "auto"}
+    assert quirks.translate_state(dev, 1, decode_attributes(0x0202, [(0x0000, 6)])) == {"fan_mode": "smart"}
+    assert quirks.translate_state(dev, 2, decode_attributes(0x0006, [(0x0000, 1)])) == {"swing": "ON"}
+    assert decode_attributes(0x0201, [(0x0000, -0x8000)]) == {}  # 0x8000 = unknown temperature
+
+
+def test_irblaster_private_attribute_encoding_types_and_limits():
+    dev = irblaster()
+    from oneroof_zigbee.zcl.types import DataType
+    assert quirks.encode_private_attribute(dev, 0xFC00, "learn_key", "*") == (0x0000, DataType.string, "*")
+    assert quirks.encode_private_attribute(dev, 0xFC00, "send_key", "c24a1") == (0x0001, DataType.string, "c24a1")
+    assert quirks.encode_private_attribute(dev, 0xFC00, "hold", "ON") == (0x0002, DataType.bool_, True)
+    assert quirks.encode_private_attribute(dev, 0xFC00, "temperature_offset", -1.5) == (0x0005, DataType.int16, -150)
+    assert quirks.encode_private_attribute(dev, 0xFC00, "led_brightness", 40) == (0x0007, DataType.uint8, 40)
+    assert quirks.encode_private_attribute(dev, 0xFC00, "led_quiet", False) == (0x0008, DataType.bool_, False)
+    with pytest.raises(ValueError):
+        quirks.encode_private_attribute(dev, 0xFC00, "learn_key", "a" * 16)
+    assert quirks.feedback_reads(dev, 0xFC00) == (0x0003, 0x0004, 0x0006)
+    assert quirks.extra_reporting(dev) == {0xFC00: ((0x0003, DataType.string, 1, 3600, None),)}
+
+
+async def test_gateway_irblaster_commands_write_the_right_attributes(tmp_path):
+    fake, broker, gw, dev, t = await _gateway_with(tmp_path, irblaster)
+    writes: list[tuple[int, int, int, int, object]] = []
+
+    async def fake_write(d, ep, cluster, attr, dtype, value):
+        writes.append((ep, cluster, attr, int(dtype), value))
+
+    gw._write_attr = fake_write  # the fake coordinator does not answer Write Attributes
+    from oneroof_zigbee.znp import commands as c
+    from oneroof_zigbee.znp.unpi import Subsystem
+    fake.requests.clear()
+    await broker.inject(f"oneroof/zigbee/{dev.ieee_str}/set", b'{"system_mode": "cool", "target_temperature": 24, "fan_mode": "auto", "swing": "ON"}')
+    assert (1, 0x0201, 0x001C, 0x30, 3) in writes and (1, 0x0201, 0x0011, 0x29, 2400) in writes and (1, 0x0202, 0x0000, 0x30, 5) in writes
+    reqs = [f for f in fake.requests if f.subsystem is Subsystem.AF and f.command == c.AfCmd.DATA_REQUEST]
+    assert len(reqs) == 1 and reqs[0].data[2] == 2 and int.from_bytes(reqs[0].data[4:6], "little") == 0x0006 and reqs[0].data[10:][2] == 0x01  # swing = On on ep 2
+    state = json.loads(broker.last(f"oneroof/zigbee/{dev.ieee_str}/state"))
+    assert state["system_mode"] == "cool" and state["target_temperature"] == 24 and state["fan_mode"] == "auto" and state["swing"] == "ON"
+    # in heat the single target goes to the heating setpoint
+    writes.clear()
+    await broker.inject(f"oneroof/zigbee/{dev.ieee_str}/set", b'{"system_mode": "heat", "target_temperature": 22}')
+    assert (1, 0x0201, 0x0012, 0x29, 2200) in writes
+    # the device-specific cluster: char strings, bool, int16 ×100 — standard attributes, no manufacturer code
+    writes.clear()
+    await broker.inject(f"oneroof/zigbee/{dev.ieee_str}/set", b'{"learn_key": "*", "hold": "ON", "temperature_offset": -1.5, "protocol": "gree"}')
+    assert writes == [(1, 0xFC00, 0x0000, 0x42, "*"), (1, 0xFC00, 0x0002, 0x10, True), (1, 0xFC00, 0x0005, 0x29, -150), (1, 0xFC00, 0x0006, 0x42, "gree")]
+    state = json.loads(broker.last(f"oneroof/zigbee/{dev.ieee_str}/state"))
+    assert state["hold"] == "ON" and state["temperature_offset"] == -1.5 and state["protocol"] == "gree" and "learn_key" not in state
+    # a report from the device is the source of truth: last_result (string) and code_count on 0xFC00
+    from oneroof_zigbee.znp.unpi import Frame, FrameType
+    from oneroof_zigbee.znp.wire import Writer
+    body = b"learned c24a1: gree protocol verified & enabled"
+    zcl = bytes([0x18, 0x09, 0x0A]) + (0x0003).to_bytes(2, "little") + b"\x42" + bytes([len(body)]) + body + (0x0004).to_bytes(2, "little") + b"\x21" + (8).to_bytes(2, "little")
+    w = Writer().u16(0).u16(0xFC00).u16(NWK).u8(1).u8(1).u8(0).u8(200).u8(1).u32(0).u8(9).lv(zcl)
+    fake.emit(Frame(FrameType.AREQ, Subsystem.AF, c.AfCmd.INCOMING_MSG, w.bytes()))
+    await asyncio.sleep(0.05)
+    state = json.loads(broker.last(f"oneroof/zigbee/{dev.ieee_str}/state"))
+    assert state["last_result"] == body.decode() and state["code_count"] == 8
+    assert json.loads(broker.last("oneroof/zigbee/bridge/devices"))[0]["kind"] == "AC IR blaster"
+    await t.close()

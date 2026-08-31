@@ -145,7 +145,13 @@ Switch to the built-in TLS broker from Settings whenever you are ready.
   `privileged`, no `/share` or `/config` mounts, web UI only via Ingress.
 * One process, three third-party Python packages (`pyserial-asyncio`,
   `cryptography`, `pyyaml`). `pip audit` takes seconds.
-* Secrets at rest: AES-256-GCM keystore + 0600 passphrase file.
+* Secrets at rest: AES-256-GCM keystore + 0600 passphrase file. As an add-on the passphrase lives in
+  the add-on's *private* `/data` (Supervisor-owned; not reachable from the File editor, Samba or the
+  config share), the keystore in the config folder — so the browsable folder alone never yields the
+  network key. The current, previous and any in-flight rotation key are all inside that keystore;
+  none is ever printed, logged, published or returned by the API. A full Home Assistant backup contains
+  both files: give it a backup password. The `.ozbk` backup from Settings carries both, encrypted under
+  the password you type (scrypt + AES-256-GCM) — keep that file and its password apart.
 * Tamper-evident audit log (SHA-256 hash chain): `python -m oneroof_zigbee verify-audit`.
 
 ## Reporting
@@ -170,11 +176,29 @@ The network key is shared by every device; whoever holds it can read and inject 
 radio range. Two ways to replace it:
 
 * **Over the air** (Settings → Maintenance → Rotate network key): the trust centre hands the new key
-  to each device individually, encrypted under that device's own link key, waits a configurable
-  window (battery devices collect it from their parent when they wake), then broadcasts the switch.
-  Nothing is re-paired. Whoever holds only the old network key cannot read the per-device deliveries
-  and is locked out. A device that slept through the window rejoins with its link key and receives
-  the current key then. Recorded as `network_key_rotation_started` / `network_key_rotated`.
+  to each device individually, encrypted under that device's own link key, then tells each device
+  to switch, then switches itself. Nothing is re-paired. Every step is evidence-based, not hopeful:
+  a router must first answer an address query on the current key (a stale short address is
+  re-resolved through the network); a battery device is handed the key — and later the order to
+  switch — the moment it is heard, because it polls its parent right after sending, the one moment
+  a transport reaches it (a broadcast reaches no sleeping device); the wait extends itself, up to
+  `zigbee.rotation_max_window_seconds` (default 6 h) and beyond, while anyone is missing. With
+  `zigbee.rotation_require_all` (default on) the switch **never happens without everyone**: the key
+  keeps being offered — across restarts, the pending rotation lives in the encrypted keystore —
+  the old key stays in force, and past the maximum wait a `network_key_rotation_stalled` alert
+  names the devices holding it up (remove one that is gone for good, or cancel). The switch order
+  goes out by unicast: sleeping devices first, routers last, the coordinator after them (with the
+  key items rewritten at that sequence if the radio did not follow). Afterwards every router that
+  was given the key must answer on it; if none does, the devices did not switch and the coordinator
+  returns to the previous key on its own (`network_key_rotation_rolled_back`) — nothing is lost.
+  The previous key stays as the radio's *alternate* key, so a device that missed the switch is
+  still heard, but cannot be commanded until it rejoins with its link key and receives the current
+  key. Whoever holds only the old network key cannot read the per-device deliveries and is locked
+  out. Recorded as `network_key_rotation_started` / `network_key_rotated` (with `verified`,
+  `switched`, `unreachable`). Maintenance offers **Finish key switch** (coordinator → new key) and
+  **Roll back** (coordinator → the key the devices use, from the keystore or the radio's alternate
+  slot); the start finishes or leaves a mismatch alone on evidence, never on a guess
+  (`network_key_mismatch_unresolved`).
 * **Rotate and re-pair everything**: new key *and* new trust-centre seed on the next start. Required
   when the seed may have leaked as well (it is in the previous setup's backup files alongside the
   key); over-the-air rotation does not exclude someone holding both.

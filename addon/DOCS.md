@@ -22,6 +22,8 @@ Zigbee gateway **and** MQTT broker in one add-on, designed around security.
 
 ## Where things are
 * Add-on config folder (`/addon_configs/<slug>/`): keystore, users, `tls/ca.crt`, backups, firmware.
+  The keystore's passphrase is **not** there: it lives in the add-on's private storage, where nothing in
+  Home Assistant can browse it, so the folder (or a Samba copy of it) alone does not reveal the network key.
 * Everything else — users, TLS, join policy, backups, firmware, log level — is in the web UI → Settings,
   with help on every setting.
 

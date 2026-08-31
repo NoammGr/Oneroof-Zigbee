@@ -1,5 +1,277 @@
 # Changelog
 
+## [1.10.16] — 2026-08-31
+
+### Fixed — the offline banner and the network map
+- The "coordinator offline" banner claimed the page's stretchy grid row and filled the whole
+  screen with colour; it is now a slim strip and the content keeps its place.
+- The network map breathes: a taller canvas, spacing that adapts to how many devices there are,
+  labels that keep out of each other's way (the coordinator and routers win; hover always shows
+  the full card), a halo behind every label so lines never make text unreadable, and nothing is
+  clipped at the edges any more.
+
+## [1.10.15] — 2026-08-31
+
+### Fixed — a fresh formation is never claimed on an identity the radio refused
+- Some firmware ignores the configured PAN and channel when forming and picks its own; the gateway
+  then announced the keystore's identity while the radio ran another, and every start raised
+  `network_parameters_mismatch`. A fresh network's identity is arbitrary — the keys are ours and
+  verified either way — so the gateway now reads back what actually formed and adopts it
+  (audit: `network_identity_adopted`). Found on the bench while validating the One Roof
+  coordinator firmware with a joining ESP32-C6 router.
+
+## [1.10.14] — 2026-08-31
+
+### Added — the key rotates on a schedule, not only after joins
+- New Settings → Zigbee option **"Rotate the key every (days)"** (default 30; 0 = only after
+  joins or by hand). An old key is a standing target; now it expires by itself. The scheduled
+  rotation runs through the same evidence engine as every other one — delivered to each device
+  under its own link key, switched only on proof, auto-rollback — and waits politely: never while
+  a pairing session is open, never while another rotation runs. The clock starts when a network is
+  formed or first seen and resets whenever a rotation completes.
+
+## [1.10.13] — 2026-08-31
+
+### Fixed — re-pairing a whole home is safe around the automatic rotation
+- The rotation that follows plain joins now fires **once per pairing session**: every plain join
+  re-arms a quiet-period timer (2 minutes) and the rotation starts only after the last join —
+  never one rotation per device.
+- A device that joins (or is adopted) **while a rotation is running** is folded into it — it
+  receives the new key, and during the switching phase the switch order too, before anyone moves.
+  A freshly paired device can never be left behind on the old key. Audit:
+  `rotation_adopted_new_device`.
+
+## [1.10.12] — 2026-08-31
+
+### Fixed — Scan the air reported an empty sky
+- The firmware performs a scan but reports no beacons while its stored network state (NIB) is
+  present, so the paused scan always came back empty. The scan now takes the NIB out for the few
+  seconds of the scan and puts it back — the same dance zigpy-znp's proven scan tool does.
+
+### Added — re-label the key after an interrupted rotation
+- An interrupted rotation plus rollbacks can leave two *different* keys both labelled sequence 0
+  on the radio, while the devices that switched know the current key as sequence 1 — the sequence
+  byte decides which key a receiver tries, so every frame is dropped: right key, wrong label,
+  silent network. When the recovery panel sees that collision it now offers **Re-label the key as
+  sequence N**: the same key is written again under the next number, the old key stays as the
+  alternate, the counter never moves backwards, nothing is re-paired.
+
+## [1.10.11] — 2026-08-31
+
+### Fixed — a key restored onto the stick from outside is never wiped by a re-formation
+- Tools like zigpy-znp write the live network onto the radio but not the legacy config NV items
+  the start-up check compared. The start then judged "wrong network" and re-formed — cutting every
+  device off a perfectly restored network. Now, when the radio reports it is on a network, the
+  start brings it up and judges by the *live* network: matching PAN and channel mean the config
+  items are repaired in place (audit: `network_config_repaired`) and the key question goes to the
+  normal evidence rules; re-forming happens only when the live network truly disagrees or the
+  radio is not on a network at all.
+
+## [1.10.10] — 2026-08-30
+
+### Changed — one tidy panel for the recovery tools
+- Scan the air and every roll-back option now live in a single collapsed
+  "Network health & recovery tools" panel under Maintenance, each with one short caption — no more
+  loose buttons and run-on text. The panel opens itself when the coordinator is on the wrong key.
+
+### Removed — the "Advance frame counter" button
+- Every code path keeps the counter safe by itself since 1.10.7 (live value read before each stack
+  stop, refreshed every few minutes), so the manual override earned no place in the panel.
+
+### Fixed — a rolled-back or externally restored key survives the next start
+- When the radio sits on the keystore's *previous* network key and no rotation is pending, the
+  start now adopts the radio's key (audit: `keystore_followed_radio`) instead of "finishing" the
+  switch by pushing the newer keystore key back — a key that never reached a single device. A
+  rollback done twice, or a key restored onto the stick from a backup outside the add-on, stays
+  restored. Finishing forward still happens when a rotation really is in flight
+  (`pending_rotation` is set, as every rotation since 1.10.3 records).
+
+## [1.10.9] — 2026-08-30
+
+### Fixed — Scan the air on firmware that refuses to scan while the network is up
+- The firmware in the field answers an active scan with "invalid request" (status 194 / 0xC2)
+  while the network runs. The scan now falls back to a short automatic stack pause: pause, scan,
+  restart — by itself, with the outgoing frame counter read before the pause and re-verified
+  after, so the counter can never go backwards. The log shows `air_scan mode=paused`.
+
+## [1.10.8] — 2026-08-30
+
+### Added — Scan the air
+- Maintenance gains **Scan the air**: a beacon survey listing every Zigbee network in radio range
+  — channel, PAN, whether it is this network, how many devices answered and the strongest signal.
+  Beacons are unencrypted, so the network's routers answer whatever key anyone is on: one press
+  tells apart "the routers are alive but we disagree on the key or the frame counter" from "the
+  routers are not transmitting at all" (powered off, factory-reset back to pairing mode, or out of
+  range) — without touching any key.
+
+## [1.10.7] — 2026-08-30
+
+### Fixed — a key repair could set the coordinator's frame counter back
+- Every stack restart that rewrites the key items (finish, roll back, the start-up repair) also
+  wrote the outgoing NWK frame counter from the keystore's *saved* value plus a margin — a value
+  from the import or the last backup. A radio that had since sent more frames than that went
+  **backwards**, and devices drop every frame at or below the last counter they saw as a replay:
+  the right key, and still nothing works. The live counter is now read before the stop and the
+  higher value is written; the keystore's copy is refreshed every five minutes.
+- After such a restart the neighbour check runs again 45 s later, so the log shows a truthful
+  "hears N routers" line instead of one taken seconds after the radio came up.
+- Maintenance gains **Advance frame counter** (pushes the counter one million ahead; harmless) for a
+  network that already went through such a repair, and the "roll back to a key from a backup or the
+  previous setup" options are always reachable — handing in the key the radio is already on is a no-op,
+  never a flip to something else.
+
+## [1.10.6] — 2026-08-30
+
+### Added — roll back to the key the previous setup ran with
+- A network adopted from Zigbee2MQTT that has had exactly one (failed) rotation is still on the
+  key in the old `configuration.yaml` / `coordinator_backup.json`. Maintenance now offers, next
+  to the backup form, **Roll back to the key of** *&lt;folder&gt;* for every previous setup found
+  on this Home Assistant: the key (and its sequence number, from `coordinator_backup.json`) is
+  read in place and the coordinator returns to it — nothing else is imported, no names, layout or
+  broker settings change, nothing is re-paired. The setup must be the same network (PAN id).
+
+## [1.10.5] — 2026-08-30
+
+### Added — roll back with a backup, and say where a previous key would come from
+- Maintenance now states the key situation plainly: whether the coordinator's key matches the
+  keystore, and where a previous key is available — in the keystore, in the radio's alternate
+  slot, or none known.
+- **Roll back from a backup.** When neither the keystore nor the radio knows the previous key (a
+  rotation made by a version before 1.10.1 on firmware that does not keep the old key in its
+  alternate slot), the `.ozbk` backup taken before the rotation can be handed in with its
+  password: the keystore inside it is decrypted in memory, checked to be the same network, and
+  the coordinator returns to that key under the backup's sequence. Nothing is restored or written
+  from the backup; nothing is re-paired.
+- The rollback audit record says which source was used (`auto` / `backup`).
+
+## [1.10.4] — 2026-08-30
+
+### Fixed
+- Maintenance did not show **Roll back to the previous key** when no rotation was in progress —
+  the very moment it is needed (the radio switched, the devices did not, the rotation record is
+  long gone). The status renderer returned early in the idle state before reaching the notice.
+
+## [1.10.3] — 2026-08-30
+
+### Fixed — the switch itself: devices did not follow a broadcast switch order
+- **Diagnosis corrected.** The 1.10.1 log on the real network read "active network key on the
+  coordinator matches the keystore: yes … coordinator hears 0 neighbours — nothing decrypts": the
+  radio *had* switched at the broadcast (its NV item merely lagged when the rotation checked it);
+  it was the **devices** that never switched. A broadcast switch order never reaches a sleeping
+  device and was ignored by the rest.
+- **Switching is now per device, leaves first.** Every device that received the key is told to
+  switch by **unicast** — sleeping devices the moment each is heard (so a broadcast is no longer
+  relied on), then the routers, then the coordinator itself. Firmware that switches the
+  coordinator on the first unicast order is noticed (active sequence jumped) and the current key
+  is restored until every device has been told.
+- **Automatic rollback.** After the switch every router that was given the key must answer an
+  address query on it. If none does, the devices did not switch: the coordinator returns to the
+  previous key by itself, nothing is lost, and the rotation ends `rolled_back`
+  (`network_key_rotation_rolled_back`) instead of pretending.
+- **Roll back** on Maintenance now means the same thing: the coordinator goes back to the key the
+  devices use — from the keystore's previous key, or from the radio's own alternate key slot when
+  the keystore predates 1.10.1 (no backup needed). If the keystore had moved ahead of a radio that
+  never switched, it simply follows the radio. Nothing is broadcast.
+- **The start never guesses a sequence.** A keystore key that is not the radio's is installed
+  only with evidence: it is the radio's alternate key (a restored backup or a rollback → that
+  slot's sequence), the keystore names it as the next key (→ active + 1), or the radio is a fresh
+  formation that has sent next to nothing. Otherwise the radio is left alone and
+  `network_key_mismatch_unresolved` says to use Finish or Roll back. Previously a live network
+  could have been re-keyed under a guessed sequence and cut off entirely.
+- The keystore records the previous key's sequence; a runtime stack restart re-registers the ZDO
+  callbacks it dropped.
+
+## [1.10.2] — 2026-08-30
+
+### Changed — a key rotation switches only with evidence that everyone has the key
+- **The switch now waits for evidence that everyone has the key.** Routers must answer an
+  address query on the current key before they are handed the new one (a stale short address is
+  re-resolved through the network first); battery devices get the key the moment they are heard,
+  since they poll their parent right after sending — a transport queued while they sleep is
+  dropped by the parent after seconds and nobody notices. The window extends itself, up to
+  `zigbee.rotation_max_window_seconds` (default 6 h), while any device is missing. With
+  `zigbee.rotation_require_all` (default on) the rotation **never switches without everyone**: the
+  key keeps being offered for as long as it takes, a `network_key_rotation_stalled` security alert
+  past the maximum wait names the devices holding it up, the old key stays in force meanwhile, a
+  device that is gone for good is unblocked by removing it, and Maintenance has a *Cancel* button.
+  Off: switch anyway after the maximum wait. After the switch every router is checked on the new
+  key and reported if it does not answer (`unreachable`). Both settings are on Settings → Zigbee.
+- **Two ways out of an unfinished switch**, both without pairing anything again. *Finish key
+  switch* moves the coordinator to the new key; the key the radio was on is remembered as the
+  previous one and stays the alternate, so the devices that missed the switch are still heard
+  until they rejoin. *Roll back* (new) does the opposite with one broadcast under the current
+  key: the devices that switched return to the coordinator's key (they keep the old key as their
+  alternate, as the standard prescribes), the keystore follows, nothing restarts — rotate again
+  afterwards. Both are offered on Maintenance whenever the radio and the devices disagree.
+- **The keystore passphrase moved out of the browsable folder.** It now lives in the add-on's
+  private `/data` (Supervisor-owned; not reachable from the File editor, Samba or the config
+  share) instead of next to the keystore in `/addon_configs/…`; an existing file is moved there
+  on the first start and wiped from the old place. The config folder alone therefore never yields
+  the network key — current, previous or in-flight. The `.ozbk` backup still carries both files,
+  encrypted under your backup password.
+- **A rotation survives a restart.** Its new key, sequence and the devices that already hold it
+  are kept in the encrypted keystore; the next start resumes it (`network_key_rotation_resumed`)
+  without asking those devices again. Cancelling or finishing forgets the record.
+
+## [1.10.1] — 2026-08-30
+
+### Fixed — a key rotation could leave the coordinator on the old key, and a restart then re-formed the network
+- **The coordinator now finishes its own half of an over-the-air rotation.** On Z-Stack 3.x.0 the
+  per-device key transports do not leave the radio with the new key as its alternate, so the
+  broadcast switch moved every device that had received the key while the coordinator stayed on
+  the old one (`network_key_rotated … verified: false`). From then on every switched device
+  answered `AF … status 0xcd` (no route) — it could not decrypt anything the coordinator sent.
+  After the switch the rotation now checks the radio's active key and, if it did not follow,
+  rewrites the key items at the sequence the devices know and restarts the stack (a few seconds;
+  devices stay paired). Recorded in the audit as `finished_on_coordinator`.
+- **A restart after a rotation no longer wipes the network.** The rotation never updated the
+  dongle's precommissioned key, so the next start saw "NV ≠ keystore" and re-formed with
+  `CLEAR_ALL`. The rotation records the new key as precommissioned; and when only the key differs
+  while PAN, extended PAN and channel agree, the start finishes the switch instead of re-forming
+  (`network_key_switch_unfinished` → `network_key_switch_finished`), installing the keystore key
+  under sequence *active + 1* when the keystore predates this version.
+- The keystore remembers the key sequence and the previous key; the previous key is written as
+  the radio's alternate key, so a device that missed the switch is still heard (its reports
+  arrive) until it rejoins and picks up the current key.
+- Transports that failed are retried every 30 s during the window (a router with a stale address,
+  a sleepy device whose parent had not held the frame yet); `retried` is reported.
+- Maintenance shows a **Finish key switch** button whenever the radio is not on the keystore key,
+  and the rotation status carries `verified`, `retried` and `coordinator_key_ok`.
+
+## [1.10.0] — 2026-08-30
+
+### Added — air conditioners, and the One Roof IRBlaster
+- **Thermostats are no longer assumed to be radiator valves.** The gateway reads
+  ControlSequenceOfOperation and the Min/Max setpoint limits at interview: a
+  cooling-capable device gets `current_cooling_setpoint` with its own limits, the
+  mode list follows what the device can do (off/cool/auto/dry/fan_only,
+  off/heat/auto, or all six), and Fan Control on the same endpoint becomes
+  `fan_mode` (low/medium/high/auto; a device's "on"/"smart" reads back as such).
+  Home Assistant's climate entity gets the full mode list, `fan_modes`, and —
+  for two independent setpoints — a low/high target range. Existing TRVs keep
+  exactly the features they had.
+- **One Roof IRBlaster** (`NoammGr` / `IRBlaster`), the Zigbee infrared blaster for
+  air conditioners, is a known model: a single `target_temperature` 16–30 °C (the
+  device keeps both ZCL setpoints equal; the write goes to the setpoint that
+  matches the mode), mode, fan, and the endpoint-2 output as **Swing**. Its own
+  cluster 0xFC00 is described by the model table (`PrivateAttr`: standard
+  attributes, no manufacturer code, exact wire types — char strings, bool, int16
+  ×100 …) and resolved by model, so Philips' use of the same cluster id is
+  untouched. Features: `learn_key` / `send_key` (text commands), `protocol`,
+  `hold`, `last_result`, `code_count` in a new **IR remote** section of the
+  Controls tab, plus `temperature_offset`, `led_brightness`, `led_quiet` under
+  Configuration. Writes to the cluster are followed by a read of
+  last_result / code_count / protocol; `last_result` is also configured for
+  reporting. Home Assistant gets `text`, `select`, `switch`, `number` and
+  `sensor` entities for them.
+- Model table: quirks can now relabel a generic feature per endpoint, declare a
+  single target temperature, add reporting and interview reads for their own
+  clusters, and assert converter context (capabilities) before the first read.
+
+### Fixed
+- The root `CHANGELOG.md` had stopped at 1.7.3 while the add-on copy went on to
+  1.9.0; the two are one file again (CI compares them).
+
 ## [1.9.0] — 2026-08-29
 
 ### Added — survive the coordinator going offline

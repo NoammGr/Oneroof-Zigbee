@@ -123,6 +123,16 @@ SYSTEM_MODE = {
 }
 SYSTEM_MODE_BY_NAME = {v: k for k, v in SYSTEM_MODE.items()}
 
+# Thermostat ControlSequenceOfOperation (0x001B): which of cooling / heating the device can do
+CONTROL_SEQUENCE_COOLING = {0, 1, 4, 5}
+CONTROL_SEQUENCE_HEATING = {2, 3, 4, 5}
+
+# Fan Control FanMode (0x0000). "on" (4) and "smart" (6) are accepted by most air conditioners
+# and treated like auto; the gateway offers the four the UI can reason about.
+FAN_MODE = {0: "off", 1: "low", 2: "medium", 3: "high", 4: "on", 5: "auto", 6: "smart"}
+FAN_MODE_BY_NAME = {v: k for k, v in FAN_MODE.items()}
+FAN_MODES = ["low", "medium", "high", "auto"]
+
 IAS_ZONE_TYPE = {
     0x0000: "standard_cie",
     0x000D: "motion",
@@ -382,16 +392,33 @@ def _dec_window_covering(a: dict[str, Any], ctx: dict[str, Any]) -> dict[str, An
 
 def _dec_thermostat(a: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
-    if _num(a.get("local_temperature")):
+    if _num(a.get("local_temperature")) and a["local_temperature"] != -0x8000:
         out["local_temperature"] = round(a["local_temperature"] / 100, 2)
     if _num(a.get("occupied_heating_setpoint")):
         out["current_heating_setpoint"] = round(a["occupied_heating_setpoint"] / 100, 2)
     if _num(a.get("occupied_cooling_setpoint")):
-        out["cooling_setpoint"] = round(a["occupied_cooling_setpoint"] / 100, 2)
+        out["current_cooling_setpoint"] = round(a["occupied_cooling_setpoint"] / 100, 2)
     if _num(a.get("system_mode")):
         out["system_mode"] = SYSTEM_MODE.get(a["system_mode"], f"unknown_{a['system_mode']}")
     if _num(a.get("running_state")):
         out["running_state"] = "heat" if a["running_state"] & 0x01 else ("cool" if a["running_state"] & 0x02 else "idle")
+    # Capabilities and limits are remembered in the device context so the feature layer can offer
+    # a cooling setpoint and the right mode list (an air conditioner is not a radiator valve).
+    if _num(a.get("control_sequence")):
+        ctx["thermostat_sequence"] = int(a["control_sequence"])
+    for name, key in (("min_heat_setpoint_limit", "heat_setpoint_min"), ("max_heat_setpoint_limit", "heat_setpoint_max"),
+                      ("min_cool_setpoint_limit", "cool_setpoint_min"), ("max_cool_setpoint_limit", "cool_setpoint_max")):
+        if _num(a.get(name)):
+            ctx[key] = round(a[name] / 100, 2)
+    return out
+
+
+def _dec_fan(a: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    if _num(a.get("fan_mode")):
+        out["fan_mode"] = FAN_MODE.get(a["fan_mode"], f"unknown_{a['fan_mode']}")
+    if _num(a.get("fan_mode_sequence")):
+        ctx["fan_mode_sequence"] = int(a["fan_mode_sequence"])
     return out
 
 
@@ -571,6 +598,11 @@ def _make_clusters() -> dict[int, Cluster]:
                 (0x0000, "local_temperature", I16),
                 (0x0011, "occupied_cooling_setpoint", I16, True),
                 (0x0012, "occupied_heating_setpoint", I16, True),
+                (0x0015, "min_heat_setpoint_limit", I16),
+                (0x0016, "max_heat_setpoint_limit", I16),
+                (0x0017, "min_cool_setpoint_limit", I16),
+                (0x0018, "max_cool_setpoint_limit", I16),
+                (0x001B, "control_sequence", E8),
                 (0x001C, "system_mode", E8, True),
                 (0x0029, "running_state", B16),
             ),
@@ -753,7 +785,7 @@ def _make_clusters() -> dict[int, Cluster]:
             decoder=_dec_door_lock,
         )
     )
-    clusters.append(Cluster(0x0202, "fan_control", _attrs((0x0000, "fan_mode", E8, True), (0x0001, "fan_mode_sequence", E8))))
+    clusters.append(Cluster(0x0202, "fan_control", _attrs((0x0000, "fan_mode", E8, True), (0x0001, "fan_mode_sequence", E8)), decoder=_dec_fan))
     clusters.append(Cluster(0x0204, "thermostat_ui", _attrs((0x0000, "temperature_display_mode", E8, True), (0x0001, "keypad_lockout", E8, True))))
     clusters.append(Cluster(0x040D, "carbon_dioxide", _attrs((0x0000, "measured_value", DataType.single)), decoder=_dec_concentration("co2")))
     clusters.append(Cluster(0x042A, "pm25", _attrs((0x0000, "measured_value", DataType.single)), decoder=_dec_concentration("pm25")))
@@ -927,6 +959,11 @@ __all__ = [
     "ias_zone_status_to_state",
     "IAS_ZONE_TYPE",
     "SYSTEM_MODE",
+    "CONTROL_SEQUENCE_COOLING",
+    "CONTROL_SEQUENCE_HEATING",
+    "FAN_MODE",
+    "FAN_MODE_BY_NAME",
+    "FAN_MODES",
     "POWER_SOURCE",
     "COLOR_MODE",
     "LOCK_STATE",

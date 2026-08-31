@@ -38,7 +38,8 @@ a{color:var(--accent)}
 .hidden{display:none!important}
 svg.i{width:1em;height:1em;flex:none;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;vertical-align:-.15em}
 /* ---------- layout ---------- */
-#app{display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:auto 1fr;min-height:100vh}
+#app{display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto 1fr;min-height:100vh}
+.shell{grid-row:3}
 header .ver{color:var(--faint);font-size:12px;padding-left:6px;border-left:1px solid var(--line)}
 header{display:flex;align-items:center;gap:18px;padding:0 24px;height:60px;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:5}
 .brand{font-family:var(--head);font-weight:800;letter-spacing:-.02em;font-size:19px;display:flex;align-items:center;gap:8px;white-space:nowrap}
@@ -74,6 +75,9 @@ input[type=text],input[type=search],input[type=number],input[type=password],inpu
 textarea{width:100%;resize:vertical}
 input:disabled,select:disabled,textarea:disabled{opacity:.6;background:var(--card-2)}
 input[type=search]{width:280px;max-width:100%}
+input[type=file]{padding:5px 8px;color:var(--mute);font-size:12.5px}
+input[type=file]::file-selector-button{background:var(--card);border:1px solid var(--line);border-radius:9px;padding:5px 12px;font:inherit;font-size:12.5px;font-weight:600;color:var(--ink);margin-right:10px;cursor:pointer}
+input[type=file]::file-selector-button:hover{border-color:var(--ink-2);background:var(--card-2)}
 input.sm,select.sm{padding:4px 8px;font-size:12.5px;border-radius:9px}
 input[type=number].sm{width:78px}
 .btn{background:var(--card);border:1px solid var(--line);border-radius:var(--rb);padding:8px 14px;font-weight:600;line-height:1.2;display:inline-flex;align-items:center;gap:6px}
@@ -192,7 +196,7 @@ details summary{cursor:pointer;font-weight:700;padding:4px 0}
 .feed div{padding:7px 12px;border-bottom:1px solid var(--line2);display:flex;gap:10px}
 .feed .t{color:var(--faint);flex:none}
 /* ---------- map ---------- */
-#mapc{width:100%;height:480px;background:var(--card);border:1px solid var(--line);border-radius:var(--r);display:block;touch-action:none;box-shadow:var(--shadow)}
+#mapc{width:100%;height:620px;background:var(--card);border:1px solid var(--line);border-radius:var(--r);display:block;touch-action:none;box-shadow:var(--shadow)}
 .legend{display:flex;gap:16px;font-size:12px;color:var(--mute);margin:10px 0 0}
 .legend i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px;vertical-align:-1px}
 /* ---------- logs ---------- */
@@ -307,7 +311,7 @@ dialog .acts{display:flex;gap:8px;justify-content:flex-end;margin-top:16px}
   .pair{grid-template-columns:1fr}
   .devtab th:nth-child(2),.devtab td:nth-child(2),.devtab th:nth-child(3),.devtab td:nth-child(3){display:none}
   .log .row{grid-template-columns:84px 52px 1fr}
-  #mapc{height:360px}
+  #mapc{height:440px}
   #toasts{left:16px;max-width:none;bottom:80px}
   .feat{grid-template-columns:40px minmax(0,1fr)}
   .feat .ctrl{grid-column:1/-1;justify-content:flex-start}
@@ -348,6 +352,8 @@ function el(tag,attrs,...kids){const e=document.createElement(tag);if(attrs)for(
 function clear(n){while(n.firstChild)n.removeChild(n.firstChild);return n;}
 const ICONS={
   power:'M12 3v9M6.3 6.3a8 8 0 1 0 11.4 0',
+  wind:'M3 8h9a2.5 2.5 0 1 0-2.5-2.5M3 12h13a2.5 2.5 0 1 1-2.5 2.5M3 16h7a2 2 0 1 1-2 2',
+  counter:'M4 5h16v14H4zM8 9v6M12 9v6M16 9v6',
   sliders:'M4 7h10M18 7h2M4 17h4M12 17h8M14 7a2 2 0 1 0 4 0a2 2 0 1 0-4 0M8 17a2 2 0 1 0 4 0a2 2 0 1 0-4 0',
   thermometer:'M10 14.5V5a2 2 0 1 1 4 0v9.5a3.5 3.5 0 1 1-4 0z',
   drop:'M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11z',
@@ -412,6 +418,9 @@ const HELP={
   'zigbee.permit_join_cooldown_seconds':'Minimum pause between two join windows. Stops a compromised MQTT client from keeping the network permanently open by re-requesting permit_join in a loop.',
   'zigbee.permit_join_require_install_code':'Plain join windows are refused; every device must be paired with the install code printed on it. The network key then travels encrypted with a per-device key, so a sniffer present during pairing learns nothing.',
   'zigbee.permit_join_close_after_first_join':'A join window without install code admits exactly one device and closes the moment it joins, so nothing can slip in behind it. Pair devices one at a time.',
+  'zigbee.rotation_require_all':'Switch to the new key only when every device demonstrably received it: routers must answer on the current key first, battery devices are handed the key the moment they are heard, and the key keeps being offered for as long as it takes — through restarts too. Past the maximum wait a "stalled" alert names who is holding it up: remove a device that is gone for good, or cancel. Off: switch anyway after the maximum wait; the devices that missed it must rejoin.',
+  'zigbee.rotation_interval_days':'The key also rotates by itself every this many days (0 = never) — an old key is a standing target. It runs through the same evidence rules as a manual rotation and waits politely: never while you are pairing devices, never while another rotation runs.',
+  'zigbee.rotation_max_window_minutes':'After this long with devices still missing the rotation raises a "stalled" alert (and, with the option above off, switches anyway). Battery sensors that report rarely need hours.',
   'zigbee.rotate_key_after_plain_join':'A device paired without an install code receives the network key under the public key; a sniffer present at that moment may have captured it. After such a pairing the key is rotated over the air within minutes (the new device already has its own link key by then), so the exposed key dies young.',
   'zigbee.strict_install_codes':'Replaces the public ZigBeeAlliance09 link key with a random one, so a device can only join with its install code. Strongest setting, but devices that do not print an install code cannot be paired at all.',
   'mqtt.listen':'Interface the broker binds to. 0.0.0.0 = all interfaces (needed when Home Assistant runs elsewhere); 127.0.0.1 keeps it local to this host.',
@@ -439,7 +448,7 @@ const HELP={
   'maintenance.log_level':'Verbosity of the application log until the next restart. DEBUG logs every frame and can include device payloads; use it briefly.',
   'maintenance.restart':'Restarts the whole process: broker, coordinator link and this UI. Devices keep their state and reconnect by themselves; expect a few seconds of downtime.',
   'maintenance.rotate':'Over the air: the new network key is handed to every device encrypted under that device\'s own link key, then everyone switches. Nothing is re-paired. Whoever holds only the old network key is locked out. A device asleep through the whole window rejoins with its link key and picks the key up then.',
-  'maintenance.rotate_window':'How long to wait between handing out the key and switching to it. Battery devices receive the key from their parent router when they next wake; longer windows reach more of them before the switch, the rest rejoin afterwards.',
+  'maintenance.rotate_window':'How long to wait between handing out the key and switching to it. Devices that refused the key are offered it again every 30 s during the window. Battery devices receive the key from their parent router when they next wake; longer windows reach more of them before the switch, the rest rejoin afterwards.',
   'maintenance.repair':'Fresh network key AND fresh trust-centre seed on the next start. Every device must be paired again. Needed only when the seed may have leaked too (for example the previous setup\'s backup files) — over-the-air rotation alone does not exclude someone who has both.',
   'pair.seconds':'How long the network accepts new devices. The network key is handed to anyone who joins in this window, so keep it just long enough to press the button on the device.',
   'pair.ieee':'The 64-bit address printed on the device or its QR label (16 hex digits). The join window is then opened for this one device only.',
@@ -498,7 +507,16 @@ const HELP={
   position:'Cover position in percent: 0 closed, 100 fully open.',
   cover:'Open, close or stop the cover motor.',
   heating_setpoint:'Target temperature of the thermostat in °C.',
-  system_mode:'Thermostat mode: off, heat, cool or auto.',
+  system_mode:'Thermostat mode. A radiator valve offers off/heat/auto; an air conditioner also cool, dry and fan_only. off is "power off".',
+  fan_mode:'Fan speed of the air conditioner: low, medium, high or auto.',
+  target_temperature:'The set temperature — one setpoint for cooling and heating, as on the remote.',
+  swing:'Louver swing / oscillation on or off.',
+  learn_key:'Set the climate (mode, temperature, fan, swing) the way you want it first, then press Learn current state and, within 20 s, the matching button on the AC remote. Or type a code key (off, c24a1 …) or a name for an extra button (light, turbo) and press Learn.',
+  send_key:'Transmit a stored code by its key: off, c24a1 = cool 24 °C fan auto swing on, or a name you learned such as light.',
+  protocol:'learn replays the frames you learned; auto adopts the protocol detected from a learned frame; coolix/gree/daikin/electra use the native encoder so every state works without learning.',
+  hold:'Local thermostat: the blaster switches the AC on and off around the setpoint using its own temperature sensor.',
+  last_result:'What the device did last: learned …, remote: …, no code for … — learn it.',
+  code_count:'How many IR codes are stored on the device.',
   identify:'Makes the device blink for about 10 seconds so you can find it physically.',
   linkquality:'Link quality of the last received frame, 0–255. Values under ~50 mean a weak link; a router nearby helps.',
   battery:'Remaining battery as reported by the device. Sleepy devices report it rarely, so the value can be hours old.',
@@ -700,6 +718,13 @@ function featureControl(d,f,o){
     ctrl.append(el('span',{class:'sub',text:'x'}),x,el('span',{class:'sub',text:'y'}),y,el('button',{class:'btn primary'+(cmp?' sm':''),text:'Apply',onclick:()=>set({x:+x.value,y:+y.value})}));
   }else if(f.type==='composite'){
     const t=el('span',{class:'mono sub'});reg(()=>{t.textContent=fmtVal(cur());});ctrl.append(t);
+  }else if(f.key==='learn_key'||f.key==='send_key'){
+    /* IR blaster: a code key is a command in disguise — the field is never filled from state */
+    const learn=f.key==='learn_key';const i=el('input',{type:'text',class:'sm',maxlength:f.max_length||15,placeholder:learn?'code key or name':'off, c24a1, light …','aria-label':lbl,autocomplete:'off',spellcheck:'false'});
+    const go=()=>{const v=i.value.trim();if(!v){toast(learn?'Type a code key, or use "Learn current state"':'Type the key of a stored code',true);return;}set(v);i.value='';toast(learn?'Learning "'+v+'" — press the remote within 20 s':'Sent '+v);};
+    i.addEventListener('keydown',e=>{if(e.key==='Enter')go();});
+    ctrl.append(i,el('button',{class:'btn sm',text:learn?'Learn':'Send',onclick:go}));
+    if(learn)ctrl.append(el('button',{class:'btn primary'+(cmp?' sm':''),onclick:()=>{set('*');toast('Set the AC as you want it, then press the remote within 20 s');}},svg('remote'),'Learn current state'));
   }else{
     if(rw){const i=el('input',{type:'text',class:'sm',value:cur()??'','aria-label':lbl});ctrl.append(i,el('button',{class:'btn sm',text:'Set',onclick:()=>set(i.value)}));}
     else{const t=el('span');reg(()=>{t.textContent=fmtVal(cur());});ctrl.append(t);}
@@ -753,7 +778,7 @@ views.dashboard={
 const TABS=[['about','About'],['controls','Controls'],['state','State'],['clusters','Clusters'],['reporting','Reporting'],['bind','Bind'],['firmware','Firmware']];
 const hasDatapoints=d=>!!d&&clusters(d).has(0xef00);
 const devTabs=d=>hasDatapoints(d)?[...TABS.slice(0,3),['datapoints','Datapoints'],...TABS.slice(3)]:TABS;
-const CATS=[['control','Controls'],['sensor','Sensors'],['config','Configuration'],['diagnostic','Diagnostics']];
+const CATS=[['control','Controls'],['ir','IR remote'],['sensor','Sensors'],['config','Configuration'],['diagnostic','Diagnostics']];
 const DEF_CATS=[['light','Light'],['plug','Smart plug'],['switch','Switch'],['sensor','Sensor'],['remote','Button/remote'],['cover','Cover'],['climate','Thermostat'],['lock','Lock'],['meter','Electricity meter'],['unknown','Unknown']];
 views.device={
   tab:'about',d:null,ieee:null,upd:new Map(),
@@ -1062,10 +1087,10 @@ views.map={
     this.hot=300;cancelAnimationFrame(this.raf);this.loop();
   },
   step(){
-    const N=this.nodes,L=this.links,W=this.W,H=this.H;const k=90;
+    const N=this.nodes,L=this.links,W=this.W,H=this.H;const k=Math.max(60,Math.sqrt(W*H/(N.length+1))*.55);
     for(let i=0;i<N.length;i++){const a=N[i];for(let j=i+1;j<N.length;j++){const b=N[j];let dx=a.x-b.x,dy=a.y-b.y;let d2=dx*dx+dy*dy||.01;const d=Math.sqrt(d2);const f=k*k/d2*1.6;dx/=d;dy/=d;a.vx+=dx*f;a.vy+=dy*f;b.vx-=dx*f;b.vy-=dy*f;}}
     for(const l of L){const dx=l.b.x-l.a.x,dy=l.b.y-l.a.y;const d=Math.sqrt(dx*dx+dy*dy)||.01;const rest=k*(1.6-l.lqi/255*.8);const f=(d-rest)*.04;l.a.vx+=dx/d*f;l.a.vy+=dy/d*f;l.b.vx-=dx/d*f;l.b.vy-=dy/d*f;}
-    for(const n of N){if(n.fixed||n===this.drag){n.vx=n.vy=0;continue;}n.vx+=(W/2-n.x)*.002;n.vy+=(H/2-n.y)*.002;n.vx*=.82;n.vy*=.82;n.x=Math.max(20,Math.min(W-20,n.x+n.vx));n.y=Math.max(20,Math.min(H-20,n.y+n.vy));}
+    for(const n of N){if(n.fixed||n===this.drag){n.vx=n.vy=0;continue;}n.vx+=(W/2-n.x)*.006;n.vy+=(H/2-n.y)*.006;n.vx*=.82;n.vy*=.82;n.x=Math.max(28,Math.min(W-28,n.x+n.vx));n.y=Math.max(26,Math.min(H-36,n.y+n.vy));}
   },
   loop(){if(S.page!=='map')return;if(this.hot>0){this.step();this.hot--;}this.draw();this.raf=requestAnimationFrame(()=>this.loop());},
   draw(){
@@ -1073,7 +1098,20 @@ views.map={
     if(!this.nodes.length){ctx.fillStyle=col('--mute');ctx.font='13px '+col('--sans');ctx.textAlign='center';ctx.fillText('No neighbour data yet — refresh the tables.',this.W/2,this.H/2);return;}
     for(const l of this.links){const q=l.lqi/255;ctx.strokeStyle=col('--accent');ctx.globalAlpha=.15+q*.7;ctx.lineWidth=.5+q*3;ctx.beginPath();ctx.moveTo(l.a.x,l.a.y);ctx.lineTo(l.b.x,l.b.y);ctx.stroke();}
     ctx.globalAlpha=1;ctx.font='12px '+col('--sans');ctx.textAlign='center';
-    for(const n of this.nodes){const t=n.n.type;const r=t==='coordinator'?11:t==='router'?8:5;ctx.fillStyle=t==='coordinator'?col('--ink'):t==='router'?col('--accent'):col('--faint');ctx.beginPath();ctx.arc(n.x,n.y,r,0,7);ctx.fill();if(n===this.hover){ctx.strokeStyle=col('--ink');ctx.lineWidth=2;ctx.stroke();}if(t!=='end_device'||n===this.hover||this.nodes.length<25){ctx.fillStyle=col('--ink');ctx.fillText(n.n.friendly_name||n.n.ieee,n.x,n.y+r+14);}}
+    for(const n of this.nodes){const t=n.n.type;const r=t==='coordinator'?11:t==='router'?8:5;ctx.fillStyle=t==='coordinator'?col('--ink'):t==='router'?col('--accent'):col('--faint');ctx.beginPath();ctx.arc(n.x,n.y,r,0,7);ctx.fill();if(n===this.hover){ctx.strokeStyle=col('--ink');ctx.lineWidth=2;ctx.stroke();}}
+    // Labels drawn by importance (coordinator, hovered, routers, then the rest); a label that would
+    // sit on an already-drawn one is skipped — hover always shows the full card anyway.
+    const prio=n=>n===this.hover?0:n.n.type==='coordinator'?1:n.n.type==='router'?2:3;
+    const placed=[];const hit=(a)=>placed.some(b=>a.x<b.x+b.w&&b.x<a.x+a.w&&a.y<b.y+b.h&&b.y<a.y+a.h);
+    for(const n of [...this.nodes].sort((a,b)=>prio(a)-prio(b))){
+      const t=n.n.type;const r=t==='coordinator'?11:t==='router'?8:5;
+      const txt=n.n.friendly_name||n.n.ieee;const w=ctx.measureText(txt).width;
+      const lx=Math.max(w/2+4,Math.min(this.W-w/2-4,n.x));const ly=n.y+r+14;
+      const box={x:lx-w/2-3,y:ly-11,w:w+6,h:16};
+      if(hit(box)&&n!==this.hover)continue;
+      placed.push(box);
+      ctx.lineWidth=3;ctx.strokeStyle=col('--card');ctx.strokeText(txt,lx,ly);
+      ctx.fillStyle=col('--ink');ctx.fillText(txt,lx,ly);}
     if(this.hover){const n=this.hover;const lines=[n.n.friendly_name||'',n.n.ieee,(n.n.type||'').replace('_',' ')+(n.n.lqi!=null?' · LQI '+n.n.lqi:'')];for(const l of this.links)if(l.a===n||l.b===n){const o=l.a===n?l.b:l.a;lines.push('↔ '+(o.n.friendly_name||o.n.ieee)+'  LQI '+l.lqi);}
       ctx.font='12px '+col('--mono');ctx.textAlign='left';const w=Math.max(...lines.map(s=>ctx.measureText(s).width))+16;const h=lines.length*16+10;let x=n.x+14,y=n.y-h/2;if(x+w>this.W)x=n.x-w-14;y=Math.max(4,Math.min(this.H-h-4,y));ctx.fillStyle=col('--card');ctx.strokeStyle=col('--line');ctx.lineWidth=1;ctx.fillRect(x,y,w,h);ctx.strokeRect(x,y,w,h);ctx.fillStyle=col('--ink');lines.forEach((s,i)=>ctx.fillText(s,x+8,y+17+i*16));}
   },
@@ -1284,7 +1322,9 @@ views.settings={
     const[one,oneRow]=chk('One device per join window',z.permit_join_close_after_first_join!==false,null,'zigbee.permit_join_close_after_first_join');f.reg('zigbee.permit_join_close_after_first_join',()=>one.checked,one);f.setter('zigbee.permit_join_close_after_first_join',v=>{one.checked=!!v;});
     const[rk,rkRow]=chk('Rotate key after a pairing without install code',z.rotate_key_after_plain_join!==false,null,'zigbee.rotate_key_after_plain_join');f.reg('zigbee.rotate_key_after_plain_join',()=>rk.checked,rk);f.setter('zigbee.rotate_key_after_plain_join',v=>{rk.checked=!!v;});
     const[st,stRow]=chk('Strict install codes',z.strict_install_codes,'Devices without an install code cannot join at all.','zigbee.strict_install_codes');f.reg('zigbee.strict_install_codes',()=>st.checked,st);f.setter('zigbee.strict_install_codes',v=>{st.checked=!!v;});
-    return f.card(el('div',{class:'fgrid'},fld('Channel',ch,'Changing it re-forms the network.','zigbee.channel'),fld('Max join window (s)',mx,null,'zigbee.permit_join_max_seconds'),fld('Join cooldown (s)',cd,null,'zigbee.permit_join_cooldown_seconds')),oneRow,rkRow,ricRow,stRow);
+    const[ra,raRow]=chk('Switch keys only when every device has the new one',z.rotation_require_all!==false,'Otherwise the switch goes ahead after the maximum wait and devices that missed it must rejoin.','zigbee.rotation_require_all');f.reg('zigbee.rotation_require_all',()=>ra.checked,ra);f.setter('zigbee.rotation_require_all',v=>{ra.checked=!!v;});
+    const mw=num(Math.round((z.rotation_max_window_seconds||21600)/60),1,10080);const ri=num(z.rotation_interval_days??30,0,3650);f.reg('zigbee.rotation_interval_days',()=>Math.max(0,parseInt(ri.value,10)||0),ri);f.setter('zigbee.rotation_interval_days',v=>setVal(ri,v??30));f.reg('zigbee.rotation_max_window_seconds',()=>Math.max(60,(+mw.value||360)*60),mw);f.setter('zigbee.rotation_max_window_seconds',v=>setVal(mw,Math.round((v||21600)/60)));
+    return f.card(el('div',{class:'fgrid'},fld('Channel',ch,'Changing it re-forms the network.','zigbee.channel'),fld('Max join window (s)',mx,null,'zigbee.permit_join_max_seconds'),fld('Join cooldown (s)',cd,null,'zigbee.permit_join_cooldown_seconds'),fld('Key rotation: longest wait (min)',mw,null,'zigbee.rotation_max_window_minutes'),fld('Rotate the key every (days)',ri,null,'zigbee.rotation_interval_days')),oneRow,rkRow,raRow,ricRow,stRow);
   },
   cardMqtt(ro){
     const m=CFG.mqtt||{},t=m.tls||{},tls=this.cfg.tls||{},ha=this.cfg.ha_setup||{};const f=new Form(ro);
@@ -1541,18 +1581,67 @@ views.settings={
     this._rotPoll(status,btn,true);
     return box;
   },
+  rollbackFromBackup(status,btn){
+    const file=el('input',{type:'file',accept:'.ozbk'}),pw=pwd('backup password');
+    const go=el('button',{class:'btn sm',text:'Roll back from this backup',onclick:async()=>{const fl=file.files&&file.files[0];if(!fl){toast('Choose the .ozbk backup taken before the rotation',true);return;}
+      if(!(await confirmDlg('Roll back to the key in this backup?',[el('p',{text:'The coordinator returns to the network key stored in the backup \u2014 the one the devices still use. The backup is only read; nothing is restored or written. The radio restarts for a few seconds; nothing is re-paired.'})],'Roll back',false)))return;
+      go.disabled=true;try{const r=await api('api/rotate_network_key',{mode:'rollback',data_b64:await readFile(fl,true),password:pw.value});toast(r.rolled_back?'Coordinator is back on the backup\'s key':'Rollback not verified \u2014 see Logs',!r.rolled_back);pw.value='';this._rotPoll(status,btn,true);}catch(e){toast(e.message,true);}go.disabled=false;}});
+    const prev=el('div');
+    api('api/import/scan').then(r=>{const fl=(r&&r.folders)||[];if(!fl.length)return;
+      for(const f of fl){if(!f.files||!(f.files['configuration.yaml']||f.files['coordinator_backup.json']))continue;
+        const b=el('button',{class:'btn sm',style:'margin-top:8px',onclick:async()=>{if(!(await confirmDlg('Roll back to the previous setup\'s key?',[el('p',{text:'The coordinator returns to the network key found in '+f.path+' \u2014 the key this network was adopted with, which the devices still use. Only the key is read; names and settings are not imported. The radio restarts for a few seconds; nothing is re-paired.'})],'Roll back',false)))return;b.disabled=true;try{const r=await api('api/rotate_network_key',{mode:'rollback',folder:f.path});toast(r.rolled_back?'Coordinator is back on the previous setup\'s key':'Rollback not verified \u2014 see Logs',!r.rolled_back);this._rotPoll(status,btn,true);}catch(e){toast(e.message,true);}b.disabled=false;}},svg('back'),' Roll back to the key of ',el('span',{class:'mono',text:f.path}));
+        prev.append(b);}}).catch(()=>{});
+    return el('div',{style:'margin-top:14px'},
+      el('div',{style:'font-weight:700;margin-bottom:2px',text:'Roll back to an older key'}),
+      el('div',{class:'sub',style:'margin:0 0 8px',text:'From the backup taken before a rotation (Settings \u2192 Backup), or from the previous setup\u2019s files. Nothing is re-paired.'}),
+      el('div',{class:'bar',style:'margin-bottom:0'},file,pw,go),prev);
+  },
   async _rotPoll(status,btn,once){
     try{const st=await api('api/rotate_network_key');
       const ph=st.phase||'idle';
-      if(ph==='idle'){status.textContent='';btn.disabled=btn.title!=='';return;}
-      const d=(st.delivered||[]).length,f=Object.keys(st.failed||{}).length;
-      const txt={delivering:'Handing the new key to devices… '+d+' delivered'+(f?', '+f+' skipped':''),
-        waiting:'Waiting '+st.seconds_left+' s before switching — '+d+' delivered'+(f?', '+f+' skipped':''),
-        switching:'Switching…',done:'Done: '+d+' devices received the new key'+(f?', '+f+' will pick it up when they rejoin':'')+'. The old key is no longer valid.',
+      if(ph==='idle'){clear(status);btn.disabled=btn.title!=='';
+        const keyOk=st.coordinator_key_ok;
+        const srcTxt={keystore:'a previous key is kept in the keystore',radio:'a previous key sits in the radio\u2019s spare slot',none:'no previous key is known',unknown:''}[st.rollback_source||'unknown'];
+        const tool=(button,caption)=>el('div',{style:'display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px'},button,el('span',{class:'sub',text:caption}));
+        const scanOut=el('div');
+        const scanBtn=el('button',{class:'btn sm',text:'Scan the air',onclick:async ev=>{const b=ev.target;b.disabled=true;b.textContent='Scanning\u2026';try{const r=await api('api/scan_air',{});const mine=(r.networks||[]).find(n=>n.this_network);
+          const rows=(r.networks||[]).map(n=>el('div',{class:'sub',style:n.this_network?'font-weight:700;color:inherit':'',text:(n.this_network?'This network':'Another network')+' \u00b7 channel '+n.channel+' \u00b7 '+n.responders+' answering \u00b7 signal '+n.best_lqi+(n.permit_join?' \u00b7 accepting joins':'')}));
+          const verdict=mine?el('div',{class:'notice',style:'margin:8px 0 0',text:'Your devices are alive: '+mine.responders+' answered on channel '+mine.channel+'. If the Map still shows nothing, the coordinator and the devices disagree on the key.'}):el('div',{class:'notice warn',style:'margin:8px 0 0',text:rows.length?'None of your devices answered \u2014 they are powered off, factory-reset back to pairing mode, or out of range. A reset device has to be paired again.':'Nothing answered at all \u2014 check the coordinator\u2019s antenna or USB extension.'});
+          scanOut.replaceChildren(el('div',{style:'margin-top:6px'},...rows,verdict));}catch(e){toast(e.message,true);}b.disabled=false;b.textContent='Scan the air';}});
+        const rbBtn=st.rollback_available?el('button',{class:'btn sm',text:'Roll back to the previous key',onclick:async()=>{if(!(await confirmDlg('Roll back to the previous key?',[el('p',{text:'The coordinator returns to the previous network key \u2014 the one the devices still use. The radio restarts for a few seconds; nothing is re-paired. Rotate again afterwards.'})],'Roll back',false)))return;try{const r=await api('api/rotate_network_key',{mode:'rollback'});toast(r.rolled_back?'Coordinator is back on the previous key':'No previous key known \u2014 restore a backup taken before the rotation',!r.rolled_back);this._rotPoll(status,btn,true);}catch(e){toast(e.message,true);}}}):null;
+        const panel=el('details',null,el('summary',{class:'sub',style:'color:var(--accent)',text:'Network health & recovery tools'}),
+          el('div',{class:'sub',style:'margin:8px 0 0',text:'Coordinator key '+(keyOk===false?'does NOT match the keystore':keyOk?'matches the keystore':'state unknown'+(st.radio_error?' ('+st.radio_error+')':''))+(srcTxt?' \u00b7 '+srcTxt:'')}),
+          tool(scanBtn,'Who is on the air, on which channel \u2014 works whatever key everyone is on.'),scanOut,
+          rbBtn?tool(rbBtn,'Back to the key the devices still use. Nothing is re-paired.'):null,
+          st.sequence_collision?el('div',{class:'notice warn',style:'margin-top:12px'},el('b',{text:'Two different keys share one sequence number. '}),'After an interrupted rotation the devices may know the current key under the next number \u2014 every frame is dropped until the label matches. ',el('button',{class:'btn primary sm',style:'margin-left:6px',text:'Re-label the key as sequence '+((st.active_seq+1)&255),onclick:async()=>{const n=(st.active_seq+1)&255;if(!(await confirmDlg('Re-label the network key?',[el('p',{text:'The same key is written again under sequence '+n+' \u2014 the key itself does not change, nothing is re-paired, the radio restarts for a few seconds. Devices that switched during the interrupted rotation hear the coordinator again.'})],'Re-label',false)))return;try{const r=await api('api/rotate_network_key',{mode:'relabel',seq:n});toast(r.relabelled?'Key re-labelled as sequence '+n:'Not verified \u2014 see Logs',!r.relabelled);this._rotPoll(status,btn,true);}catch(e){toast(e.message,true);}}})):null,
+          this.rollbackFromBackup(status,btn));
+        if(keyOk===false){panel.open=true;status.append(el('div',{class:'notice danger',style:'margin-top:10px'},el('b',{text:'The coordinator is not on the key the devices use. '}),'Open the recovery tools below and roll back to the previous key, or use a backup.'));}
+        status.append(el('div',{style:'margin-top:10px'},panel));return;}
+      const d=(st.delivered||[]).length,f=Object.keys(st.failed||{}).length,p=Object.keys(st.pending||{}).length,u=(st.unreachable||[]).length,sp=Object.keys(st.switch_pending||{}).length,sw=(st.switched||[]).length;
+      const miss=(f?', '+f+' not reachable':'')+(p?', '+p+' asleep (get it when they wake)':'')+(st.extended?' · wait extended ×'+st.extended:'')+(st.resumed?' · resumed after a restart':'');
+      const txt={delivering:'Handing the new key to devices… '+d+' delivered'+miss,
+        waiting:(f||p?'Waiting for every device to take the key ('+Math.round((st.waiting_s||0)/60)+' min so far) — ':'Switching in '+st.seconds_left+' s — ')+d+' delivered'+miss,
+        cancelled:'Cancelled — the old key stays in force.',
+        switching:sp?'Everyone has the key. Telling devices to switch — '+sw+' told'+', '+sp+' asleep (told the moment they wake) · '+Math.round((st.waiting_s||0)/60)+' min':'Switching the routers and the coordinator…',
+        rolled_back:'Rolled back — '+(st.error||'the devices did not switch')+'. The previous key is in force again; nothing is lost. See Logs for which routers did not answer, then rotate again.',done:'Done: '+d+' devices received the new key'+(st.retried?' ('+st.retried+' on retry)':'')+(f||p?', '+(f+p)+' missed it and must rejoin':'')+(u?' — '+u+' router(s) do not answer on the new key':'')+'. The old key is no longer valid.',
+        aborted:'Aborted — '+(st.error||'not every device received the key')+'. Fix the devices below and rotate again.',
         failed:'Failed: '+(st.error||'unknown error')}[ph]||ph;
-      clear(status).append(el('span',{class:ph==='failed'?'danger':'',text:txt}));
-      if(f&&ph==='done')status.append(el('div',{class:'mono sub',text:Object.entries(st.failed).map(([k,v])=>k+': '+v).join(' · ')}));
+      clear(status).append(el('span',{class:(ph==='failed'||ph==='aborted'||ph==='rolled_back'||u)?'danger':'',text:txt}));
+      const lists=Object.assign({},ph==='aborted'?st.aborted:{},(ph==='done'||ph==='waiting'||ph==='delivering')?st.failed:{},(ph==='done'||ph==='waiting'||ph==='delivering')?st.pending:{},ph==='switching'?st.switch_pending:{});
+      if(Object.keys(lists).length)status.append(el('div',{class:'mono sub',text:Object.entries(lists).map(([k,v])=>k+': '+v).join(' · ')}));
+      if(st.stalled&&ph==='waiting')status.append(el('div',{class:'notice warn',style:'margin-top:10px'},el('b',{text:'Stalled. '}),'The devices above have not taken the key for '+Math.round((st.waiting_s||0)/60)+' minutes. It keeps being offered; if a device is gone for good, remove it from its device page — or cancel and keep the current key.'));
+      if(ph==='waiting'||ph==='delivering'||ph==='switching')status.append(el('button',{class:'btn sm',style:'margin-top:8px',text:'Cancel rotation (keep the current key)',onclick:async()=>{if(!(await confirmDlg('Cancel the key rotation?',[el('p',{text:'The current key stays in force. Devices that already received the new key simply never switch to it.'})],'Cancel rotation',true)))return;try{await api('api/rotate_network_key',{mode:'cancel'});toast('Rotation cancelled');this._rotPoll(status,btn,true);}catch(e){toast(e.message,true);}}}));
+      if(u&&ph==='done')status.append(el('div',{class:'mono sub',text:'not answering: '+st.unreachable.join(', ')}));
+      if(st.coordinator_key_ok!==false&&st.rollback_available&&!/^(delivering|waiting|switching)$/.test(ph))status.append(el('div',{class:'notice',style:'margin-top:10px'},el('b',{text:'A previous network key is available. '}),'If devices stopped answering after a rotation ("no route", nothing decrypts on the Map), they are still on the previous key: ',
+        el('button',{class:'btn sm',style:'margin-left:6px',text:'Roll back to the previous key',onclick:async()=>{if(!(await confirmDlg('Roll back to the previous key?',[el('p',{text:'The coordinator returns to the previous network key — the one the devices still use. The radio restarts for a few seconds; nothing is re-paired. Rotate again afterwards.'})],'Roll back',false)))return;try{const r=await api('api/rotate_network_key',{mode:'rollback'});toast(r.rolled_back?'Coordinator is back on the previous key':'No previous key known — restore a backup taken before the rotation',!r.rolled_back);this._rotPoll(status,btn,true);}catch(e){toast(e.message,true);}}})));
+      if(st.coordinator_key_ok===false)status.append(el('div',{class:'notice danger',style:'margin-top:10px'},el('b',{text:'The coordinator is not on the key the devices received. '}),'Devices that switched cannot reach it (commands fail with "no route"). Two ways out, nothing is re-paired: ',
+        el('div',{style:'margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center'},
+          el('button',{class:'btn primary sm',text:'Finish key switch',title:'The coordinator moves to the new key (radio restarts for a few seconds). Devices that never received it must rejoin — power-cycle them.',onclick:async()=>{try{const r=await api('api/rotate_network_key',{mode:'finish'});toast(r.verified?'Coordinator is on the new key':'The radio still reports another key — see Logs',!r.verified);this._rotPoll(status,btn,true);}catch(e){toast(e.message,true);}}}),
+          el('span',{class:'sub',text:'coordinator → new key; the devices that missed it must rejoin'}),
+          el('button',{class:'btn sm',text:'Roll back',title:'The coordinator goes back to the key the devices use (from the keystore or the radio\'s alternate key slot). Nothing is re-paired. Rotate again afterwards.',onclick:async()=>{if(!(await confirmDlg('Roll the switch back?',[el('p',{text:'The coordinator returns to the previous network key — the one the devices still use. The radio restarts for a few seconds; nothing is re-paired.'})],'Roll back',false)))return;try{const r=await api('api/rotate_network_key',{mode:'rollback'});toast(r.rolled_back?'Coordinator is back on the previous key':'No previous key known — restore a backup taken before the rotation',!r.rolled_back);this._rotPoll(status,btn,true);}catch(e){toast(e.message,true);}}}),
+          el('span',{class:'sub',text:'coordinator → the key the devices use; rotate again afterwards'}))));
       btn.disabled=ph==='delivering'||ph==='waiting'||ph==='switching'||btn.title!=='';
+      if(ph==='waiting'||ph==='delivering')status.append(el('div',{class:'sub',style:'margin-top:4px'},'The wait extends itself while a device is missing (up to the maximum under Settings → Zigbee).'));
       if(!once||ph==='delivering'||ph==='waiting'||ph==='switching')setTimeout(()=>this._rotPoll(status,btn,false),2000);
     }catch(e){}
   }

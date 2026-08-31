@@ -10,7 +10,12 @@ zigbee:
   permit_join_max_seconds: 120
   permit_join_require_install_code: false
   permit_join_cooldown_seconds: 5
-
+  # Over-the-air key rotation: switch only when every device demonstrably has the new key (routers
+  # answered on the current key, battery devices were handed it while awake). The key keeps being
+  # offered for as long as it takes, through restarts; after the maximum wait a "stalled" alert
+  # names who is missing (remove a device that is gone, or cancel). Off: switch anyway at the maximum.
+  rotation_require_all: true
+  rotation_max_window_seconds: 21600
 mqtt:
   listen: 0.0.0.0
   port: 8883

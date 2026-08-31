@@ -141,3 +141,37 @@ def test_changing_the_ha_users_password_updates_the_service_login(tmp_path):
     assert (tmp_path / ".service-login").read_text() == "second-password-456"
     admin.upsert_user("other", role="client", password="client-password-789", control=False, subscribe=None, publish=None)
     assert (tmp_path / ".service-login").read_text() == "second-password-456", "only the Home Assistant user is announced"
+
+
+def test_addon_places_the_keystore_passphrase_in_the_private_folder(tmp_path, monkeypatch):
+    """run.py keeps the keystore passphrase in the add-on's private volume (next to options.json),
+    creates it before privileges drop, and moves one left in the config folder by an older version."""
+    import importlib.util
+    monkeypatch.setenv("ONEROOF_OPTIONS", str(tmp_path / "data" / "options.json"))
+    monkeypatch.setenv("ONEROOF_DATA", str(tmp_path / "config"))
+    monkeypatch.setenv("ONEROOF_ZIGBEE_KEYSTORE_PASSPHRASE_FILE", str(tmp_path / "data" / "network.keystore.pass"))  # restored at teardown
+    (tmp_path / "data").mkdir()
+    (tmp_path / "config").mkdir()
+    legacy = tmp_path / "config" / "network.keystore.pass"
+    legacy.write_bytes(b"old-secret\n")
+    spec = importlib.util.spec_from_file_location("run_addon", RUN_PY)
+    run = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(run)
+    target = run.place_keystore_passphrase()
+    assert target == tmp_path / "data" / "network.keystore.pass"
+    assert target.read_bytes().strip() == b"old-secret" and oct(target.stat().st_mode & 0o777) == "0o600"
+    assert not legacy.exists()
+    assert __import__("os").environ["ONEROOF_ZIGBEE_KEYSTORE_PASSPHRASE_FILE"] == str(target)
+    # second start: nothing changes, nothing regenerated
+    assert run.place_keystore_passphrase().read_bytes().strip() == b"old-secret"
+
+
+def test_version_agrees_everywhere():
+    """The Dockerfile build fails when the package and the add-on disagree; catch it before Docker does."""
+    import re
+    from pathlib import Path
+    from oneroof_zigbee import __version__
+    root = Path(__file__).resolve().parent.parent
+    pyproject = re.search(r'^version = "([^"]+)"', (root / "pyproject.toml").read_text(), re.M).group(1)
+    config = re.search(r'^version: "([^"]+)"', (root / "addon" / "config.yaml").read_text(), re.M).group(1)
+    assert __version__ == pyproject == config

@@ -42,6 +42,7 @@ class NvId(IntEnum):
     STARTUP_OPTION = 0x0003
     EXTPANID = 0x002D
     APS_USE_EXT_PANID = 0x0047
+    NIB = 0x0021                  # the live network state; removed briefly for a beacon scan
     NWK_ACTIVE_KEY_INFO = 0x003A  # keySeqNum u8, key[16], frameCounter u32 — read back to verify the counter
     NWK_ALTERN_KEY_INFO = 0x003B
     PRECFGKEY = 0x0062
@@ -105,6 +106,10 @@ def nv_item_init(item: int, length: int, init: bytes = b"") -> Frame:
 def nv_write(item: int, value: bytes, offset: int = 0) -> Frame:
     w = Writer().u16(item).u8(offset).lv(value)
     return Frame(FrameType.SREQ, Subsystem.SYS, SysCmd.OSAL_NV_WRITE, w.bytes())
+
+
+def nv_delete(item: int, length: int) -> Frame:
+    return Frame(FrameType.SREQ, Subsystem.SYS, SysCmd.OSAL_NV_DELETE, Writer().u16(item).u16(length).bytes())
 
 
 def nv_read(item: int, offset: int = 0) -> Frame:
@@ -228,6 +233,7 @@ class ZdoCmd(IntEnum):
     EXT_UPDATE_NWK_KEY = 0x4E   # install a network key locally (dst 0x0000) or announce it (dst 0xFFFF)
     EXT_SWITCH_NWK_KEY = 0x4F   # make the key with that sequence number the active one
     EXT_NWK_INFO = 0x50
+    NETWORK_DISCOVERY_REQ = 0x26  # active (beacon) scan; results via BEACON_NOTIFY_IND
     # indications
     NWK_ADDR_RSP = 0x80
     IEEE_ADDR_RSP = 0x81
@@ -243,6 +249,8 @@ class ZdoCmd(IntEnum):
     MSG_CB_INCOMING = 0xFF      # a forwarded ZDO message (after MSG_CB_REGISTER)
     END_DEVICE_ANNCE_IND = 0xC1
     SRC_RTG_IND = 0xC4
+    BEACON_NOTIFY_IND = 0xC5
+    NWK_DISCOVERY_CNF = 0xC7
     LEAVE_IND = 0xC9
     TC_DEV_IND = 0xCA
     PERMIT_JOIN_IND = 0xCB
@@ -380,6 +388,39 @@ def zdo_mgmt_lqi_req(nwk: int, start_index: int = 0) -> Frame:
 
 def zdo_ext_nwk_info() -> Frame:
     return Frame(FrameType.SREQ, Subsystem.ZDO, ZdoCmd.EXT_NWK_INFO)
+
+
+def zdo_network_discovery(channel_mask: int, duration: int = 3) -> Frame:
+    # duration is the 802.15.4 scan exponent (per channel), not seconds
+    return Frame(FrameType.SREQ, Subsystem.ZDO, ZdoCmd.NETWORK_DISCOVERY_REQ, Writer().u32(channel_mask).u8(duration).bytes())
+
+
+@dataclass(frozen=True)
+class Beacon:
+    src_addr: int
+    pan_id: int
+    channel: int
+    permit_joining: bool
+    router_capacity: bool
+    device_capacity: bool
+    protocol_version: int
+    stack_profile: int
+    lqi: int
+    depth: int
+    update_id: int
+    ext_pan_id: int
+
+
+def decode_beacon_notify_ind(data: bytes) -> list[Beacon]:
+    r = Reader(data)
+    n = r.u8()
+    out: list[Beacon] = []
+    for _ in range(n):
+        if r.remaining < 21:
+            break
+        out.append(Beacon(r.u16(), r.u16(), r.u8(), bool(r.u8()), bool(r.u8()), bool(r.u8()),
+                          r.u8(), r.u8(), r.u8(), r.u8(), r.u8(), r.u64()))
+    return out
 
 
 @dataclass(frozen=True)

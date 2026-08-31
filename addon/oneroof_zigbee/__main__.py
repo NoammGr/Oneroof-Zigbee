@@ -97,6 +97,7 @@ async def run(cfg: Config, config_path: Path | None = None, *, managed: bool = F
                                  require_install_code=cfg.zigbee.permit_join_require_install_code,
                                  close_after_first_join=cfg.zigbee.permit_join_close_after_first_join), audit)
     coord = Coordinator(transport, secrets, guard, audit, strict_install_codes=cfg.zigbee.strict_install_codes)
+    coord.keystore = Keystore(cfg.data_dir / "network.keystore")  # key-sequence fixes found at start are persisted
     await coord.start()
 
     if isinstance(broker, Broker):

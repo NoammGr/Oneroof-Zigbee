@@ -86,6 +86,12 @@ class Transport:
     def on_any(self, cb: Listener) -> None:
         self._any_listeners.append(cb)
 
+    def off(self, subsystem: Subsystem, command: int, cb: Listener) -> None:
+        try:
+            self._listeners[(subsystem, command)].remove(cb)
+        except ValueError:
+            pass
+
     async def wait_for(self, subsystem: Subsystem, command: int, *, timeout: float,
                        predicate: Callable[[Frame], bool] | None = None) -> Frame:
         """Await the next AREQ matching (subsystem, command[, predicate])."""

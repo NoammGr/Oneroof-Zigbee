@@ -50,13 +50,19 @@ _REPORTING: dict[int, list[tuple[int, zcl.DataType, int, int, Any]]] = {
     0x0B04: [(0x050B, zcl.DataType.int16, 5, 3600, 5), (0x0505, zcl.DataType.uint16, 5, 3600, 5), (0x0508, zcl.DataType.uint16, 5, 3600, 50)],
     0x0702: [(0x0000, zcl.DataType.uint48, 10, 3600, 1)],
     0x0102: [(0x0008, zcl.DataType.uint8, 1, 3600, 1)],
-    0x0201: [(0x0000, zcl.DataType.int16, 30, 3600, 20), (0x0012, zcl.DataType.int16, 1, 3600, 10), (0x001C, zcl.DataType.enum8, 1, 3600, None)],
+    0x0201: [(0x0000, zcl.DataType.int16, 30, 3600, 20), (0x0012, zcl.DataType.int16, 1, 3600, 10), (0x0011, zcl.DataType.int16, 1, 3600, 10),
+             (0x001C, zcl.DataType.enum8, 1, 3600, None)],
+    0x0202: [(0x0000, zcl.DataType.enum8, 1, 3600, None)],
 }
 _READ_ON_JOIN: dict[int, list[int]] = {
     0x0006: [0x0000, 0x4003], 0x0008: [0x0000], 0x0300: [0x0003, 0x0004, 0x0007, 0x0008], 0x0001: [0x0020, 0x0021],
     0x0402: [0x0000], 0x0405: [0x0000], 0x0403: [0x0000], 0x0400: [0x0000], 0x0406: [0x0000],
     0x0500: [0x0001, 0x0002], 0x0B04: [0x0600, 0x0601, 0x0602, 0x0603, 0x0604, 0x0605, 0x0505, 0x0508, 0x050B],
-    0x0702: [0x0301, 0x0302, 0x0000], 0x0102: [0x0008], 0x0201: [0x0000, 0x0012, 0x001C],
+    0x0702: [0x0301, 0x0302, 0x0000], 0x0102: [0x0008],
+    # thermostat: both setpoints, the limits and ControlSequenceOfOperation decide which controls a
+    # device gets (a 4-pipe air conditioner is not a radiator valve); a TRV simply lacks the rest
+    0x0201: [0x0000, 0x0012, 0x0011, 0x0015, 0x0016, 0x0017, 0x0018, 0x001B, 0x001C],
+    0x0202: [0x0000, 0x0001],
 }
 
 
@@ -137,6 +143,7 @@ class Gateway:
         self._load_activity()
         self._load_profiles()
         self._monitor_task = asyncio.create_task(self._monitor_loop(), name="monitor")
+        self._resume_rotation()
         await self.broker.publish(f"{b}/bridge/state", self.topics.bridge_state_payload(True), retain=True)
         await self._publish_bridge_info()
         if self.cfg.homeassistant.discovery:
@@ -221,6 +228,8 @@ class Gateway:
                 self._save_profiles()
                 if tick % 5 == 0:
                     await self._poll_silent_routers()
+                    await self.coord.refresh_frame_counter()
+                    self._maybe_scheduled_rotation()
             except Exception:
                 log.debug("monitor sweep failed", exc_info=True)
 
@@ -305,6 +314,8 @@ class Gateway:
         dev.last_seen = time.time()
         await self._publish_availability(dev, True)
         self._emit_device_event("joined", dev)
+        if self._rotation is not None and self._rotation.running:
+            self._rotation.note_new_device(dev)
         if j.plain_join and self.cfg.zigbee.rotate_key_after_plain_join:
             dev.context["rotate_after_join"] = True
         if not dev.interviewed:
@@ -320,17 +331,58 @@ class Gateway:
         key reaches every device under per-device keys and the exposed one dies within minutes."""
         if not dev.context.pop("rotate_after_join", False):
             return
+        # One rotation per pairing session: every plain join re-arms the timer; the rotation
+        # starts once the session has been quiet for a while and no join window is open. A device
+        # that joins while a rotation already runs is adopted by it (note_new_device), so nobody
+        # ends up on the wrong side of the switch.
+        if self._rotate_debounce is not None:
+            self._rotate_debounce.cancel()
+        self.audit.event("key_rotation_scheduled", ieee=dev.ieee_str, quiet_s=self.ROTATE_AFTER_JOIN_QUIET_S)
+        self._rotate_debounce = asyncio.create_task(self._rotate_when_quiet(), name="rotate-after-join")
+
+    async def _rotate_when_quiet(self) -> None:
+        while True:
+            await asyncio.sleep(self.ROTATE_AFTER_JOIN_QUIET_S)
+            if self.coord.guard.window is None:
+                break
+        self._rotate_debounce = None
+        self._start_policy_rotation()
+
+    def _maybe_scheduled_rotation(self) -> None:
+        """Rotate on a schedule, not only after joins: an old key is a standing target. Same
+        evidence engine; skipped while a pairing session or another rotation is active."""
+        days = self.cfg.zigbee.rotation_interval_days
+        if not days or not self._started:
+            return
+        s = self.coord.secrets
+        if s.last_rotation_ts is None:
+            # No birthdate on record (imported network, older keystore): start the clock now.
+            s.last_rotation_ts = time.time()
+            self.coord._persist_secrets()
+            return
+        if time.time() - s.last_rotation_ts < days * 86400:
+            return
+        if self.coord.guard.window is not None or self._rotate_debounce is not None:
+            return
+        if self._rotation is not None and self._rotation.running:
+            return
+        self.audit.security("scheduled_key_rotation_due", days=days)
+        self._start_policy_rotation(by="policy:scheduled")
+
+    def _start_policy_rotation(self, by: str = "policy:rotate_after_plain_join") -> None:
         from .rotation import KeyRotation
         from .security import Keystore
         if self._rotation is None:
-            self._rotation = KeyRotation(self.coord, self.registry, Keystore(self.cfg.data_dir / "network.keystore"), self.audit)
+            self._rotation = KeyRotation(self.coord, self.registry, Keystore(self.cfg.data_dir / "network.keystore"), self.audit,
+                                         require_all=self.cfg.zigbee.rotation_require_all, max_window_s=self.cfg.zigbee.rotation_max_window_seconds)
         if self._rotation.running:
             return
         try:
-            self._rotation.start(window_s=300, by="policy:rotate_after_plain_join")
-            self.audit.security("key_rotation_after_plain_join", ieee=dev.ieee_str)
+            self._rotation.start(window_s=300, by=by)
+            if by == "policy:rotate_after_plain_join":
+                self.audit.security("key_rotation_after_plain_join")
         except ValueError as e:
-            log.info("rotation after join not started: %s", e)
+            log.info("policy rotation not started: %s", e)
 
     async def _on_left(self, ieee: int, nwk: int) -> None:
         dev = self.registry.get(ieee)
@@ -385,17 +437,19 @@ class Gateway:
             dev.interview_error = None
 
             policy = quirks.binding_policy(dev)  # None = default clusters, () = the model rejects binds
+            reads, reports = quirks.extra_reads(dev), quirks.extra_reporting(dev)
             for ep in dev.endpoints.values():
                 for cluster in ep.in_clusters:
                     if cluster == 0x0500:
                         await self._enroll_ias(dev, ep.id)
-                    if cluster in _READ_ON_JOIN:
+                    attrs = list(_READ_ON_JOIN.get(cluster, [])) + [a for a in reads.get(cluster, ()) if a not in _READ_ON_JOIN.get(cluster, [])]
+                    if attrs:
                         try:
-                            state = await self.read_attributes(dev, ep.id, cluster, _READ_ON_JOIN[cluster])
+                            state = await self.read_attributes(dev, ep.id, cluster, attrs)
                             self._apply_changes(dev, quirks.translate_state(dev, ep.id, state))
                         except (ZnpError, asyncio.TimeoutError):
                             log.info("%s: read %s failed (sleepy device?)", dev.ieee_str, zcl.cluster_name(cluster))
-                    if cluster in _REPORTING and self._may_bind(policy, cluster):
+                    if (cluster in _REPORTING or cluster in reports) and self._may_bind(policy, cluster):
                         await self._setup_reporting(dev, ep.id, cluster)
                 if vz.TUYA_CLUSTER in ep.in_clusters:
                     await self._tuya_query(dev, ep.id)
@@ -447,9 +501,10 @@ class Gateway:
                     dev.manufacturer = attrs.get("manufacturer_name") or dev.manufacturer
                     dev.model = attrs.get("model_id") or dev.model
             policy = quirks.binding_policy(dev)
+            reports = quirks.extra_reporting(dev)
             for ep in dev.endpoints.values():
                 for cluster in ep.in_clusters:
-                    if cluster in _REPORTING and self._may_bind(policy, cluster):
+                    if (cluster in _REPORTING or cluster in reports) and self._may_bind(policy, cluster):
                         await self._setup_reporting(dev, ep.id, cluster)
             self.registry.save()
             await self._vendor_settle(dev)
@@ -487,11 +542,20 @@ class Gateway:
         except (ZnpError, asyncio.TimeoutError) as e:
             log.info("%s: Tuya settle read failed (%s)", dev.ieee_str, e)
 
+    @staticmethod
+    def _reporting_records(dev: Device, cluster: int) -> list[tuple[int, zcl.DataType, int, int, Any]]:
+        """Standard-cluster defaults plus whatever the model table adds (device-specific clusters)."""
+        rows = list(_REPORTING.get(cluster, []))
+        have = {r[0] for r in rows}
+        rows += [r for r in quirks.extra_reporting(dev).get(cluster, ()) if r[0] not in have]
+        return rows
+
     async def _setup_reporting(self, dev: Device, ep: int, cluster: int) -> None:
+        rows = self._reporting_records(dev, cluster)
         try:
             await self.coord.bind(dev.nwk, dev.ieee, ep, cluster)
             records = [gc.ReportingConfigRecord(attr=a, dtype=int(dt), min_interval=mn, max_interval=mx, reportable_change=ch)
-                       for a, dt, mn, mx, ch in _REPORTING[cluster]]
+                       for a, dt, mn, mx, ch in rows]
             seq = self._next_seq()
             rsp = await self._request(dev, ep, cluster, gc.build_configure_reporting(seq, records), seq, gc.CMD_CONFIGURE_REPORTING_RSP)
             status = "ok"
@@ -503,11 +567,11 @@ class Gateway:
             except Exception:
                 pass
             self._record_bindings(dev, ep, cluster, "coordinator", 1)
-            for a, _dt, mn, mx, ch in _REPORTING[cluster]:
+            for a, _dt, mn, mx, ch in rows:
                 self._record_reporting(dev, ep, cluster, a, mn, mx, ch, status)
         except (ZnpError, asyncio.TimeoutError) as e:
             log.info("%s: reporting setup for %s failed: %s", dev.ieee_str, zcl.cluster_name(cluster), e)
-            for a, _dt, mn, mx, ch in _REPORTING[cluster]:
+            for a, _dt, mn, mx, ch in rows:
                 self._record_reporting(dev, ep, cluster, a, mn, mx, ch, f"failed: {e}")
 
     def _record_reporting(self, dev: Device, ep: int, cluster: int, attr: int, mn: int, mx: int, ch: Any, status: str) -> None:
@@ -606,6 +670,8 @@ class Gateway:
             return
         dev.last_seen = time.time()
         dev.lqi = m.lqi
+        if self._rotation is not None and self._rotation.running:
+            self._rotation.device_heard(dev)  # a sleeping device is awake: hand it the new key now
         if not dev.available:
             # Heard from it: it is online, whatever its import/registry state said.
             dev.available = True
@@ -868,6 +934,8 @@ class Gateway:
         dev.last_seen = time.time()
         self.audit.security("unknown_device_adopted", ieee=dev.ieee_str, nwk=rec["nwk"], by=who)
         self._emit_device_event("joined", dev)
+        if self._rotation is not None and self._rotation.running:
+            self._rotation.note_new_device(dev)
         self._start_interview(dev)
         return dev
 
@@ -1116,10 +1184,48 @@ class Gateway:
         if "current_heating_setpoint" in cmd and 0x0201 in ins:
             await self._write_attr(dev, ep, 0x0201, 0x0012, zcl.DataType.int16, int(round(float(cmd["current_heating_setpoint"]) * 100)))
             self._apply_changes(dev, {key_of("current_heating_setpoint"): float(cmd["current_heating_setpoint"])})
+        if "current_cooling_setpoint" in cmd and 0x0201 in ins:
+            await self._write_attr(dev, ep, 0x0201, 0x0011, zcl.DataType.int16, int(round(float(cmd["current_cooling_setpoint"]) * 100)))
+            self._apply_changes(dev, {key_of("current_cooling_setpoint"): float(cmd["current_cooling_setpoint"])})
+        if "target_temperature" in cmd and 0x0201 in ins:
+            # one target temperature (air conditioners keep both ZCL setpoints equal): write the setpoint
+            # that matches the mode being set or in force — heating in heat, cooling otherwise
+            mode = str(cmd.get("system_mode") or dev.state.get(key_of("system_mode")) or "")
+            attr = 0x0012 if mode == "heat" else 0x0011
+            await self._write_attr(dev, ep, 0x0201, attr, zcl.DataType.int16, int(round(float(cmd["target_temperature"]) * 100)))
+            self._apply_changes(dev, {key_of("target_temperature"): float(cmd["target_temperature"])})
         if "system_mode" in cmd and 0x0201 in ins:
-            modes = {"off": 0, "auto": 1, "cool": 3, "heat": 4}
-            await self._write_attr(dev, ep, 0x0201, 0x001C, zcl.DataType.enum8, modes[str(cmd["system_mode"])])
-            self._apply_changes(dev, {key_of("system_mode"): str(cmd["system_mode"])})
+            mode = str(cmd["system_mode"])
+            allowed = feats.get("system_mode", {}).get("values") or list(zcl.SYSTEM_MODE_BY_NAME)
+            if mode not in zcl.SYSTEM_MODE_BY_NAME or mode not in allowed:
+                raise ValueError(f"system_mode must be one of {allowed}")
+            await self._write_attr(dev, ep, 0x0201, 0x001C, zcl.DataType.enum8, zcl.SYSTEM_MODE_BY_NAME[mode])
+            self._apply_changes(dev, {key_of("system_mode"): mode})
+        if "fan_mode" in cmd and 0x0202 in ins:
+            fan = str(cmd["fan_mode"])
+            if fan not in zcl.FAN_MODE_BY_NAME:
+                raise ValueError(f"fan_mode must be one of {zcl.FAN_MODES}")
+            await self._write_attr(dev, ep, 0x0202, 0x0000, zcl.DataType.enum8, zcl.FAN_MODE_BY_NAME[fan])
+            self._apply_changes(dev, {key_of("fan_mode"): fan})
+        # attributes of a device-specific cluster the model table knows (standard attributes, no
+        # manufacturer code; the wire type comes from the table)
+        touched: dict[int, bool] = {}
+        for base, value in list(cmd.items()):
+            f = feats.get(base)
+            if not f or f["access"] == "r" or quirks.private_attribute(dev, f["cluster"], base) is None:
+                continue
+            attr, dtype, wire = quirks.encode_private_attribute(dev, f["cluster"], base, value)
+            await self._write_attr(dev, ep, f["cluster"], attr, dtype, wire)
+            if f["access"] == "w":
+                touched[f["cluster"]] = True  # a command in disguise: nothing to remember, the device answers through its feedback attributes
+            else:
+                shown = wire / (quirks.private_attribute(dev, f["cluster"], base).scale or 1) if isinstance(wire, int) and not isinstance(wire, bool) and f["type"] == "numeric" else value
+                if f["type"] == "binary":
+                    shown = f.get("value_on", "ON") if wire else f.get("value_off", "OFF")
+                self._apply_changes(dev, {f["key"]: shown})
+                touched.setdefault(f["cluster"], False)
+        for cluster in touched:
+            self._schedule_feedback_read(dev, ep, cluster)
         if "identify" in cmd and 0x0003 in ins:
             await send(0x0003, "identify", {"time": int(cmd["identify"])})
         if "power_on_behavior" in cmd and 0x0006 in ins:
@@ -1153,6 +1259,26 @@ class Gateway:
         seq = self._next_seq()
         frame = gc.build_write_attributes(seq, [gc.WriteAttributeRecord(attr, int(dtype), value)])
         await self._request(dev, ep, cluster, frame, seq, gc.CMD_WRITE_ATTRIBUTES_RSP)
+
+    def _schedule_feedback_read(self, dev: Device, ep: int, cluster: int) -> None:
+        """After writing a device-specific cluster, read back what it says about it (last_result,
+        code_count, the protocol in force). The device also reports these unsolicited; the read
+        covers the case where it does not."""
+        attrs = list(quirks.feedback_reads(dev, cluster))
+        if not attrs:
+            return
+
+        async def run() -> None:
+            await asyncio.sleep(0.5)
+            try:
+                state = await self.read_attributes(dev, ep, cluster, attrs)
+            except (ZnpError, asyncio.TimeoutError) as e:
+                log.info("%s: feedback read of %s failed: %s", dev.ieee_str, zcl.cluster_name(cluster), e)
+                return
+            if self._apply_changes(dev, quirks.translate_state(dev, ep, state)):
+                await self._publish_state(dev)
+
+        asyncio.get_running_loop().create_task(run())
 
     # ------------------------------------------------ ui-facing helpers --
 
@@ -1232,7 +1358,9 @@ class Gateway:
 
     # ---------------------------------------------------------- requests --
 
-    CONTROL_ACTIONS = ("permit_join", "rotate_network_key", "remove")
+    CONTROL_ACTIONS = ("permit_join", "rotate_network_key", "remove", "scan_air")
+    ROTATE_AFTER_JOIN_QUIET_S = 120.0  # one rotation per pairing session, not one per device
+    _rotate_debounce: "asyncio.Task[None] | None" = None
 
     async def _on_request(self, topic: str, payload: bytes, user: str | None = None) -> None:
         action = topic.split("/")[-1]
@@ -1254,7 +1382,7 @@ class Gateway:
         control actions the bare user name must be in `control_users`."""
         handler = {
             "permit_join": self._req_permit_join, "remove": self._req_remove, "rename": self._req_rename,
-            "interview": self._req_interview, "rotate_network_key": self._req_rotate_key, "devices": self._req_devices,
+            "interview": self._req_interview, "rotate_network_key": self._req_rotate_key, "devices": self._req_devices, "scan_air": self._req_scan_air,
             "verify_audit": self._req_verify_audit,
         }.get(action)
         if handler is None:
@@ -1271,6 +1399,13 @@ class Gateway:
         except Exception as e:
             log.exception("request %s failed", action)
             return {"ok": False, "error": f"internal: {type(e).__name__}"}
+
+    async def _req_scan_air(self, body: dict[str, Any], who: str) -> dict[str, Any]:
+        self.audit.event("air_scan_requested", by=who)
+        duration = int(body.get("duration", 3))
+        if not 1 <= duration <= 5:
+            raise ValueError("duration is the scan exponent, 1..5")
+        return await self.coord.scan_air(duration=duration)
 
     async def _respond(self, action: str, ok: bool, **data: Any) -> None:
         await self.broker.publish(f"{self.base}/bridge/response/{action}", json.dumps({"ok": ok, **data}).encode())
@@ -1350,13 +1485,62 @@ class Gateway:
             ks.save(fresh)
             self.audit.security("network_key_rotation_scheduled", by=who, mode="repair")
             return {"restart_required": True}
+        if mode == "finish":
+            # the coordinator's half of a rotation that did not complete on the radio
+            ok = await self.coord.finish_key_switch()
+            self.audit.security("network_key_switch_finish_requested", by=who, ok=ok)
+            return {"verified": ok}
+        if mode == "rollback":
+            # the coordinator returns to the key the devices use — from the keystore, the radio's
+            # alternate slot, or (handed in by the UI) a backup taken before the rotation
+            if self._rotation is not None and self._rotation.running:
+                self._rotation.cancel()
+            previous = None
+            if body.get("previous_key_hex"):
+                key = bytes.fromhex(str(body["previous_key_hex"]))
+                if len(key) != 16:
+                    raise ValueError("previous key must be 16 bytes")
+                previous = (key, int(body.get("previous_seq", 0)))
+            ok = await self.coord.rollback_key_switch(previous)
+            self.audit.security("network_key_switch_rollback_requested", by=who, ok=ok, source="backup" if previous else "auto")
+            return {"rolled_back": ok}
+        if mode == "relabel":
+            seq = int(body.get("seq", -1))
+            if not 0 <= seq <= 255:
+                raise ValueError("seq must be 0..255")
+            ok = await self.coord.relabel_key_sequence(seq)
+            self.audit.security("network_key_relabel_requested", by=who, seq=seq, ok=ok)
+            return {"relabelled": ok}
+        if mode == "cancel":
+            if self._rotation is None or not self._rotation.cancel():
+                raise ValueError("no key rotation is waiting")
+            return {"cancelled": True}
         if mode != "over_the_air":
-            raise ValueError("mode must be over_the_air or repair")
+            raise ValueError("mode must be over_the_air, finish, rollback, cancel or repair")
         from .rotation import DEFAULT_WINDOW_S, KeyRotation
         if self._rotation is None:
-            self._rotation = KeyRotation(self.coord, self.registry, ks, self.audit)
+            self._rotation = KeyRotation(self.coord, self.registry, ks, self.audit,
+                                         require_all=self.cfg.zigbee.rotation_require_all, max_window_s=self.cfg.zigbee.rotation_max_window_seconds)
         st = self._rotation.start(window_s=int(body.get("window_s", DEFAULT_WINDOW_S)), by=who)
         return {"rotation": st.to_json()}
 
     def rotation_status(self) -> dict[str, Any]:
         return self._rotation.state.to_json() if self._rotation else {"phase": "idle"}
+
+    def _resume_rotation(self) -> None:
+        """A key rotation the previous run left unfinished is picked up where it stopped."""
+        from .rotation import KeyRotation
+        from .security import Keystore
+        ks = Keystore(self.cfg.data_dir / "network.keystore")
+        try:
+            pending = ks.load().pending_rotation if ks.exists() else None
+        except (OSError, ValueError) as e:
+            log.warning("keystore unreadable for rotation resume: %s", e)
+            return
+        if not pending:
+            return
+        if self._rotation is None:
+            self._rotation = KeyRotation(self.coord, self.registry, ks, self.audit,
+                                         require_all=self.cfg.zigbee.rotation_require_all, max_window_s=self.cfg.zigbee.rotation_max_window_seconds)
+        log.warning("resuming the key rotation left unfinished by the previous run (sequence %s)", pending.get("seq"))
+        self._rotation.resume(pending)

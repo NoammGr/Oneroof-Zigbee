@@ -111,6 +111,7 @@ class UiApi:
         r("POST", "/api/devices/<ieee>/unbind", self.dev_unbind)
         r("POST", "/api/map/refresh", self.map_refresh)
         r("POST", "/api/rotate_network_key", self.rotate)
+        r("POST", "/api/scan_air", self.scan_air)
         r("GET", "/api/rotate_network_key", self.rotate_status)
         r("POST", "/api/settings", self.settings)
         r("GET", "/api/config", self.config_get)
@@ -445,12 +446,56 @@ class UiApi:
             self._map_cache = await self._build_map()
         return Response.json({"ok": True, **self._map_cache})
 
+    async def scan_air(self, req: Request) -> Response:
+        self._require_control()
+        result = await self.gw.handle_request("scan_air", dict(req.json or {}), self.who)
+        return Response.json(result, 200 if result.get("ok") else 400)
+
     async def rotate_status(self, req: Request) -> Response:
-        return Response.json(self.gw.rotation_status())
+        st = dict(self.gw.rotation_status())
+        try:
+            st["coordinator_key_ok"] = await self.gw.coord.active_key_matches()
+            st["rollback_source"] = await self.gw.coord.rollback_source()
+            st.update(await self.gw.coord.key_slots())
+            st["rollback_available"] = st["rollback_source"] != "none"
+        except Exception as e:  # noqa: BLE001 - a radio that cannot answer is reported as unknown, not as an error page
+            st["coordinator_key_ok"] = None
+            st["rollback_source"] = "unknown"
+            st["rollback_available"] = False
+            st["radio_error"] = str(e)
+        return Response.json(st)
 
     async def rotate(self, req: Request) -> Response:
         self._require_control()
-        result = await self.gw.handle_request("rotate_network_key", req.json, self.who)
+        body = dict(req.json)
+        if body.get("mode") == "rollback" and body.get("data_b64"):
+            # roll back with the key from a backup taken before the rotation: decrypted in memory,
+            # checked to be the same network, never written anywhere
+            import base64
+            try:
+                blob = base64.b64decode(str(body.pop("data_b64")), validate=True)
+                prev = self._admin().secrets_from_backup(blob, str(body.pop("password", "")))
+            except ValueError as e:
+                raise HttpError(400, str(e)) from e
+            if prev.pan_id != self.gw.coord.secrets.pan_id or prev.ext_pan_id != self.gw.coord.secrets.ext_pan_id:
+                raise HttpError(400, "that backup is from a different network (PAN id differs)")
+            body["previous_key_hex"] = prev.network_key.hex()
+            body["previous_seq"] = prev.key_seq
+        elif body.get("mode") == "rollback" and (body.get("folder") or body.get("configuration.yaml") or body.get("coordinator_backup.json")):
+            # roll back with the key the previous setup ran with (its files read in place, key only)
+            files = self._import_files(body)
+            for k in ("folder", "configuration.yaml", "database.db", "coordinator_backup.json", "state.json"):
+                body.pop(k, None)
+            try:
+                key, seq, pan, ext = self._admin().previous_setup_key(files)
+            except ValueError as e:
+                raise HttpError(400, str(e)) from e
+            cur = self.gw.coord.secrets
+            if (pan is not None and pan != cur.pan_id) or (ext is not None and ext != cur.ext_pan_id):
+                raise HttpError(400, "that setup is a different network (PAN id differs)")
+            body["previous_key_hex"] = key.hex()
+            body["previous_seq"] = seq
+        result = await self.gw.handle_request("rotate_network_key", body, self.who)
         return Response.json(result, 200 if result.get("ok") else 400)
 
     async def settings(self, req: Request) -> Response:

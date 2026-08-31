@@ -24,7 +24,9 @@ from oneroof_zigbee.mqtt import PasswordFile
 
 OPTIONS = Path(os.environ.get("ONEROOF_OPTIONS", "/data/options.json"))   # written by the Supervisor into the add-on's private /data
 DATA = Path(os.environ.get("ONEROOF_DATA", "/config"))                      # add-on config folder: keystore, users, tls/ca.crt, backups, firmware
+PRIVATE = OPTIONS.parent                                                     # the add-on's private volume: nothing here is browsable from Home Assistant
 CONFIG = DATA / "config.yaml"
+PASSPHRASE_FILE = PRIVATE / "network.keystore.pass"
 
 
 OVERRIDES = None  # set in main_async: /config/overrides.yaml written by the import (legacy layout, base topic, ...)
@@ -194,7 +196,7 @@ async def heartbeat() -> None:
         await asyncio.sleep(30)
 
 
-def drop_privileges(serial_port: str, enabled: bool = True) -> None:
+def drop_privileges(serial_port: str, enabled: bool = True, also_own: list[Path] | None = None) -> None:
     """Automatic least privilege. The add-on starts as root (the Supervisor's device and volume
     handling assumes it). A throwaway child process then tries to open the serial device exactly
     as configured, as uid 1000 with the device's group. Only if that succeeds does the main
@@ -215,6 +217,11 @@ def drop_privileges(serial_port: str, enabled: bool = True) -> None:
             except OSError:
                 pass
     os.chown(DATA, uid, gid)
+    for p in also_own or []:  # files outside the config folder the unprivileged process must read (keystore passphrase)
+        try:
+            os.chown(p, uid, gid)
+        except OSError:
+            pass
     if not serial_port or serial_port.startswith("tcp://") or not os.path.exists(serial_port):
         # network coordinator → nothing to prove on the device side; missing device → cannot prove, stay root
         if serial_port.startswith("tcp://"):
@@ -256,10 +263,41 @@ def _become(uid: int, gid: int, groups: list[int]) -> None:
         print(f"Could not drop privileges ({e}); running as root.", flush=True)
 
 
+def place_keystore_passphrase() -> Path:
+    """The keystore passphrase belongs in the add-on's private /data, not in the config folder that
+    the File editor and Samba can browse. Done as root before privileges drop (the private folder
+    is root-owned); a passphrase left next to the keystore by an older version is moved here and
+    wiped there."""
+    os.environ.setdefault("ONEROOF_ZIGBEE_KEYSTORE_PASSPHRASE_FILE", str(PASSPHRASE_FILE))
+    target = Path(os.environ["ONEROOF_ZIGBEE_KEYSTORE_PASSPHRASE_FILE"])
+    legacy = DATA / "network.keystore.pass"
+    if not target.exists():
+        if legacy.exists():
+            pw = legacy.read_bytes().strip()
+            print(f"Moving the keystore passphrase from {legacy} to the private folder {target}.", flush=True)
+        else:
+            pw = secrets.token_urlsafe(32).encode()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(pw + b"\n")
+            f.flush()
+            os.fsync(f.fileno())
+        if legacy.exists():
+            try:
+                with open(legacy, "r+b") as f:
+                    f.write(b"\x00" * max(64, len(pw) + 1))
+                legacy.unlink()
+            except OSError as e:
+                print(f"Could not remove {legacy}: {e} — delete it by hand.", flush=True)
+    return target
+
+
 async def main_async() -> int:
     DATA.mkdir(parents=True, exist_ok=True)
     opts = json.loads(OPTIONS.read_text())
-    drop_privileges(coordinator_port(opts), bool(opts.get("drop_privileges", True)))
+    pass_file = place_keystore_passphrase()
+    drop_privileges(coordinator_port(opts), bool(opts.get("drop_privileges", True)), also_own=[pass_file])
     if not opts.get("serial_port") and not opts.get("network_coordinator"):
         print("No coordinator configured. Open the add-on Configuration tab and pick your USB adapter under "
               "'serial_port' (or enter host:port under 'network_coordinator'), then start the add-on again.", flush=True)

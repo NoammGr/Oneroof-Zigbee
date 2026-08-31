@@ -50,7 +50,12 @@ _BINARY_CLASS: dict[str, str | None] = {
 }
 
 _ICONS = {"action": "mdi:gesture-double-tap", "linkquality": "mdi:signal", "power_outage_count": "mdi:counter", "power_on_behavior": "mdi:power-settings",
-          "indicator_mode": "mdi:led-on", "preset": "mdi:tune", "lock_state": "mdi:lock"}
+          "indicator_mode": "mdi:led-on", "preset": "mdi:tune", "lock_state": "mdi:lock", "fan_mode": "mdi:fan", "protocol": "mdi:remote",
+          "learn_key": "mdi:remote-tv", "send_key": "mdi:remote", "hold": "mdi:thermostat", "last_result": "mdi:message-text", "code_count": "mdi:counter",
+          "led_brightness": "mdi:led-on", "led_quiet": "mdi:led-off", "temperature_offset": "mdi:thermometer-plus"}
+
+# climate modes Home Assistant knows; anything else a thermostat lists stays out of the entity
+_HA_CLIMATE_MODES = ("off", "auto", "cool", "heat", "dry", "fan_only")
 
 
 def _device_block(dev: Device, t: Topics) -> dict[str, Any]:
@@ -134,10 +139,13 @@ def discovery_messages(dev: Device, base: str, prefix: str, *, legacy: bool = Fa
                 add("light", f"light{sfx}", cfg)
                 handled |= {x["key"] for x in (st, br, ct, col) if x}
             else:
-                add("switch", f"switch{sfx}", {"name": None if not sfx else st["name"], "command_topic": set_topic,
-                                               "value_template": f"{{{{ value_json.{st['key']} }}}}",
-                                               "payload_on": json.dumps({st["key"]: "ON"}), "payload_off": json.dumps({st["key"]: "OFF"}),
-                                               "state_on": "ON", "state_off": "OFF"})
+                # a relabelled on/off (e.g. the louver swing of an air conditioner) keeps its own key and name
+                own = st["key"] != "state" and not sfx
+                add("switch", st["key"] if own else f"switch{sfx}",
+                    {"name": st["name"] if (sfx or own) else None, "command_topic": set_topic,
+                     "value_template": f"{{{{ value_json.{st['key']} }}}}", "icon": _ICONS.get(st["key"]) if own else None,
+                     "payload_on": json.dumps({st["key"]: "ON"}), "payload_off": json.dumps({st["key"]: "OFF"}),
+                     "state_on": "ON", "state_off": "OFF"})
                 handled.add(st["key"])
         elif st and st["cluster"] == 0x0101:
             add("lock", f"lock{_suffix(st)}", {"name": None, "command_topic": set_topic, "value_template": f"{{{{ value_json.{st['key']} }}}}",
@@ -156,29 +164,46 @@ def discovery_messages(dev: Device, base: str, prefix: str, *, legacy: bool = Fa
                     cfg.update({"set_position_topic": set_topic, "set_position_template": '{"%s": {{ position }} }' % pos["key"]})
             add("cover", f"cover{sfx}", cfg)
             handled |= {x["key"] for x in (pos, cov) if x}
-        lt, sp = bases.get("local_temperature"), bases.get("current_heating_setpoint")
-        if sp:
-            sfx = _suffix(sp)
-            mode, preset = bases.get("system_mode"), bases.get("preset")
-            cfg = {"name": None, "temperature_state_topic": state_topic, "temperature_state_template": f"{{{{ value_json.{sp['key']} }}}}",
-                   "temperature_command_topic": set_topic, "temperature_command_template": '{"%s": {{ value }} }' % sp["key"],
-                   "min_temp": sp.get("min", 5), "max_temp": sp.get("max", 30), "temp_step": sp.get("step", 0.5), "temperature_unit": "C"}
+        lt, sp, cp, tt = bases.get("local_temperature"), bases.get("current_heating_setpoint"), bases.get("current_cooling_setpoint"), bases.get("target_temperature")
+        if sp or cp or tt:
+            main = tt or sp or cp
+            sfx = _suffix(main)
+            mode, preset, fan = bases.get("system_mode"), bases.get("preset"), bases.get("fan_mode")
+            present = [x for x in (tt, sp, cp) if x]
+            cfg = {"name": None, "min_temp": min(x.get("min", 5) for x in present), "max_temp": max(x.get("max", 30) for x in present),
+                   "temp_step": main.get("step", 0.5), "temperature_unit": "C"}
+            if tt or not (sp and cp):
+                # one target temperature: a radiator valve's heating setpoint, or an air conditioner
+                # whose cooling and heating setpoints are one "set temperature" (target_temperature)
+                cfg.update({"temperature_state_topic": state_topic, "temperature_state_template": f"{{{{ value_json.{main['key']} }}}}",
+                            "temperature_command_topic": set_topic, "temperature_command_template": '{"%s": {{ value }} }' % main["key"]})
+            else:
+                # separate heating (low) and cooling (high) setpoints
+                cfg.update({"temperature_low_state_topic": state_topic, "temperature_low_state_template": f"{{{{ value_json.{sp['key']} }}}}",
+                            "temperature_low_command_topic": set_topic, "temperature_low_command_template": '{"%s": {{ value }} }' % sp["key"],
+                            "temperature_high_state_topic": state_topic, "temperature_high_state_template": f"{{{{ value_json.{cp['key']} }}}}",
+                            "temperature_high_command_topic": set_topic, "temperature_high_command_template": '{"%s": {{ value }} }' % cp["key"]})
             if lt:
                 cfg.update({"current_temperature_topic": state_topic, "current_temperature_template": f"{{{{ value_json.{lt['key']} }}}}"})
             if mode and mode["access"] == "rw":
                 cfg.update({"mode_state_topic": state_topic, "mode_state_template": f"{{{{ value_json.{mode['key']} }}}}",
                             "mode_command_topic": set_topic, "mode_command_template": '{"%s": "{{ value }}" }' % mode["key"],
-                            "modes": [m for m in mode.get("values", []) if m in ("off", "heat", "cool", "auto")]})
+                            "modes": [m for m in mode.get("values", []) if m in _HA_CLIMATE_MODES]})
                 handled.add(mode["key"])
             else:
-                cfg["modes"] = ["heat"]
+                cfg["modes"] = ["heat"] if sp else ["cool"]
+            if fan and fan["access"] == "rw":
+                cfg.update({"fan_mode_state_topic": state_topic, "fan_mode_state_template": f"{{{{ value_json.{fan['key']} }}}}",
+                            "fan_mode_command_topic": set_topic, "fan_mode_command_template": '{"%s": "{{ value }}" }' % fan["key"],
+                            "fan_modes": list(fan.get("values", []))})
+                handled.add(fan["key"])
             if preset and preset["access"] == "rw":
                 cfg.update({"preset_mode_state_topic": state_topic, "preset_mode_value_template": f"{{{{ value_json.{preset['key']} }}}}",
                             "preset_mode_command_topic": set_topic, "preset_mode_command_template": '{"%s": "{{ value }}" }' % preset["key"],
                             "preset_modes": preset.get("values", [])})
                 handled.add(preset["key"])
             add("climate", f"climate{sfx}", cfg)
-            handled |= {x["key"] for x in (lt, sp) if x}
+            handled |= {x["key"] for x in (lt, sp, cp, tt) if x}
 
     # -- one entity per remaining feature ------------------------------------------------------
     for f in feats:
@@ -223,7 +248,12 @@ def discovery_messages(dev: Device, base: str, prefix: str, *, legacy: bool = Fa
             add("select", key, {"name": f["name"], "command_topic": set_topic, "value_template": tmpl, "command_template": '{"%s": "{{ value }}" }' % key,
                                 "options": f.get("values", []), "entity_category": diag, "icon": _ICONS.get(f["base"])})
         elif typ == "text" and acc == "r":
-            add("sensor", key, {"name": f["name"], "value_template": tmpl, "entity_category": diag})
+            add("sensor", key, {"name": f["name"], "value_template": tmpl, "entity_category": diag, "icon": _ICONS.get(f["base"])})
+        elif typ == "text":
+            # a writable string: a code key to learn or send, a protocol name … HA's text entity
+            add("text", key, {"name": f["name"], "command_topic": set_topic, "command_template": '{"%s": "{{ value }}" }' % key,
+                              "value_template": f"{{{{ value_json.{key} | default('') }}}}", "max": f.get("max_length", 255),
+                              "entity_category": diag, "icon": _ICONS.get(f["base"])})
     return out
 
 
