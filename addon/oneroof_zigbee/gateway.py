@@ -1503,7 +1503,7 @@ class Gateway:
 
     # ---------------------------------------------------------- requests --
 
-    CONTROL_ACTIONS = ("permit_join", "rotate_network_key", "remove", "scan_air")
+    CONTROL_ACTIONS = ("permit_join", "rotate_network_key", "remove", "scan_air", "radio_tuning")
     ROTATE_AFTER_JOIN_QUIET_S = 120.0  # one rotation per pairing session, not one per device
     # At start a green badge is only kept for a device heard this recently. Mains devices talk
     # often; battery devices may sleep for hours between reports, so they get a longer grace.
@@ -1532,6 +1532,7 @@ class Gateway:
         handler = {
             "permit_join": self._req_permit_join, "remove": self._req_remove, "rename": self._req_rename,
             "interview": self._req_interview, "rotate_network_key": self._req_rotate_key, "devices": self._req_devices, "scan_air": self._req_scan_air,
+            "radio_tuning": self._req_radio_tuning,
             "verify_audit": self._req_verify_audit,
         }.get(action)
         if handler is None:
@@ -1548,6 +1549,37 @@ class Gateway:
         except Exception as e:
             log.exception("request %s failed", action)
             return {"ok": False, "error": f"internal: {type(e).__name__}"}
+
+    def _radio_tuning_file(self) -> Path:
+        return self.cfg.data_dir / "radio.json"
+
+    def load_radio_tuning(self) -> dict[str, int]:
+        try:
+            data = json.loads(self._radio_tuning_file().read_text())
+        except (OSError, ValueError):
+            return {}
+        return {k: int(v) for k, v in data.items() if isinstance(v, (int, float))}
+
+    async def _req_radio_tuning(self, body: dict[str, Any], who: str) -> dict[str, Any]:
+        """Read or change the radio's routing and broadcast behaviour. Keys, PAN, channel and the
+        devices' membership are never touched — see Coordinator.apply_radio_tuning."""
+        settings = body.get("settings")
+        if settings is None:
+            return {"current": await self.coord.read_radio_tuning(),
+                    "configured": self.load_radio_tuning(),
+                    "fields": {k: {"min": lo, "max": hi, "help": h}
+                               for k, (_nv, lo, hi, h) in self.coord.RADIO_TUNING.items()}}
+        if not isinstance(settings, dict):
+            raise ValueError("settings must be an object")
+        wanted = {str(k): int(v) for k, v in settings.items()}
+        result = await self.coord.apply_radio_tuning(wanted)
+        self.coord.radio_tuning = wanted
+        try:
+            self._radio_tuning_file().write_text(json.dumps(wanted, indent=1))
+        except OSError as e:
+            log.warning("radio settings applied but not saved: %s", e)
+        self.audit.security("radio_tuning_requested", by=who, settings=wanted)
+        return result
 
     async def _req_scan_air(self, body: dict[str, Any], who: str) -> dict[str, Any]:
         self.audit.event("air_scan_requested", by=who)

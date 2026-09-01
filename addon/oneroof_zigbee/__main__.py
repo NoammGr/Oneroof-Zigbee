@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import contextlib
 import getpass
+import json
 import logging
 import signal
 import ssl
@@ -109,6 +110,11 @@ async def run(cfg: Config, config_path: Path | None = None, *, managed: bool = F
                                  close_after_first_join=cfg.zigbee.permit_join_close_after_first_join), audit)
     coord = Coordinator(transport, secrets, guard, audit, strict_install_codes=cfg.zigbee.strict_install_codes)
     coord.keystore = Keystore(cfg.data_dir / "network.keystore")  # key-sequence fixes found at start are persisted
+    try:  # routing/broadcast settings chosen in the panel; the coordinator re-applies them if the radio drifted
+        coord.radio_tuning = {str(k): int(v) for k, v in
+                              json.loads((cfg.data_dir / "radio.json").read_text()).items()}
+    except (OSError, ValueError, TypeError):
+        coord.radio_tuning = {}
     if coordinator_present:
         try:
             await coord.start()

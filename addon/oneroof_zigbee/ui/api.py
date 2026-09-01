@@ -112,6 +112,8 @@ class UiApi:
         r("POST", "/api/map/refresh", self.map_refresh)
         r("POST", "/api/rotate_network_key", self.rotate)
         r("POST", "/api/scan_air", self.scan_air)
+        r("GET", "/api/radio_tuning", self.radio_tuning_get)
+        r("POST", "/api/radio_tuning", self.radio_tuning_set)
         r("GET", "/api/rotate_network_key", self.rotate_status)
         r("POST", "/api/settings", self.settings)
         r("GET", "/api/config", self.config_get)
@@ -449,6 +451,14 @@ class UiApi:
     async def scan_air(self, req: Request) -> Response:
         self._require_control()
         result = await self.gw.handle_request("scan_air", dict(req.json or {}), self.who)
+        return Response.json(result, 200 if result.get("ok") else 400)
+
+    async def radio_tuning_get(self, req: Request) -> Response:
+        return Response.json(await self.gw.handle_request("radio_tuning", {}, self.who))
+
+    async def radio_tuning_set(self, req: Request) -> Response:
+        self._require_control()
+        result = await self.gw.handle_request("radio_tuning", {"settings": dict(req.json or {})}, self.who)
         return Response.json(result, 200 if result.get("ok") else 400)
 
     async def rotate_status(self, req: Request) -> Response:

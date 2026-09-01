@@ -96,6 +96,7 @@ class Coordinator:
         # IEEEs already on the network (fed by the gateway's registry). Announces from
         # these are rejoins (power cycle, parent change) and must never be judged as joins.
         self.known_ieee: set[int] = set()
+        self.radio_tuning: dict[str, int] = {}  # routing/broadcast settings the operator chose
         self._wire_listeners()
 
     # ------------------------------------------------------------ events --
@@ -277,6 +278,7 @@ class Coordinator:
         await self._register_zdo_callbacks()
         await self._force_close_join()
         await self._verify_active_key()
+        await self._reapply_radio_tuning()
         if self.secrets.frame_counter:
             await self._ensure_frame_counter(self.secrets.frame_counter + FRAME_COUNTER_MARGIN)
         asyncio.create_task(self._neighbour_check(), name="neighbour-check")
@@ -679,6 +681,106 @@ class Coordinator:
         self.audit.event("air_scan", beacons=len(beacons), networks=len(networks), mode=mode,
                          ours_heard=sum(n["responders"] for n in networks if n["this_network"]))
         return {"ok": True, "networks": networks, "channels": chans, "mode": mode}
+
+    # Routing and broadcast behaviour the firmware reads from NV at every boot (TI's zgItemTable:
+    # "if the item exists, set the item to the value stored in NV memory"), so these can be tuned
+    # on a running installation without re-flashing. Everything here is one byte.
+    # NOT here, deliberately: neighbour/routing/device-table SIZES are compile-time array bounds —
+    # no NV item exists for them and changing them needs a new firmware image.
+    RADIO_TUNING: dict[str, tuple[int, int, int, str]] = {
+        "concentrator_enable": (NvId.CONCENTRATOR_ENABLE, 0, 1,
+                                "Act as a concentrator so devices route towards the coordinator"),
+        "concentrator_discovery_seconds": (NvId.CONCENTRATOR_DISCOVERY, 0, 255,
+                                           "How often the coordinator floods a route request to the whole network. "
+                                           "0 = never (the firmware default). Frequent floods fill the air and can "
+                                           "starve battery and no-neutral devices"),
+        "concentrator_radius": (NvId.CONCENTRATOR_RADIUS, 1, 30, "How many hops such a flood travels"),
+        "concentrator_route_cache": (NvId.CONCENTRATOR_RC, 0, 1, "Keep a source-route cache for those routes"),
+        "source_route_expiry_seconds": (NvId.SRC_RTG_EXPIRY_TIME, 0, 255, "How long a learned source route is kept"),
+        "route_discovery_seconds": (NvId.ROUTE_DISCOVERY_TIME, 1, 255, "How long a route discovery may take"),
+        "route_expiry_seconds": (NvId.ROUTE_EXPIRY_TIME, 0, 255, "How long an unused route is kept"),
+        "broadcast_retries": (NvId.BCAST_RETRIES, 0, 5, "Retries for a broadcast"),
+        "passive_ack_timeout": (NvId.PASSIVE_ACK_TIMEOUT, 1, 255, "How long a broadcast waits to hear itself repeated"),
+        "broadcast_delivery_seconds": (NvId.BCAST_DELIVERY_TIME, 1, 255, "How long a broadcast stays alive in the network"),
+    }
+
+    async def _reapply_radio_tuning(self) -> None:
+        """Keep the radio at the settings the operator chose. The firmware reads these from NV at
+        boot, and a re-formation resets them to its compiled-in defaults — so they are checked at
+        every start and, if they have drifted, written and applied with one short restart."""
+        want = {k: int(v) for k, v in (self.radio_tuning or {}).items() if k in self.RADIO_TUNING}
+        if not want:
+            return
+        try:
+            have = await self.read_radio_tuning()
+        except (ZnpStatusError, ZnpTimeout, asyncio.TimeoutError) as e:
+            log.info("radio tuning not read (%s); leaving the radio as it is", e)
+            return
+        drift = {k: v for k, v in want.items() if have.get(k) != v}
+        if not drift:
+            return
+        log.warning("radio settings differ from the configured ones (%s) — applying them",
+                    ", ".join(f"{k}: {have.get(k)}\u2192{v}" for k, v in drift.items()))
+        try:
+            await self.apply_radio_tuning(want)
+        except (ZnpStatusError, ZnpTimeout, ValueError, asyncio.TimeoutError) as e:
+            log.error("radio settings could not be applied (%s)", e)
+
+    async def read_radio_tuning(self) -> dict[str, int | None]:
+        """What the radio is actually set to right now (None = the item does not exist yet, so the
+        firmware's compiled-in default is in force)."""
+        out: dict[str, int | None] = {}
+        for name, (nv, *_rest) in self.RADIO_TUNING.items():
+            raw = await self._nv_read(nv)
+            out[name] = raw[0] if raw else None
+        return out
+
+    async def apply_radio_tuning(self, values: dict[str, int]) -> dict[str, Any]:
+        """Write routing/broadcast tunables and restart the stack so the firmware picks them up.
+
+        This deliberately touches NOTHING else: no key items, no PAN, no channel, no startup
+        option, no frame counter. The network the devices are joined to is the same one before and
+        after — only how loudly the coordinator hunts for routes changes. The result is verified
+        against the keystore before it is reported as done."""
+        clean: dict[str, int] = {}
+        for name, value in values.items():
+            spec = self.RADIO_TUNING.get(name)
+            if spec is None:
+                raise ValueError(f"unknown radio setting {name!r}")
+            nv, lo, hi, _help = spec
+            v = int(value)
+            if not lo <= v <= hi:
+                raise ValueError(f"{name} must be {lo}..{hi}")
+            clean[name] = v
+        before = {"pan_id": self.secrets.pan_id, "channel": self.secrets.channel}
+        await self._reset()
+        written: list[str] = []
+        for name, v in clean.items():
+            nv = self.RADIO_TUNING[name][0]
+            try:
+                await self._nv_write(nv, bytes([v]))
+                written.append(name)
+            except ZnpStatusError as e:
+                log.warning("radio setting %s refused by the firmware (%s)", name, e)
+        await self._apply_runtime_security()
+        await self._startup()
+        await self._register_endpoint()
+        await self._register_zdo_callbacks()
+        await self._force_close_join()
+        live = c.decode_ext_nwk_info((await self.t.request(c.zdo_ext_nwk_info(), check_status=False)).data)
+        key_ok = await self.active_key_matches()
+        same_network = live.pan_id == before["pan_id"] and live.channel == before["channel"]
+        self.audit.security("radio_tuning_applied", settings=clean, written=written,
+                            key_ok=key_ok, same_network=same_network)
+        if not (key_ok and same_network):
+            log.error("radio tuning left the coordinator on pan=%#06x channel=%d key_ok=%s — expected pan=%#06x channel=%d",
+                      live.pan_id, live.channel, key_ok, before["pan_id"], before["channel"])
+        else:
+            log.warning("radio tuning applied (%s); network unchanged: pan=%#06x channel=%d, key verified",
+                        ", ".join(f"{k}={v}" for k, v in clean.items()), live.pan_id, live.channel)
+        asyncio.create_task(self._neighbour_check(), name="neighbour-check-after-tuning")
+        return {"applied": clean, "written": written, "key_ok": key_ok, "same_network": same_network,
+                "pan_id": f"{live.pan_id:#06x}", "channel": live.channel}
 
     async def key_slots(self) -> dict[str, Any]:
         """The two key slots' sequence numbers, and whether two different keys share one number —

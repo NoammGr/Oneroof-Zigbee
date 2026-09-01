@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.2.0] — 2026-09-01
+
+### Added — Coordinator → Danger zone: how the radio routes, without re-flashing
+- The firmware reads its routing and broadcast behaviour from NV at every boot, so those settings
+  can be changed on a running installation. The Coordinator page now exposes them: whether the
+  coordinator acts as a concentrator and **how often it floods the network with route requests**
+  (the firmware default is never; a flood every minute fills the air and can starve battery and
+  no-neutral devices), the route-discovery and expiry times, and the broadcast parameters. Each
+  shows what the radio is set to right now.
+- Applying them restarts the radio for a few seconds and **touches nothing else**: no key item, no
+  PAN, no channel, no startup option — the network and every paired device are exactly as they
+  were, and the result is verified against the keystore before it is reported as applied. A test
+  asserts that no key, PAN, channel or startup NV item is written by a routing change.
+- The chosen settings are re-applied at every start, because a re-formation resets the radio to
+  the firmware's compiled-in defaults.
+- Table sizes (neighbours, routes, device list) are deliberately **not** offered: those are
+  compiled into the firmware and genuinely need a new image.
+
 ## [2.1.2] — 2026-09-01
 
 ### Security — a client app can no longer invent a device's state

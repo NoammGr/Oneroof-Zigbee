@@ -724,3 +724,41 @@ async def test_formation_adopts_the_identity_the_radio_actually_formed():
     assert fake.nv[c.NvId.PRECFGKEY] == coord.secrets.network_key, "the key is still ours"
     assert fake.active_key == coord.secrets.network_key
     await t.close()
+
+
+async def test_radio_tuning_writes_only_routing_items_and_keeps_the_network():
+    """Changing how the radio routes must never cost the network: no key item, no PAN, no channel
+    and no startup option is touched, and the result is verified against the keystore."""
+    fake, coord, t = await make()
+    key_before, pan_before, ch_before = fake.active_key, coord.secrets.pan_id, coord.secrets.channel
+    fake.requests.clear()
+    result = await coord.apply_radio_tuning({"concentrator_discovery_seconds": 120,
+                                             "concentrator_enable": 1})
+    assert result["key_ok"] and result["same_network"], result
+    written = [f for f in fake.requests
+               if f.subsystem.name == "SYS" and f.command == c.SysCmd.OSAL_NV_WRITE]
+    ids = {int.from_bytes(f.data[0:2], "little") for f in written}
+    assert c.NvId.CONCENTRATOR_DISCOVERY in ids and c.NvId.CONCENTRATOR_ENABLE in ids
+    for forbidden in (c.NvId.NWK_ACTIVE_KEY_INFO, c.NvId.NWK_ALTERN_KEY_INFO, c.NvId.PRECFGKEY,
+                      c.NvId.NWKKEY, c.NvId.PANID, c.NvId.CHANLIST, c.NvId.EXTPANID,
+                      c.NvId.STARTUP_OPTION, c.NvId.TCLK_SEED):
+        assert forbidden not in ids, f"{forbidden.name} must not be touched by a routing change"
+    assert fake.active_key == key_before, "the network key is untouched"
+    assert coord.secrets.pan_id == pan_before and coord.secrets.channel == ch_before
+    assert (await coord.read_radio_tuning())["concentrator_discovery_seconds"] == 120
+    await t.close()
+
+
+async def test_radio_tuning_refuses_nonsense_and_reapplies_on_drift():
+    import pytest
+    fake, coord, t = await make()
+    for bad in ({"concentrator_discovery_seconds": 999}, {"not_a_setting": 1},
+                {"broadcast_retries": -1}):
+        with pytest.raises(ValueError):
+            await coord.apply_radio_tuning(bad)
+    # the firmware's defaults come back after a re-formation: the operator's choice is re-applied
+    coord.radio_tuning = {"concentrator_discovery_seconds": 120}
+    await coord._nv_write(c.NvId.CONCENTRATOR_DISCOVERY, bytes([60]))
+    await coord._reapply_radio_tuning()
+    assert (await coord.read_radio_tuning())["concentrator_discovery_seconds"] == 120
+    await t.close()

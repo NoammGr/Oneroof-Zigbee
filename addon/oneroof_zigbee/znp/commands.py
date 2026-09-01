@@ -43,6 +43,16 @@ class NvId(IntEnum):
     EXTPANID = 0x002D
     APS_USE_EXT_PANID = 0x0047
     NIB = 0x0021                  # the live network state; removed briefly for a beacon scan
+    ROUTE_EXPIRY_TIME = 0x002C
+    BCAST_RETRIES = 0x002E
+    PASSIVE_ACK_TIMEOUT = 0x002F
+    BCAST_DELIVERY_TIME = 0x0030
+    CONCENTRATOR_ENABLE = 0x0032
+    CONCENTRATOR_DISCOVERY = 0x0033
+    CONCENTRATOR_RADIUS = 0x0034
+    CONCENTRATOR_RC = 0x0036
+    SRC_RTG_EXPIRY_TIME = 0x0038
+    ROUTE_DISCOVERY_TIME = 0x0039
     NWK_ACTIVE_KEY_INFO = 0x003A  # keySeqNum u8, key[16], frameCounter u32 — read back to verify the counter
     NWK_ALTERN_KEY_INFO = 0x003B
     PRECFGKEY = 0x0062

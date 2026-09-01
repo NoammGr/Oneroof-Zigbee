@@ -1167,9 +1167,41 @@ views.coordinator={
     this.stamp=el('span',{class:'sub'});
     m.append(el('div',{class:'bar'},el('button',{class:'btn',text:'Re-check',onclick:()=>this.load(true)}),el('span',{class:'grow'}),this.stamp));
     this.banner=el('div');m.append(this.banner);
-    this.box=el('div',{style:'display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;align-items:start'});m.append(this.box);this.load();
+    this.box=el('div',{style:'display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;align-items:start'});m.append(this.box);
+    this.tuning=el('div');m.append(this.tuning);this.load();this.loadTuning();
   },
   kv(k,v,mono){return[el('dt',{text:k}),el('dd',{class:mono?'mono':''},String(v??'—'))];},
+  async loadTuning(){
+    if(!this.tuning)return;
+    let d;try{d=await api('api/radio_tuning');}catch(e){return;}
+    if(!d||!d.fields)return;
+    const fields=d.fields,cur=d.current||{},conf=d.configured||{},inputs={};
+    const rows=Object.keys(fields).map(k=>{
+      const f=fields[k],val=(k in conf)?conf[k]:cur[k];
+      const inp=num(val==null?'':val,f.min,f.max);inp.style.width='92px';inputs[k]=inp;
+      return el('div',{class:'frow'},
+        el('div',{class:'fn',title:f.help},el('span',{text:k.replace(/_/g,' ')})),
+        el('span',{class:'sub',style:'margin-right:8px',text:'radio: '+(cur[k]==null?'firmware default':cur[k])}),inp);});
+    const out=el('div',{class:'sub',style:'margin-top:8px'});
+    const apply=el('button',{class:'btn danger',text:'Apply and restart the radio',onclick:async()=>{
+      const settings={};for(const k in inputs){const v=parseInt(inputs[k].value,10);if(!isNaN(v))settings[k]=v;}
+      if(!(await confirmDlg('Change how the radio routes?',[
+        el('p',{text:'The radio restarts for a few seconds. Your network key, PAN, channel and every paired device stay exactly as they are — only routing and broadcast behaviour changes. The result is verified against the keystore afterwards.'}),
+        el('p',{class:'sub',text:'If something feels worse, come back and restore the firmware defaults.'})],'Apply',true)))return;
+      apply.disabled=true;out.textContent='Applying…';
+      try{const r=await api('api/radio_tuning',settings);
+        out.textContent=r.same_network&&r.key_ok?('Applied. Network unchanged: PAN '+r.pan_id+', channel '+r.channel+', key verified.')
+          :('Applied, but the radio reports PAN '+r.pan_id+' channel '+r.channel+' (key ok: '+r.key_ok+') — check the Logs.');
+        toast('Radio settings applied');this.loadTuning();}catch(e){out.textContent=e.message;toast(e.message,true);}
+      apply.disabled=false;}});
+    const quiet=el('button',{class:'btn sm',text:'Quieter mesh (recommended)',title:'Stops the coordinator flooding the whole network with route requests every minute — the firmware default is not to do it at all.',
+      onclick:()=>{if(inputs.concentrator_discovery_seconds)setVal(inputs.concentrator_discovery_seconds,120);toast('Set to 120 s — press Apply to write it');}});
+    clear(this.tuning).append(el('div',{class:'danger-zone'},
+      el('h3',{text:'Danger zone — how the radio routes'}),
+      el('p',{class:'sub',style:'margin:0 0 10px'},'These are written into the radio and read back by its firmware at every boot, so they change a running installation without re-flashing. They do not touch your keys, your PAN, your channel or your paired devices — but they do change how the mesh behaves, and a bad value can make it worse. ',
+        el('b',{text:'Table sizes (neighbours, routes, device list) are not here: those are compiled into the firmware and need a new image.'})),
+      ...rows,el('div',{class:'bar',style:'margin-top:12px'},apply,quiet),out));
+  },
   chk(label,ok,okText,badText){return[el('dt',{text:label}),el('dd',null,el('i',{class:'dot'+(ok?' on':''),style:'margin-right:8px'}),ok?(okText||'matches'):(badText||'differs'))];},
   card(title,entries){return el('div',{class:'card'},el('h3',{text:title}),el('dl',{class:'kv'},...entries.flat()));},
   async load(manual){
