@@ -323,6 +323,8 @@ async def main_async() -> int:
     def announce_service() -> None:  # called by run() once the broker is listening
         if ha_pw and cfg.mqtt.external is None:
             register_mqtt_service(ha_user, ha_pw, cfg.mqtt.plaintext_port)
+        elif cfg.mqtt.external is not None:
+            unregister_mqtt_service()  # someone else is the broker now: stop claiming the service
     ca = DATA / "tls" / "ca.crt"
     if ca.exists():
         from oneroof_zigbee.security.tls import fingerprint
@@ -341,7 +343,12 @@ async def main_async() -> int:
         return 0 if rc == 4 else rc
     finally:
         hb.cancel()
-        unregister_mqtt_service()
+        # The MQTT service registration is deliberately LEFT IN PLACE. The Supervisor restarts
+        # every add-on that consumes a service when its provider disappears, so unregistering on
+        # our own restart bounces the whole house with us — the HomeKit bridge flaps and Apple
+        # Home shows every accessory as "No Response" while it does. The registration is refreshed
+        # on the next start; it is only withdrawn when this add-on stops providing a broker at all
+        # (an external broker is configured), or when it is uninstalled.
 
 
 if __name__ == "__main__":

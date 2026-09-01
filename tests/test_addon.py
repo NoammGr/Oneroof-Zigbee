@@ -175,3 +175,15 @@ def test_version_agrees_everywhere():
     pyproject = re.search(r'^version = "([^"]+)"', (root / "pyproject.toml").read_text(), re.M).group(1)
     config = re.search(r'^version: "([^"]+)"', (root / "addon" / "config.yaml").read_text(), re.M).group(1)
     assert __version__ == pyproject == config
+
+
+def test_the_mqtt_service_registration_survives_our_own_restart():
+    """The Supervisor restarts every add-on that consumes a service when its provider disappears.
+    Withdrawing the MQTT registration on our way out therefore bounces the HomeKit bridge (and with
+    it every accessory in Apple Home) each time this add-on restarts. The registration is left in
+    place and refreshed on the next start; it is withdrawn only when an external broker takes over."""
+    src = RUN_PY.read_text()
+    tail = src[src.index("    finally:\n        hb.cancel()"):]
+    assert "unregister_mqtt_service()" not in tail, "the service must not be withdrawn on exit"
+    announce = src[src.index("def announce_service"):src.index("def announce_service") + 500]
+    assert "unregister_mqtt_service()" in announce, "an external broker does withdraw it"

@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.1.1] — 2026-09-01
+
+### Fixed — restarting this add-on no longer restarts the rest of the house
+- The add-on withdrew its MQTT service registration from the Supervisor on **every** exit. The
+  Supervisor restarts every add-on that consumes a service when its provider disappears, so each
+  restart of this gateway also restarted the HomeKit bridge — and while the bridge flaps, Apple
+  Home shows *every* accessory as "No Response". If this gateway restarts in a loop, the whole
+  house appears broken.
+- The registration now stays in place and is simply refreshed on the next start. It is withdrawn
+  only when this add-on genuinely stops being the broker (an external broker is configured).
+
 ## [2.1.0] — 2026-09-01
 
 ### Added — the dashboard can be ordered
