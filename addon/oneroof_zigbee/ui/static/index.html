@@ -740,21 +740,37 @@ function featureControl(d,f,o){
 }
 
 /* ============ DASHBOARD ============ */
+const DSORTS=[['name','Name (A\u2192Z)'],['category','Category'],['status','Offline first'],['lqi','Weakest signal first'],
+  ['battery','Lowest battery first'],['power','Highest power first'],['seen','Heard most recently']];
+const dsName=d=>String(d.friendly_name||d.ieee||'').toLowerCase();
+const dsNum=(v,fallback)=>typeof v==='number'?v:fallback;
+const DSORTERS={
+  name:(a,b)=>dsName(a).localeCompare(dsName(b)),
+  category:(a,b)=>devCat(a).localeCompare(devCat(b))||dsName(a).localeCompare(dsName(b)),
+  // offline first: a dashboard is most useful when what is wrong is at the top
+  status:(a,b)=>(a.available?1:0)-(b.available?1:0)||dsName(a).localeCompare(dsName(b)),
+  lqi:(a,b)=>dsNum(a.lqi,999)-dsNum(b.lqi,999)||dsName(a).localeCompare(dsName(b)),
+  battery:(a,b)=>dsNum((a.state||{}).battery,999)-dsNum((b.state||{}).battery,999)||dsName(a).localeCompare(dsName(b)),
+  power:(a,b)=>dsNum((b.state||{}).power,-1)-dsNum((a.state||{}).power,-1)||dsName(a).localeCompare(dsName(b)),
+  seen:(a,b)=>dsNum(b.last_seen,0)-dsNum(a.last_seen,0)||dsName(a).localeCompare(dsName(b)),
+};
 const DCATS=[['all','All'],['light','Lights'],['plug','Plugs'],['sensor','Sensors'],['cover','Covers'],['climate','Climate']];
 function devCat(d){if(d.category){return {light:'light',plug:'plug',switch:'plug',cover:'cover',climate:'climate'}[d.category]||'sensor';}const cat=Object.values(d.endpoints||{}).map(e=>e.category||'').join(' ').toLowerCase();const cl=clusters(d);if(/light|lamp|bulb/.test(cat)||cl.has(0x300)||cl.has(8))return 'light';if(/cover|blind|shade|curtain/.test(cat)||cl.has(0x102))return 'cover';if(/thermostat|climate|hvac/.test(cat)||cl.has(0x201))return 'climate';if(/plug|outlet|socket|switch/.test(cat)||cl.has(0x702)||cl.has(0xb04)||cl.has(6))return 'plug';return 'sensor';}
 const dlink=d=>'#device/'+encodeURIComponent(d.ieee);
 views.dashboard={
-  q:'',hl:'',cat:'all',cards:new Map(),
+  q:'',hl:'',cat:'all',sort:'name',cards:new Map(),
   enter(m){
     m.append(el('h1',{text:'Dashboard'}),el('p',{class:'lead',text:'Every device at a glance: switch, dim and read values right here. Open a card for the full detail page.'}));
     const search=el('input',{type:'search',placeholder:'Search…',value:this.q,oninput:debounce(e=>{this.q=e.target.value.trim().toLowerCase();this.render();},120)});
     const hl=el('input',{type:'search',placeholder:'Highlight…',value:this.hl,title:'Highlight matching cards without hiding the others',oninput:debounce(e=>{this.hl=e.target.value.trim().toLowerCase();this.applyHl();},120)});
     this.chips=el('div',{class:'pills',style:'margin:0'});for(const[v,l]of DCATS)this.chips.append(el('button',{text:l,class:v===this.cat?'active':'','data-c':v,onclick:()=>{this.cat=v;this.chips.querySelectorAll('button').forEach(b=>b.classList.toggle('active',b.dataset.c===v));this.render();}}));
     this.count=el('span',{class:'mute'});
-    m.append(el('div',{class:'bar'},search,hl,this.chips,el('span',{class:'grow'}),this.count));
+    const sorter=sel(DSORTS,this.sort,{title:'Order the cards',onchange:e=>{this.sort=e.target.value;this.render();}});
+    m.append(el('div',{class:'bar'},search,hl,this.chips,el('span',{class:'grow'}),
+      el('span',{class:'sub',text:'Sort'}),sorter,this.count));
     this.host=el('div',{class:'dgrid'});m.append(this.host);this.render();views.devices.refresh();
   },
-  filtered(){const q=this.q;return S.devices.filter(d=>(this.cat==='all'||devCat(d)===this.cat)&&(!q||[d.friendly_name,d.model,d.manufacturer,d.ieee,d.description].join(' ').toLowerCase().includes(q))).sort((a,b)=>String(a.friendly_name).localeCompare(String(b.friendly_name)));},
+  filtered(){const q=this.q;return S.devices.filter(d=>(this.cat==='all'||devCat(d)===this.cat)&&(!q||[d.friendly_name,d.model,d.manufacturer,d.ieee,d.description].join(' ').toLowerCase().includes(q))).sort(DSORTERS[this.sort]||DSORTERS.name);},
   render(){
     if(S.page!=='dashboard'||!this.host)return;const list=this.filtered();this.count.textContent=list.length+' of '+S.devices.length;const h=clear(this.host);this.cards.clear();
     if(!list.length){h.className='';h.append(el('div',{class:'empty'},S.devices.length?'No device matches.':['No devices yet. ',el('a',{href:'#pair',text:'Pair one'}),' to get started.']));return;}

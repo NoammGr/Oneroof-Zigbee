@@ -318,3 +318,33 @@ async def test_b08_dashboard_cards_are_one_size_and_nothing_overlaps(stack, brow
     assert overlap == "ok", overlap
     assert await b.js("document.documentElement.scrollWidth <= window.innerWidth"), "dashboard overflows sideways"
     assert b.errors == [], f"console errors: {b.errors}"
+
+
+async def test_b09_dashboard_can_be_sorted(stack, browser):  # noqa: F811
+    """The dashboard offers useful orders — by name, category, what is offline, weakest signal,
+    lowest battery, highest power, most recently heard — and every one of them renders."""
+    from tests.sim import SimDevice
+    s, b = stack, browser
+    base = f"http://127.0.0.1:{s.ui.port}/"
+    for dev in (plug(PLUG_IEEE, PLUG_NWK),
+                SimDevice(0x00158D00000000C9, 0x7C09, "LUMI", "lumi.weather",
+                          [0x0000, 0x0001, 0x0402, 0x0405], [], 0x0302, router=False, power_source=3)):
+        if _gw(s).registry.get(dev.ieee) is None:
+            await api(s, "POST", "/api/permit_join", {"seconds": 30})
+            s.world.announce(s.world.add(dev))
+            await wait_for(lambda i=dev.ieee: (lambda x: x and x.interviewed)(_gw(s).registry.get(i)), 8)
+    await b.go(base, "dashboard", 2.5)
+    await asyncio.sleep(1.2)
+    opts = await b.js("[...document.querySelectorAll('.bar select option')].map(o=>o.value).join(',')")
+    for want in ("name", "category", "status", "lqi", "battery", "power", "seen"):
+        assert want in opts, f"{want} missing from the sort options: {opts}"
+    titles = await b.js("[...document.querySelectorAll('.dcard .dh a')].map(a=>a.textContent)")
+    assert titles == sorted(titles, key=str.lower), f"default order is by name: {titles}"
+    n = len(titles)
+    for order in ("category", "status", "lqi", "battery", "power", "seen", "name"):
+        await b.js(f"(()=>{{const s=document.querySelector('.bar select');s.value='{order}';"
+                   "s.dispatchEvent(new Event('change',{bubbles:true}));return 1;})()")
+        await asyncio.sleep(0.6)
+        got = await b.js("document.querySelectorAll('.dcard').length")
+        assert got == n, f"{order}: {got} cards instead of {n}"
+    assert b.errors == [], f"console errors: {b.errors}"

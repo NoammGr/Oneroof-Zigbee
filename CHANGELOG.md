@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.1.0] — 2026-09-01
+
+### Added — the dashboard can be ordered
+- A **Sort** control next to the category filter: by name, by category, **offline first** (what is
+  wrong rises to the top), **weakest signal first**, **lowest battery first**, **highest power
+  first** and **heard most recently**. It works together with the search box and the category
+  chips, and a browser test renders every order.
+
 ## [2.0.0] — 2026-08-31
 
 A network that survives its own repair. Everything below came out of one long weekend of running
