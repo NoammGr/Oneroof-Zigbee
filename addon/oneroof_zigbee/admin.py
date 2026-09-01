@@ -44,8 +44,12 @@ ROLE_TEMPLATES: dict[str, dict[str, Any]] = {
               "description": "Admin: everything incl. pairing, removing, key rotation"},
     "readonly": {"subscribe": ["{base}/+/state", "{base}/bridge/state", "{base}/bridge/info", "{base}/bridge/devices"], "publish": [], "control": False,
                  "description": "Read-only: dashboards, loggers"},
-    "client": {"subscribe": ["#"], "publish": ["#"], "control": False,
-               "description": "Client: full publish/subscribe (other apps, bridges), cannot open the network"},
+    # A client app sends commands; it does not get to invent device state. Without the deny a
+    # compromised or careless client could publish "smoke: false" or "contact: closed" on a
+    # device's own topic and every consumer — Home Assistant, Apple Home — would believe it.
+    "client": {"subscribe": ["#"], "publish": ["#", "{base}/+/set", "{base}/+/get", "{base}/bridge/request/#"],
+               "deny_publish": ["{base}/#"], "control": False,
+               "description": "Client: read everything, send commands via /set, cannot publish device state or open the network"},
     "custom": {"subscribe": [], "publish": [], "control": False, "description": "Custom ACL"},
 }
 _BACKUP_MAGIC = b"OZBK1"

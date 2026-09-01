@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.1.2] — 2026-09-01
+
+### Security — a client app can no longer invent a device's state
+- The `client` role could publish anywhere, including a device's own state topic. A compromised or
+  careless client could therefore announce "smoke: false" or "contact: closed" and every consumer —
+  Home Assistant, Apple Home, automations — would believe it. `client` now carries the same
+  boundary the Home Assistant role always had: read everything, send commands through `/set`,
+  never publish device state, never open the network.
+
 ## [2.1.1] — 2026-09-01
 
 ### Fixed — restarting this add-on no longer restarts the rest of the house

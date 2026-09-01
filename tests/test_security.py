@@ -239,3 +239,22 @@ def test_previous_setup_key_is_read_in_place_with_its_sequence(tmp_path, monkeyp
     assert k2 == bytes(key) and seq2 == 2
     with pytest.raises(ValueError):
         admin.previous_setup_key({"configuration.yaml": "advanced:\n  network_key: GENERATE\n"})
+
+
+def test_a_client_user_cannot_forge_device_state():
+    """A client app sends commands; it must not be able to invent a device's state. Smoke
+    detectors and door sensors live on this network: a forged 'clear' is worse than a forged
+    alarm, and every consumer downstream would believe it."""
+    from oneroof_zigbee.admin import ROLE_TEMPLATES
+    from oneroof_zigbee.mqtt import Acl
+    base = "oneroof/zigbee"
+    for role in ("client", "homeassistant"):
+        t = ROLE_TEMPLATES[role]
+        acl = Acl()
+        acl.allow("app", publish=[p.replace("{base}", base) for p in t["publish"]],
+                  subscribe=[s.replace("{base}", base) for s in t["subscribe"]],
+                  deny_publish=[d.replace("{base}", base) for d in t.get("deny_publish", [])])
+        assert not acl.can_publish("app", f"{base}/0x00158d0000000001"), f"{role} may not forge state"
+        assert not acl.can_publish("app", f"{base}/bridge/devices"), f"{role} may not forge the device list"
+        assert acl.can_publish("app", f"{base}/Hall light/set"), f"{role} may still send commands"
+        assert not t["control"], f"{role} may not open the network"

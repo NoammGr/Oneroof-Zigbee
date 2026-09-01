@@ -1,5 +1,5 @@
 name: One Roof Zigbee
-version: "2.1.1"
+version: "2.1.2"
 slug: oneroof_zigbee
 description: Zigbee gateway with a built-in MQTT broker, designed around security - pair devices, import a previous setup, everything under one roof.
 url: https://github.com/NoammGr/Oneroof-Zigbee
