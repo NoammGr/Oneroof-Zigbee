@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.9.1] — 2026-09-03
+
+### Changed
+- **A running key rotation shows itself on the Coordinator page** — the top-bar badge points
+  there, so that is where the answer now is: the phase, who is holding it up (**by device name**,
+  with the reason — "not reachable", "gets the key when it wakes"), and a reminder that nothing
+  switches until everyone has the key. Cancel and rollback stay under Settings → Maintenance.
+
 ## [2.9.0] — 2026-09-03
 
 ### Fixed — a rejoining device is left in peace

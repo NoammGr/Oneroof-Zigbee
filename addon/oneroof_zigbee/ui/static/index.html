@@ -1184,8 +1184,36 @@ views.coordinator={
     this.stamp=el('span',{class:'sub'});
     m.append(el('div',{class:'bar'},el('button',{class:'btn',text:'Re-check',onclick:()=>this.load(true)}),el('span',{class:'grow'}),this.stamp));
     this.banner=el('div');m.append(this.banner);
+    this.rot=el('div');m.append(this.rot);
     this.box=el('div',{style:'display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;align-items:start'});m.append(this.box);
-    this.tuning=el('div');m.append(this.tuning);this.load();this.loadTuning();
+    this.tuning=el('div');m.append(this.tuning);this.load();this.loadTuning();this.pollRotation();
+  },
+  // A running rotation announces itself in the top bar and people come HERE to look for it —
+  // so this page shows it: what phase, who is holding it up (by name), and why.
+  async pollRotation(){
+    if(S.page!=='coordinator'||!this.rot)return;
+    let st;try{st=await api('api/rotate_network_key');}catch(e){st=null;}
+    if(S.page!=='coordinator'||!this.rot)return;
+    const ph=st&&st.phase||'idle';
+    const active=ph==='delivering'||ph==='waiting'||ph==='switching';
+    if(!active){clear(this.rot);}
+    else{
+      const name=k=>{const d=S.devMap.get(k);return d&&d.friendly_name?d.friendly_name:k;};
+      const d=(st.delivered||[]).length;
+      const rows=[];
+      for(const[list,label]of[[st.failed,'not reachable'],[st.pending,'gets the key when it wakes'],[st.switch_pending,'told to switch when it wakes']]){
+        for(const[k,why]of Object.entries(list||{}))
+          rows.push(el('div',{class:'sub'},el('b',{text:name(k)}),' — '+(String(why||label))));
+      }
+      const head={delivering:'Handing the new key to devices…',
+        waiting:'Key rotation: waiting for every device to take the new key ('+d+' of '+(d+rows.length)+' have it'+(st.extended?', wait extended ×'+st.extended:'')+')',
+        switching:'Everyone has the key — telling devices to switch…'}[ph];
+      clear(this.rot).append(el('div',{class:'notice',style:'margin:0 0 16px'},
+        el('b',{text:head}),
+        el('div',{style:'margin-top:6px'},...rows),
+        el('div',{class:'sub',style:'margin-top:8px',text:'Nothing switches until every device has the key — the network keeps running on the current one. A device that is powered off takes it the moment it returns. Cancel or roll back under Settings → Maintenance → Rotate network key.'})));
+    }
+    clearTimeout(this._rotT);this._rotT=setTimeout(()=>this.pollRotation(),active?3000:15000);
   },
   kv(k,v,mono){return[el('dt',{text:k}),el('dd',{class:mono?'mono':''},String(v??'—'))];},
   async loadTuning(){
