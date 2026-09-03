@@ -1,5 +1,110 @@
 # Changelog
 
+## [2.6.1] — 2026-09-02
+
+- Re-release of 2.6.0. Several builds were published under the 2.6.0 number while it was being
+  finished; anyone who installed one of them would never be offered the final build, because the
+  Supervisor compares version strings. No changes beyond the version.
+
+## [2.6.0] — 2026-09-02
+
+### Changed
+- **The dashboard can remember your view.** A *Default* checkbox next to the sort makes the
+  current sort and category filter the view the dashboard opens with, remembered in this browser.
+  Change the sort and the tick clears (it no longer matches the saved default); untick to forget.
+- **Network map lines are easier to see.** Every link now earns a clearly visible line — quality
+  still shows as thickness and depth of colour, but a weak link no longer fades to nothing.
+  Hovering a device pulls its own links forward in ink while the rest step back.
+- The Danger zone's helper button now fills in **stock routing** (the values the standard
+  zigbee2mqtt firmware uses) instead of recommending a quieter mesh. The route-request flood every
+  60 s turned out to be stock behaviour, not a One Roof quirk — and it is what keeps far devices
+  reachable, so recommending against it was wrong.
+
+### Fixed — a device that misses a key change can come home again
+- A device that comes back without a valid network key — powered off at the wall across a key
+  rotation, or an Aqara that decided the hub was lost and left — recovers through an unsecured
+  trust-centre rejoin. The gateway explicitly **refused** those (the Z-Stack default, applied at
+  every boot as part of runtime hardening), which orphaned the device for good: it could only
+  return while a pairing window happened to be open, which is why "re-pairing" seemed to be the
+  only cure. The stock zigbee2mqtt firmware allows these rejoins; ours now does too.
+- The security cost is handled the way it already is at pairing time: a rejoin the trust centre
+  took part in means the key was re-delivered, possibly under the public key — so it is flagged
+  with the same plain-join exposure, and the existing debounced rotation retires that key minutes
+  later. A secure rejoin (no trust-centre involvement) is recognised and triggers nothing. The
+  audit's `device_rejoined` event now says `rekeyed_by_tc` so the log shows which kind happened.
+
+## [2.5.0] — 2026-09-02
+
+### Fixed — a device that refuses a setting no longer looks like one that accepted it
+- Writing an attribute ignored the device's answer. A Write Attributes Response carries a status
+  per attribute, and a refusal was treated exactly like a success: the new value was published as
+  though it had taken, so the app showed the temperature you asked for while the device carried on
+  as before. The answer is now read, and a refused write fails instead of lying.
+- **An air conditioner's temperature now falls back to the other setpoint attribute.** One set
+  temperature is two attributes in the ZCL (occupied heating 0x0012 and occupied cooling 0x0011),
+  and a device may implement only one. When the one that matches the mode is refused, the other is
+  written with the same value — which is why mode, fan and louver could all work while the
+  temperature alone did nothing.
+- **A device's report gets the receipt it asked for.** Xiaomi and Aqara devices send their state
+  reports and heartbeats with the ZCL default response *requested*, and judge the hub by whether it
+  arrives: a hub that stays silent is marked lost on the device's indicator LED (the red/blue
+  blink) even while every command still works. Reports that request a response now get one; a
+  report that asks for silence still gets silence.
+- **A state refresh is answered in both topic layouts.** Consumers ask for fresh values on
+  `<base>/<ieee>/get` at startup and when a device returns from an outage; the gateway only
+  listened for it in the legacy layout, so every such refresh went silently unanswered.
+- **A command that failed says so in the log.** The audit recorded that a command arrived; if
+  carrying it out then failed, nothing said so and the log read as though the device had done it.
+  There is now a `command_failed` entry with the reason, findable with the device filter.
+
+## [2.4.1] — 2026-09-01
+
+### Fixed
+- Answering a device's question logged the device by an attribute that does not exist, so every
+  answer ended with `AttributeError: 'Device' object has no attribute 'name'` in the log. The
+  answer itself was already on the air by then — devices were being answered correctly — but the
+  gateway logged a traceback each time. The whole answer now runs inside its own guard, and the
+  test follows it to the last line instead of stopping at the frame.
+
+## [2.4.0] — 2026-09-01
+
+### Changed — an air conditioner's louver belongs to the air conditioner
+- The louver is a separate on/off endpoint on the wire, and it was published to Home Assistant as
+  its own switch entity. Home Assistant models it as the climate entity's **swing mode**, and
+  everything downstream looks for it there — the Apple Home bridge included, which is why an AC
+  bridged through Home Assistant had no oscillation control at all.
+- The louver is now the climate entity's swing mode (`swing_modes: ON/OFF`), and no longer appears
+  a second time as a stray toggle. A switch endpoint on a device without a setpoint is untouched:
+  a two-gang switch still has both its toggles.
+
+## [2.3.0] — 2026-09-01
+
+### Fixed — the gateway now answers when a device asks it something
+- A device can ask the coordinator questions of its own, and until now a whole class of them fell
+  on the floor. **Xiaomi and Aqara devices read the time off the gateway** after every rejoin and
+  keep asking until they get it; ours never replied. A device that gets no answer retries, and
+  some of them treat the silence as "the network is not there" — the indicator light says so.
+- The gateway now answers a **Read Attributes** from a device: the real value where it has one
+  (Time, TimeStatus, TimeZone, LocalTime; and its own Basic cluster — name, model, ZCL version,
+  power source), and an explicit *unsupported attribute* where it has none. An explicit "no" ends
+  the retries; silence does not.
+- Any other global command it does not implement now gets the spec's **Default Response
+  (unsupported general command)** instead of nothing at all — unless the device asked for silence
+  with disable-default-response, which is still honoured exactly.
+- The first answer to each device and cluster is logged, so the Logs page (filtered to one device)
+  shows what a device has been asking for.
+
+## [2.2.1] — 2026-09-01
+
+### Added — the log can answer "what happened to this device?"
+- A **device picker** on the Logs page filters both tabs to one device: audit events that name it,
+  and application lines that mention its address or its name. It works together with the search
+  box, the level filter and the security filter, and the export button exports what you can see.
+- With a device chosen, a line above the log tallies its events — `device_rejoined ×7 ·
+  interview_done ×1` — so a question like "is this device really losing the network, and how
+  often?" is answered by looking, instead of by scrolling.
+- The number of matching lines is shown next to the export button.
+
 ## [2.2.0] — 2026-09-01
 
 ### Added — Coordinator → Danger zone: how the radio routes, without re-flashing

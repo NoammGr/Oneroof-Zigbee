@@ -348,3 +348,73 @@ async def test_b09_dashboard_can_be_sorted(stack, browser):  # noqa: F811
         got = await b.js("document.querySelectorAll('.dcard').length")
         assert got == n, f"{order}: {got} cards instead of {n}"
     assert b.errors == [], f"console errors: {b.errors}"
+
+
+async def test_b10_logs_can_be_narrowed_to_one_device(stack, browser):  # noqa: F811
+    """The log page can answer 'what happened to THIS device' — a device picker that filters both
+    tabs, with a tally of what its events were."""
+    s, b = stack, browser
+    base = f"http://127.0.0.1:{s.ui.port}/"
+    if _gw(s).registry.get(PLUG_IEEE) is None:
+        await api(s, "POST", "/api/permit_join", {"seconds": 30})
+        s.world.announce(s.world.add(plug(PLUG_IEEE, PLUG_NWK)))
+        await wait_for(lambda: (lambda x: x and x.interviewed)(_gw(s).registry.get(PLUG_IEEE)), 8)
+    await b.go(base, "logs", 2.0)
+    await asyncio.sleep(0.8)
+    opts = await b.js("(()=>{const s=[...document.querySelectorAll('.bar select')]"
+                      ".find(x=>x.title&&x.title.indexOf('one device')>=0);"
+                      "return s?[...s.options].map(o=>o.textContent).join('|'):'none';})()")
+    assert opts != "none", "no device picker on the log page"
+    assert "All devices" in opts, opts
+    ieee = f"0x{PLUG_IEEE:016x}"
+    picked = await b.js("(()=>{const s=[...document.querySelectorAll('.bar select')]"
+                        ".find(x=>x.title&&x.title.indexOf('one device')>=0);"
+                        f"s.value='{ieee}';s.dispatchEvent(new Event('change',{{bubbles:true}}));"
+                        "return s.value;})()")
+    assert picked == ieee, picked
+    await asyncio.sleep(0.6)
+    # every visible audit row now concerns that device, and the tally names it
+    ok = await b.js(f"[...document.querySelectorAll('.log .row')].every(r=>r.textContent.toLowerCase().includes('{ieee}')"
+                    " || r.textContent.includes('Nothing to show') || r.querySelector('.devname')!==null)")
+    assert ok, "rows for other devices survived the filter"
+    assert await b.js("!!document.body.textContent.match(/device_joined|interview|nothing in the log/i)")
+    assert b.errors == [], f"console errors: {b.errors}"
+
+
+async def test_b11_dashboard_default_view_checkbox(stack, browser):  # noqa: F811
+    """The Default checkbox makes the current sort (and category) the view the dashboard opens
+    with — remembered in the browser, surviving a reload, and cleared by unchecking."""
+    s, b = stack, browser
+    base = f"http://127.0.0.1:{s.ui.port}/"
+    await b.go(base, "dashboard", 2.0)
+
+    # pick a non-default sort, tick the box
+    await b.js("(()=>{const s=[...document.querySelectorAll('.bar select')]"
+               ".find(x=>x.title==='Order the cards');s.value='lqi';"
+               "s.dispatchEvent(new Event('change',{bubbles:true}));return s.value;})()")
+    checked = await b.js("(()=>{const c=document.getElementById('dashdef');"
+                         "c.checked=true;c.dispatchEvent(new Event('change',{bubbles:true}));"
+                         "return c.checked;})()")
+    assert checked is True
+    stored = await b.js("localStorage.getItem('oneroof.dashboard.default')")
+    assert '"sort":"lqi"' in (stored or ""), stored
+
+    # a fresh visit opens with that sort, box already ticked
+    await b.go(base, "logs", 1.0)
+    await b.go(base, "dashboard", 1.5)
+    assert await b.js("[...document.querySelectorAll('.bar select')]"
+                      ".find(x=>x.title==='Order the cards').value") == "lqi"
+    assert await b.js("document.getElementById('dashdef').checked") is True
+
+    # changing the sort unticks the box (it no longer matches the saved default)…
+    await b.js("(()=>{const s=[...document.querySelectorAll('.bar select')]"
+               ".find(x=>x.title==='Order the cards');s.value='name';"
+               "s.dispatchEvent(new Event('change',{bubbles:true}));})()")
+    assert await b.js("document.getElementById('dashdef').checked") is False
+
+    # …and unchecking clears the memory entirely
+    await b.js("(()=>{const c=document.getElementById('dashdef');c.checked=true;"
+               "c.dispatchEvent(new Event('change',{bubbles:true}));"
+               "c.checked=false;c.dispatchEvent(new Event('change',{bubbles:true}));})()")
+    assert await b.js("localStorage.getItem('oneroof.dashboard.default')") is None
+    assert b.errors == [], f"console errors: {b.errors}"

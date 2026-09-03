@@ -65,7 +65,10 @@ async def test_runtime_security_applied_every_start():
     # default mode = 0 (use the global default key); a Sonoff ZBDongle-P rejects 1 as a boolean with INVALID_PARAMETER
     key_cmds = [d for ss, cmd, d in reqs if ss is c.Subsystem.APP_CNF and cmd == c.AppCnfCmd.BDB_SET_ACTIVE_DEFAULT_CENTRALIZED_KEY]
     assert key_cmds and key_cmds[-1][0] == c.CentralizedKeyMode.DEFAULT_GLOBAL
-    assert (c.Subsystem.APP_CNF, c.AppCnfCmd.SET_ALLOWREJOIN_TC_POLICY, b"\x00") in reqs
+    # allow, not refuse: a device that misses a key rotation while powered off can only recover
+    # through an unsecured TC rejoin — refusing it (the SDK default) orphans the device until it
+    # is factory-reset and re-paired (test_tc_rejoins_are_allowed_… covers the exposure handling)
+    assert (c.Subsystem.APP_CNF, c.AppCnfCmd.SET_ALLOWREJOIN_TC_POLICY, b"\x01") in reqs
     await t.close()
     # second start with matching NV must NOT re-form
     fake.requests.clear()
@@ -761,4 +764,42 @@ async def test_radio_tuning_refuses_nonsense_and_reapplies_on_drift():
     await coord._nv_write(c.NvId.CONCENTRATOR_DISCOVERY, bytes([60]))
     await coord._reapply_radio_tuning()
     assert (await coord.read_radio_tuning())["concentrator_discovery_seconds"] == 120
+    await t.close()
+
+
+async def test_tc_rejoins_are_allowed_and_rekeyed_ones_flagged_for_rotation():
+    """A device that comes back without a valid network key (powered off across a rotation, or an
+    Aqara that decided the hub was lost) recovers through an unsecured TC rejoin. Refusing those —
+    the SDK default — orphans it until someone factory-resets and re-pairs it. So they are allowed,
+    and because the re-delivered key may have travelled under the public key, such a rejoin is
+    flagged with the same plain-join exposure that makes the gateway rotate minutes later."""
+    fake, coord, t = await make()
+
+    ieee, nwk = 0x00124B00AABB0001, 0x4321
+    coord.known_ieee.add(ieee)
+    joins = []
+
+    async def on_join(d):
+        joins.append(d)
+
+    coord.on_device_joined(on_join)
+
+    # 2. a TC-mediated rejoin (tc_device_ind then announce) is flagged as re-keyed
+    fake.emit(Frame(FrameType.AREQ, Subsystem.ZDO, c.ZdoCmd.TC_DEV_IND,
+                    Writer().u16(nwk).ieee(ieee).u16(0x0000).bytes()))
+    fake.emit_announce(ieee, nwk)
+    for _ in range(50):
+        await asyncio.sleep(0.02)
+        if joins:
+            break
+    assert joins and joins[0].plain_join, "a TC-re-keyed rejoin must carry the plain-join exposure flag"
+
+    # 3. a secure rejoin (announce alone, no TC involvement) is not
+    joins.clear()
+    fake.emit_announce(ieee, nwk)
+    for _ in range(50):
+        await asyncio.sleep(0.02)
+        if joins:
+            break
+    assert joins and not joins[0].plain_join, "a secure rejoin re-delivers nothing and needs no rotation"
     await t.close()

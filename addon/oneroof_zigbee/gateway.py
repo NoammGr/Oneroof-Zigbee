@@ -28,11 +28,21 @@ from .ha import Topics, bridge_discovery, discovery_messages, removal_messages
 from .mqtt import Broker
 from .security import Audit, InstallCodeError, JoinPolicyError, parse_install_code
 from .zcl import global_commands as gc
+from .zcl.types import DataType
 from .zcl import vendor as vz
 from .znp import Coordinator, IncomingAps, JoinedDevice, ZnpError
 from .znp.wire import ieee_int, ieee_str
 
 log = logging.getLogger("oneroof_zigbee.gateway")
+
+TIME_CLUSTER = 0x000A
+ZIGBEE_EPOCH = 946684800          # 2000-01-01 UTC, the zero of Zigbee time
+# global commands that need no reply of their own: they either are replies, or the device
+# explicitly asked for silence
+_QUIET_GLOBALS = frozenset({gc.CMD_DEFAULT_RESPONSE, gc.CMD_REPORT_ATTRIBUTES,
+                            gc.CMD_READ_ATTRIBUTES_RSP, gc.CMD_WRITE_ATTRIBUTES_RSP,
+                            gc.CMD_CONFIGURE_REPORTING_RSP, gc.CMD_READ_REPORTING_CONFIG_RSP,
+                            gc.CMD_DISCOVER_ATTRIBUTES_RSP})
 
 # attributes we ask every device for during interview
 _BASIC_ATTRS = [0x0000, 0x0001, 0x0002, 0x0003, 0x0004, 0x0005, 0x0006, 0x0007, 0x4000]
@@ -80,6 +90,7 @@ class Gateway:
         self.control_users = control_users if control_users is not None else {cfg.mqtt.gateway_user}
         self._seq = 0
         self._pending_rsp: dict[tuple[int, int, int], asyncio.Future[zcl.ZclFrame]] = {}
+        self._answered: set[tuple[int, int]] = set()   # (ieee, cluster) we have already answered once
         self._interview_tasks: dict[int, asyncio.Task[None]] = {}
         self._lookup_times: dict[int, float] = {}
         self._locate_task: asyncio.Task[None] | None = None
@@ -135,8 +146,10 @@ class Gateway:
 
         b = self.base
         self.broker.subscribe(f"{b}/+/set", self._on_set)
-        if self.legacy:
-            self.broker.subscribe(f"{b}/+/get", self._on_get)  # legacy-layout clients may ask for a state refresh
+        # both layouts: consumers (the Apple Home bridge among them) ask for a state refresh at
+        # startup and when a device returns from an outage — a /get that nobody answers turns
+        # every such refresh into silence
+        self.broker.subscribe(f"{b}/+/get", self._on_get)
         self.broker.subscribe(f"{b}/bridge/request/+", self._on_request)
         self.broker.subscribe("homeassistant/status", self._on_ha_status)
 
@@ -823,6 +836,15 @@ class Gateway:
             log.debug("%s: undecodable ZCL on %#06x: %s", dev.ieee_str, m.cluster, e)
             return
 
+        if log.isEnabledFor(logging.DEBUG):
+            # the wire, one line per frame: with `log_level: debug` the Logs page (filtered to a
+            # device) shows exactly what it sends and asks — which decides between "it wants an
+            # answer we do not give" and "it is not transmitting at all"
+            log.debug("%s: <- ep%d cluster %#06x cmd %#04x %s dir=%d%s seq=%d lqi=%d len=%d",
+                      dev.friendly_name or dev.ieee_str, m.src_ep, m.cluster, frame.command,
+                      "cluster" if frame.frame_type == zcl.FRAME_TYPE_CLUSTER else "global",
+                      frame.direction, "" if frame.disable_default_response else " wants-rsp",
+                      frame.seq, m.lqi, len(frame.payload))
         if m.cluster == 0x0000:
             # Basic-cluster chatter (vendor heartbeats, identity reads) says nothing about behaviour;
             # only its link quality is worth keeping.
@@ -844,6 +866,24 @@ class Gateway:
                 decoded = gc.decode_global_command(frame)
                 changed = self._decode_records(dev, m.src_ep, m.cluster, [r for r in decoded.records if getattr(r, "status", 0) == 0])
                 changed = quirks.translate_state(dev, m.src_ep, changed)
+                if (frame.command == gc.CMD_REPORT_ATTRIBUTES
+                        and not frame.disable_default_response and not m.group):
+                    # The spec's receipt for a report that asked for one. Xiaomi and Aqara devices
+                    # send reports with the default response requested and judge the hub by whether
+                    # it arrives: a hub that stays silent is marked lost on the indicator LED even
+                    # while commands keep working.
+                    asyncio.create_task(self._default_response(dev, m, frame))
+            elif frame.command == gc.CMD_READ_ATTRIBUTES:
+                # A device asking us something. Silence is not an answer: it retries, decides the
+                # gateway is unreachable and (Aqara, Xiaomi) says so on its indicator light.
+                asyncio.create_task(self._answer_read(dev, m, frame))
+                return
+            elif frame.command not in _QUIET_GLOBALS and not frame.disable_default_response:
+                # Anything else we do not implement gets the spec's answer, once, instead of
+                # nothing at all — the device stops asking rather than escalating.
+                asyncio.create_task(self._default_response(dev, m, frame,
+                                                           status=gc.STATUS_UNSUP_GENERAL_COMMAND))
+                return
         elif m.cluster == 0x0019 and frame.direction == zcl.DIRECTION_CLIENT_TO_SERVER:
             rsp = self.ota.handle(dev.ieee, dev.nwk, m.src_ep, frame.command, frame.payload)
             if rsp is not None:
@@ -1073,12 +1113,73 @@ class Gateway:
         await self.coord.remove_device(int(rec["nwk"], 16), ieee)
         self.audit.security("unknown_device_evicted", ieee=rec["ieee"], nwk=rec["nwk"], by=who)
 
-    async def _default_response(self, dev: Device, m: IncomingAps, frame: zcl.ZclFrame) -> None:
+    async def _default_response(self, dev: Device, m: IncomingAps, frame: zcl.ZclFrame,
+                                status: int = gc.STATUS_SUCCESS) -> None:
         try:
-            payload = gc.build_default_response(frame.seq, frame.command, gc.STATUS_SUCCESS, zcl.DIRECTION_CLIENT_TO_SERVER, frame.manufacturer)
+            # a reply always travels the other way round the client/server pair
+            payload = gc.build_default_response(frame.seq, frame.command, status,
+                                                1 - frame.direction, frame.manufacturer)
             await self.coord.send_aps(dev.nwk, m.src_ep, m.cluster, payload, wait_confirm=False)
         except Exception:
             log.debug("default response to %s failed", dev.ieee_str, exc_info=True)
+
+    # ------------------------------------------------ answering the devices --
+
+    def _gateway_attribute(self, cluster: int, attr: int) -> tuple[int, Any] | None:
+        """What the coordinator can say about itself, as (ZCL type, value).
+
+        Devices read two things from a gateway: the time (Xiaomi/Aqara do it after every
+        rejoin, and repeat until answered) and its identity."""
+        if cluster == TIME_CLUSTER:
+            now = time.time()
+            zigbee_now = int(now - ZIGBEE_EPOCH)
+            offset = int(-(time.altzone if time.localtime().tm_isdst else time.timezone))
+            return {
+                0x0000: (DataType.utc, zigbee_now),          # Time
+                0x0001: (DataType.bitmap8, 0x03),                    # TimeStatus: master, synchronised
+                0x0002: (DataType.int32, offset),                 # TimeZone
+                0x0007: (DataType.uint32, zigbee_now + offset),   # LocalTime
+                0x0008: (DataType.utc, zigbee_now),          # LastSetTime
+                0x0009: (DataType.utc, zigbee_now + 86400),  # ValidUntilTime
+            }.get(attr)
+        if cluster == 0x0000:
+            return {
+                0x0000: (DataType.uint8, 3),                      # ZCLVersion
+                0x0001: (DataType.uint8, 1),                      # ApplicationVersion
+                0x0003: (DataType.uint8, 1),                      # HWVersion
+                0x0004: (DataType.string, "One Roof"),            # ManufacturerName
+                0x0005: (DataType.string, "One Roof Gateway"),    # ModelIdentifier
+                0x0007: (DataType.enum8, 0x01),                   # PowerSource: mains
+            }.get(attr)
+        return None
+
+    async def _answer_read(self, dev: Device, m: IncomingAps, frame: zcl.ZclFrame) -> None:
+        """Reply to a device's Read Attributes — with the value where we have one, and with
+        'unsupported attribute' where we do not. Either way it is an answer."""
+        try:
+            asked = gc.decode_global_command(frame).attrs
+            records = []
+            for attr in asked:
+                known = self._gateway_attribute(m.cluster, attr)
+                if known is None:
+                    records.append(gc.ReadAttributeRecord(attr, gc.STATUS_UNSUPPORTED_ATTRIBUTE))
+                else:
+                    dtype, value = known
+                    records.append(gc.ReadAttributeRecord(attr, gc.STATUS_SUCCESS, dtype, value))
+            payload = gc.build_global_command(
+                frame.seq, gc.CMD_READ_ATTRIBUTES_RSP,
+                gc.ReadAttributesResponse(records).encode(),
+                direction=1 - frame.direction, manufacturer=frame.manufacturer)
+            await self.coord.send_aps(dev.nwk, m.src_ep, m.cluster, payload, wait_confirm=False)
+            answered = sum(1 for r in records if r.status == gc.STATUS_SUCCESS)
+            first = (dev.ieee, m.cluster) not in self._answered
+            self._answered.add((dev.ieee, m.cluster))
+            (log.info if first else log.debug)(
+                "%s: answered a read of cluster %#06x (%d of %d attributes known)",
+                dev.friendly_name or dev.ieee_str, m.cluster, answered, len(records))
+        except Exception:
+            # never let answering a device raise into the task that runs it
+            log.debug("answering a read from %s failed", dev.ieee_str, exc_info=True)
 
     # ----------------------------------------------------------- publish --
 
@@ -1201,7 +1302,11 @@ class Gateway:
         try:
             await self.apply_command(dev, cmd)
         except Exception as e:
+            # the audit already recorded that the command arrived; without this it would look as
+            # though it had been carried out
             log.warning("command to %s failed: %s", dev.ieee_str, e)
+            self.audit.event("command_failed", ieee=dev.ieee_str, by=user, keys=sorted(cmd),
+                             error=str(e)[:200] or e.__class__.__name__)
 
     async def _on_get(self, topic: str, payload: bytes, user: str | None = None) -> None:
         """Legacy layout: `<base>/<name>/get` → re-publish current state (and refresh on_off if asked)."""
@@ -1327,14 +1432,24 @@ class Gateway:
             await send(0x0102, "go_to_lift_percentage", {"percentage": 100 - pos})
         if "current_heating_setpoint" in cmd and 0x0201 in ins:
             value = float(cmd["current_heating_setpoint"])
-            attr = 0x0012
+            attr, other = 0x0012, None
             if feats.get("current_heating_setpoint", {}).get("single_setpoint"):
                 # One set temperature (an air conditioner keeps both ZCL setpoints equal): write the
                 # one that matches the mode being set or already in force — heating in heat, cooling
                 # otherwise.
                 mode = str(cmd.get("system_mode") or dev.state.get(key_of("system_mode")) or "")
-                attr = 0x0012 if mode == "heat" else 0x0011
-            await self._write_attr(dev, ep, 0x0201, attr, zcl.DataType.int16, int(round(value * 100)))
+                attr, other = (0x0012, 0x0011) if mode == "heat" else (0x0011, 0x0012)
+            raw = int(round(value * 100))
+            try:
+                await self._write_attr(dev, ep, 0x0201, attr, zcl.DataType.int16, raw)
+            except Exception:
+                # An air conditioner that implements only one of the two setpoint attributes would
+                # otherwise refuse every temperature change while its mode, fan and louver all work.
+                if other is None:
+                    raise
+                log.info("%s: setpoint attribute %#06x refused, writing %#06x instead",
+                         dev.friendly_name or dev.ieee_str, attr, other)
+                await self._write_attr(dev, ep, 0x0201, other, zcl.DataType.int16, raw)
             self._apply_changes(dev, {key_of("current_heating_setpoint"): value})
         if "current_cooling_setpoint" in cmd and 0x0201 in ins:
             await self._write_attr(dev, ep, 0x0201, 0x0011, zcl.DataType.int16, int(round(float(cmd["current_cooling_setpoint"]) * 100)))
@@ -1401,9 +1516,22 @@ class Gateway:
             self._apply_changes(dev, {key_of("state"): "ON"})
 
     async def _write_attr(self, dev: Device, ep: int, cluster: int, attr: int, dtype: zcl.DataType, value: Any) -> None:
+        """Write one attribute and believe the device about whether it took it.
+
+        A Write Attributes Response carries a status per attribute. Ignoring it means a refused
+        write looks exactly like a successful one: the state is published as if it had changed, and
+        the device sits there doing what it did before."""
         seq = self._next_seq()
         frame = gc.build_write_attributes(seq, [gc.WriteAttributeRecord(attr, int(dtype), value)])
-        await self._request(dev, ep, cluster, frame, seq, gc.CMD_WRITE_ATTRIBUTES_RSP)
+        rsp = await self._request(dev, ep, cluster, frame, seq, gc.CMD_WRITE_ATTRIBUTES_RSP)
+        try:
+            records = gc.decode_global_command(rsp).records
+        except Exception:
+            return   # it answered, in a shape we do not model: not evidence of refusal
+        refused = [r for r in records if r.status != gc.STATUS_SUCCESS]
+        if refused:
+            raise ZnpError(f"device refused attribute {attr:#06x} on cluster {cluster:#06x} "
+                           f"(status {refused[0].status:#04x})")
 
     def _schedule_feedback_read(self, dev: Device, ep: int, cluster: int) -> None:
         """After writing a device-specific cluster, read back what it says about it (last_result,

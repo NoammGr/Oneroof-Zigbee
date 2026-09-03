@@ -96,6 +96,7 @@ class Coordinator:
         # IEEEs already on the network (fed by the gateway's registry). Announces from
         # these are rejoins (power cycle, parent change) and must never be judged as joins.
         self.known_ieee: set[int] = set()
+        self._tc_touched: dict[int, float] = {}   # ieee -> when the TC last re-keyed it
         self.radio_tuning: dict[str, int] = {}  # routing/broadcast settings the operator chose
         self._wire_listeners()
 
@@ -161,8 +162,18 @@ class Coordinator:
     async def _on_announce(self, f: Frame) -> None:
         a = c.decode_end_device_annce(f.data)
         if a.ieee in self.known_ieee:
-            self.audit.event("device_rejoined", ieee=f"0x{a.ieee:016x}", nwk=f"{a.nwk_addr:#06x}")
-            dev = JoinedDevice(a.ieee, a.nwk_addr, None, a.capabilities)
+            # A rejoin the trust centre took part in means the network key was re-delivered —
+            # a secure rejoin never involves the TC. Without install codes that delivery may
+            # have travelled under the public key, so it carries the same exposure as a plain
+            # join and is flagged the same way (the gateway rotates the key minutes later).
+            touched = self._tc_touched.pop(a.ieee, None)
+            # None-sentinel, not 0.0: a monotonic clock younger than the window (a host that just
+            # booted — exactly when devices mass-rejoin) would make 0.0 read as "recent"
+            rekeyed = touched is not None and time.monotonic() - touched < 60.0
+            self.audit.event("device_rejoined", ieee=f"0x{a.ieee:016x}", nwk=f"{a.nwk_addr:#06x}",
+                             rekeyed_by_tc=rekeyed)
+            dev = JoinedDevice(a.ieee, a.nwk_addr, None, a.capabilities,
+                               plain_join=rekeyed and not self.strict)
             for cb in self._join_cbs:
                 await cb(dev)
             return
@@ -191,6 +202,13 @@ class Coordinator:
     def _on_tc_dev(self, f: Frame) -> None:
         d = c.decode_tc_dev_ind(f.data)
         self.audit.event("tc_device_ind", ieee=f"0x{d.ieee:016x}", nwk=f"{d.nwk_addr:#06x}", parent=f"{d.parent_addr:#06x}")
+        # remember briefly that the TC touched this device: the announce that follows within the
+        # minute tells a re-keyed rejoin apart from a secure one
+        now = time.monotonic()
+        self._tc_touched[d.ieee] = now
+        for ieee, ts in list(self._tc_touched.items()):
+            if ts < now - 300.0:
+                del self._tc_touched[ieee]
 
     async def _on_leave(self, f: Frame) -> None:
         d = c.decode_leave_ind(f.data)
@@ -1099,7 +1117,15 @@ class Coordinator:
     async def _apply_runtime_security(self) -> None:
         """Settings the firmware forgets across resets — applied every boot."""
         await self.t.request(c.appcnf_set_tc_require_key_exchange(True))
-        await self.t.request(c.appcnf_set_allow_rejoin_tc_policy(False))
+        # A device that comes back without a valid network key (powered off across a rotation,
+        # or an Aqara that decided the hub was lost and left) can only recover through an
+        # unsecured trust-centre rejoin. Refusing those (the SDK default) orphans it for good:
+        # it must be factory-reset and re-paired. Allowing them re-delivers the current key —
+        # under the device's own verified link key when it has one, else under the public key,
+        # which is the same exposure as its original plain pairing. The gateway treats such a
+        # rejoin exactly like a plain join and rotates the network key minutes later, so a key
+        # that travelled under the public key is retired the same way it was at pairing time.
+        await self.t.request(c.appcnf_set_allow_rejoin_tc_policy(True))
         await self.t.request(c.appcnf_set_join_uses_install_code(self.strict))
         if self.strict:
             # Replace the public ZigBeeAlliance09 link key with our random one.

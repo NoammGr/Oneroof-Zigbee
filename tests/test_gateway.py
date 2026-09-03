@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import time
 import json
 
@@ -7,6 +8,7 @@ from oneroof_zigbee.devices import Registry
 from oneroof_zigbee.gateway import Gateway
 from oneroof_zigbee.mqtt.packets import topic_matches
 from oneroof_zigbee.security import Audit, JoinGuard, JoinPolicy, NetworkSecrets
+from oneroof_zigbee.zcl import global_commands as gc
 from oneroof_zigbee.znp import Coordinator, Transport
 from oneroof_zigbee.znp import commands as c
 from oneroof_zigbee.znp.unpi import Frame, FrameType, Subsystem
@@ -1061,4 +1063,171 @@ async def test_state_is_fetched_from_the_device_after_a_restart(tmp_path):
     assert changed and dev.state.get("state") == "ON", dev.state
     assert dev.available is True, "a device that answers is online again"
     assert json.loads(broker.last(f"oneroof/zigbee/{dev.ieee_str}/state"))["state"] == "ON"
+    await t.close()
+
+
+def _outgoing_zcl(fake, cluster):
+    """Every ZCL frame the gateway sent to a device on one cluster."""
+    out = []
+    for f in fake.requests:
+        if f.subsystem is Subsystem.AF and f.command == c.AfCmd.DATA_REQUEST:
+            if int.from_bytes(f.data[4:6], "little") == cluster:
+                out.append(f.data[10:])
+    return out
+
+
+async def _joined(tmp_path):
+    fake, coord, broker, gw, t = await make(tmp_path)
+    await broker.inject("oneroof/zigbee/bridge/request/permit_join", b'{"seconds": 30}', user="admin")
+    fake.emit_announce(IEEE, NWK)
+    for _ in range(100):
+        await asyncio.sleep(0.02)
+        dev = gw.registry.get(IEEE)
+        if dev and dev.interviewed:
+            break
+    fake.requests.clear()
+    return fake, coord, broker, gw, t
+
+
+async def test_a_device_asking_for_the_time_gets_the_time(tmp_path, caplog):
+    """Xiaomi/Aqara devices read the Time cluster off the gateway and repeat until answered;
+    silence makes them treat the network as unreachable."""
+    caplog.set_level(logging.INFO, logger="oneroof_zigbee.gateway")
+    fake, coord, broker, gw, t = await _joined(tmp_path)
+
+    # global Read Attributes of Time, TimeStatus, LocalTime — client to server
+    read = bytes([0x00, 0x77, 0x00]) + b"".join(a.to_bytes(2, "little") for a in (0x0000, 0x0001, 0x0007))
+    fake.emit_incoming(NWK, 0x000A, read)
+    for _ in range(60):
+        await asyncio.sleep(0.02)
+        if _outgoing_zcl(fake, 0x000A):
+            break
+
+    sent = _outgoing_zcl(fake, 0x000A)
+    assert sent, "the gateway said nothing at all"
+    frame = sent[0]
+    assert frame[0] & 0x08, "the reply must travel server to client"
+    assert frame[1] == 0x77, "a reply carries the sequence number of the question"
+    assert frame[2] == 0x01, "expected a Read Attributes Response"
+
+    rsp = gc.ReadAttributesResponse.decode(frame[3:])
+    got = {r.attr: r for r in rsp.records}
+    assert set(got) == {0x0000, 0x0001, 0x0007}
+    assert all(r.status == 0 for r in got.values()), "every asked attribute was answered"
+    now = int(time.time() - 946684800)
+    assert abs(got[0x0000].value - now) < 5, (got[0x0000].value, now)
+    assert got[0x0001].value == 0x03, "time status: master and synchronised"
+    # the whole answer runs to the end: a slip anywhere in it (a wrong attribute name in the log
+    # line, say) dies inside its own task, where nothing fails a test but the gateway logs a
+    # traceback for every device question
+    assert any("answered a read of cluster 0x000a" in r.message for r in caplog.records), \
+        [r.message for r in caplog.records]
+    await t.close()
+
+
+async def test_an_unanswerable_read_gets_a_real_no(tmp_path):
+    """'Unsupported attribute' is an answer. Silence is what makes a device retry forever."""
+    fake, coord, broker, gw, t = await _joined(tmp_path)
+
+    fake.emit_incoming(NWK, 0x0402, bytes([0x00, 0x12, 0x00]) + (0x1234).to_bytes(2, "little"))
+    for _ in range(60):
+        await asyncio.sleep(0.02)
+        if _outgoing_zcl(fake, 0x0402):
+            break
+
+    sent = _outgoing_zcl(fake, 0x0402)
+    assert sent, "an unanswerable question still deserves an answer"
+    rsp = gc.ReadAttributesResponse.decode(sent[0][3:])
+    assert [(r.attr, r.status) for r in rsp.records] == [(0x1234, 0x86)]
+    await t.close()
+
+
+async def test_the_gateway_names_itself_when_asked(tmp_path):
+    fake, coord, broker, gw, t = await _joined(tmp_path)
+
+    fake.emit_incoming(NWK, 0x0000, bytes([0x00, 0x31, 0x00])
+                       + b"".join(a.to_bytes(2, "little") for a in (0x0000, 0x0004, 0x0005)))
+    for _ in range(60):
+        await asyncio.sleep(0.02)
+        if _outgoing_zcl(fake, 0x0000):
+            break
+
+    sent = _outgoing_zcl(fake, 0x0000)
+    assert sent, "the gateway did not answer a read of its own Basic cluster"
+    got = {r.attr: r.value for r in gc.ReadAttributesResponse.decode(sent[0][3:]).records}
+    assert got[0x0000] == 3 and got[0x0004] == "One Roof" and got[0x0005] == "One Roof Gateway"
+    await t.close()
+
+
+async def test_an_unimplemented_global_command_is_refused_not_ignored(tmp_path):
+    """The spec's answer to 'I do not implement that' is a Default Response, which stops the
+    retries; before, the frame fell on the floor."""
+    fake, coord, broker, gw, t = await _joined(tmp_path)
+
+    # Discover Attributes (0x0C), default response NOT disabled
+    fake.emit_incoming(NWK, 0x0006, bytes([0x00, 0x44, 0x0C, 0x00, 0x00, 0xFF]))
+    for _ in range(60):
+        await asyncio.sleep(0.02)
+        if _outgoing_zcl(fake, 0x0006):
+            break
+
+    sent = _outgoing_zcl(fake, 0x0006)
+    assert sent, "no answer to an unimplemented global command"
+    assert sent[0][2] == 0x0B, "expected a Default Response"
+    cmd, status = sent[0][3], sent[0][4]
+    assert (cmd, status) == (0x0C, 0x82), "unsupported general command"
+    await t.close()
+
+
+async def test_a_device_that_wants_silence_gets_it(tmp_path):
+    """Disable-default-response means exactly that: no reply, no noise on the air."""
+    fake, coord, broker, gw, t = await _joined(tmp_path)
+
+    fake.emit_incoming(NWK, 0x0006, bytes([0x10, 0x45, 0x0C, 0x00, 0x00, 0xFF]))
+    await asyncio.sleep(0.4)
+    assert not _outgoing_zcl(fake, 0x0006), "answered a device that asked not to be answered"
+    await t.close()
+
+
+async def test_a_state_refresh_works_in_the_address_layout_too(tmp_path):
+    """Consumers ask for a state refresh on <base>/<ieee>/get — at startup and when a device
+    returns from an outage. Answering it only in the legacy layout turned every such refresh
+    into silence: the asker just never got fresh state."""
+    fake, coord, broker, gw, t = await _joined(tmp_path)
+    dev = gw.registry.get(IEEE)
+    broker.published.clear()
+    await broker.inject(f"oneroof/zigbee/{dev.ieee_str}/get", b'{"brightness": ""}')
+    for _ in range(60):
+        await asyncio.sleep(0.02)
+        if broker.last(f"oneroof/zigbee/{dev.ieee_str}/state"):
+            break
+    state = json.loads(broker.last(f"oneroof/zigbee/{dev.ieee_str}/state"))
+    assert state.get("state") == "ON", "a /get in the address layout went unanswered"
+    await t.close()
+
+
+async def test_a_report_that_asks_for_a_receipt_gets_one(tmp_path):
+    """Xiaomi/Aqara devices send their state reports and heartbeats with the default response
+    REQUESTED, and judge the hub by whether it arrives: a silent hub is marked lost on the
+    device's indicator LED even while commands keep working. The spec agrees — a Report
+    Attributes without disable-default-response gets a Default Response."""
+    fake, coord, broker, gw, t = await _joined(tmp_path)
+
+    # report on/off = ON, frame control 0x08 (server-to-client, default response requested)
+    fake.emit_incoming(NWK, 0x0006, bytes([0x08, 0x5A, 0x0A, 0x00, 0x00, 0x10, 0x01]))
+    for _ in range(60):
+        await asyncio.sleep(0.02)
+        if _outgoing_zcl(fake, 0x0006):
+            break
+    sent = _outgoing_zcl(fake, 0x0006)
+    assert sent, "the report was consumed but never receipted"
+    frame = sent[0]
+    assert frame[1] == 0x5A and frame[2] == 0x0B, "expected a Default Response to seq 0x5A"
+    assert (frame[3], frame[4]) == (0x0A, 0x00), "…acknowledging the report, with SUCCESS"
+
+    # the same report with disable-default-response set gets silence, exactly as asked
+    fake.requests.clear()
+    fake.emit_incoming(NWK, 0x0006, bytes([0x18, 0x5B, 0x0A, 0x00, 0x00, 0x10, 0x00]))
+    await asyncio.sleep(0.4)
+    assert not _outgoing_zcl(fake, 0x0006), "receipted a report that asked for silence"
     await t.close()

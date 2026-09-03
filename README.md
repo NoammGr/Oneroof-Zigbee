@@ -5,6 +5,8 @@ One process, one UI: pair your Zigbee devices, and Home Assistant connects strai
 
 [![CI](https://github.com/NoammGr/Oneroof-Zigbee/actions/workflows/ci.yml/badge.svg)](https://github.com/NoammGr/Oneroof-Zigbee/actions/workflows/ci.yml)
 
+**[→ Installation guide](INSTALL.md)** — one badge click, pick your adapter, start. Migrating from Zigbee2MQTT keeps every device without re-pairing.
+
 > Part of the OneRoof family, alongside [OneRoof Bridge](https://github.com/NoammGr/oneroof-bridge), [OneRoof NVR](https://github.com/NoammGr/oneroof-nvr) and [OneRoof Energy](https://github.com/NoammGr/Oneroof-Energy).
 
 ---
@@ -41,6 +43,8 @@ Read [SECURITY.md](SECURITY.md) for the full model, including what this does *no
 Not yet: built-in datapoint maps for every Tuya model (unknown ones are inferred conservatively or taught by hand; the inference knows no irrigation or air-quality layouts yet), Aqara private settings (power outage memory, sensitivity …), groups & scenes, Silicon Labs (EZSP) dongles, touchlink.
 
 ## Install
+
+The short version — the full guide, including migration from a previous setup, is **[INSTALL.md](INSTALL.md)**.
 
 ### Home Assistant add-on
 

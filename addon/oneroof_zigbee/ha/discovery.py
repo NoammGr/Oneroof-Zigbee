@@ -125,10 +125,21 @@ def discovery_messages(dev: Device, base: str, prefix: str, *, legacy: bool = Fa
         by_ep.setdefault(f["endpoint"], {})[f["base"]] = f
     handled: set[str] = set()
 
+    # An air conditioner's louver is a separate on/off endpoint on the wire, but it is part of the
+    # air conditioner, not a light switch: Home Assistant models it as the climate entity's swing
+    # mode, and everything downstream (the Apple Home bridge included) looks for it there. Claimed
+    # before the per-endpoint pass so the endpoint that carries it does not also publish a toggle.
+    swing = None
+    if any(f["base"] in ("current_heating_setpoint", "current_cooling_setpoint", "target_temperature")
+           for f in feats):
+        swing = next((f for f in feats if f["key"] == "swing" and f["access"] == "rw"), None)
+        if swing is not None:
+            handled.add(swing["key"])
+
     # -- composite entities (one per endpoint) ------------------------------------------------
     for _ep, bases in by_ep.items():
         st = bases.get("state")
-        if st and st["cluster"] == 0x0006 and st["access"] == "rw":
+        if st and st["key"] not in handled and st["cluster"] == 0x0006 and st["access"] == "rw":
             sfx = _suffix(st)
             br, ct, col = bases.get("brightness"), bases.get("color_temp"), bases.get("color")
             if br or ct or col:
@@ -192,6 +203,10 @@ def discovery_messages(dev: Device, base: str, prefix: str, *, legacy: bool = Fa
                 handled.add(mode["key"])
             else:
                 cfg["modes"] = ["heat"] if sp else ["cool"]
+            if swing is not None:
+                cfg.update({"swing_mode_state_topic": state_topic, "swing_mode_state_template": f"{{{{ value_json.{swing['key']} }}}}",
+                            "swing_mode_command_topic": set_topic, "swing_mode_command_template": '{"%s": "{{ value }}" }' % swing["key"],
+                            "swing_modes": [swing.get("value_on", "ON"), swing.get("value_off", "OFF")]})
             if fan and fan["access"] == "rw":
                 cfg.update({"fan_mode_state_topic": state_topic, "fan_mode_state_template": f"{{{{ value_json.{fan['key']} }}}}",
                             "fan_mode_command_topic": set_topic, "fan_mode_command_template": '{"%s": "{{ value }}" }' % fan["key"],

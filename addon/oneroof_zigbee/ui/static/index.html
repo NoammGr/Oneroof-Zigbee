@@ -757,17 +757,28 @@ const DSORTERS={
 const DCATS=[['all','All'],['light','Lights'],['plug','Plugs'],['sensor','Sensors'],['cover','Covers'],['climate','Climate']];
 function devCat(d){if(d.category){return {light:'light',plug:'plug',switch:'plug',cover:'cover',climate:'climate'}[d.category]||'sensor';}const cat=Object.values(d.endpoints||{}).map(e=>e.category||'').join(' ').toLowerCase();const cl=clusters(d);if(/light|lamp|bulb/.test(cat)||cl.has(0x300)||cl.has(8))return 'light';if(/cover|blind|shade|curtain/.test(cat)||cl.has(0x102))return 'cover';if(/thermostat|climate|hvac/.test(cat)||cl.has(0x201))return 'climate';if(/plug|outlet|socket|switch/.test(cat)||cl.has(0x702)||cl.has(0xb04)||cl.has(6))return 'plug';return 'sensor';}
 const dlink=d=>'#device/'+encodeURIComponent(d.ieee);
+// the sort (and category) the user marked as their default view, kept in this browser
+const DASH_DEFAULT='oneroof.dashboard.default';
+function dashDefault(){try{return JSON.parse(localStorage.getItem(DASH_DEFAULT))||null;}catch(e){return null;}}
 views.dashboard={
-  q:'',hl:'',cat:'all',sort:'name',cards:new Map(),
+  q:'',hl:'',cat:(dashDefault()||{}).cat||'all',sort:(dashDefault()||{}).sort||'name',cards:new Map(),
+  syncDef(){const d=dashDefault();if(this.defBox)this.defBox.checked=!!d&&d.sort===this.sort&&(d.cat||'all')===this.cat;},
   enter(m){
     m.append(el('h1',{text:'Dashboard'}),el('p',{class:'lead',text:'Every device at a glance: switch, dim and read values right here. Open a card for the full detail page.'}));
     const search=el('input',{type:'search',placeholder:'Search…',value:this.q,oninput:debounce(e=>{this.q=e.target.value.trim().toLowerCase();this.render();},120)});
     const hl=el('input',{type:'search',placeholder:'Highlight…',value:this.hl,title:'Highlight matching cards without hiding the others',oninput:debounce(e=>{this.hl=e.target.value.trim().toLowerCase();this.applyHl();},120)});
-    this.chips=el('div',{class:'pills',style:'margin:0'});for(const[v,l]of DCATS)this.chips.append(el('button',{text:l,class:v===this.cat?'active':'','data-c':v,onclick:()=>{this.cat=v;this.chips.querySelectorAll('button').forEach(b=>b.classList.toggle('active',b.dataset.c===v));this.render();}}));
+    this.chips=el('div',{class:'pills',style:'margin:0'});for(const[v,l]of DCATS)this.chips.append(el('button',{text:l,class:v===this.cat?'active':'','data-c':v,onclick:()=>{this.cat=v;this.chips.querySelectorAll('button').forEach(b=>b.classList.toggle('active',b.dataset.c===v));this.syncDef();this.render();}}));
     this.count=el('span',{class:'mute'});
-    const sorter=sel(DSORTS,this.sort,{title:'Order the cards',onchange:e=>{this.sort=e.target.value;this.render();}});
+    const sorter=sel(DSORTS,this.sort,{title:'Order the cards',onchange:e=>{this.sort=e.target.value;this.syncDef();this.render();}});
+    this.defBox=el('input',{type:'checkbox',id:'dashdef',title:'Open the dashboard sorted and filtered like this from now on',
+      onchange:e=>{try{if(e.target.checked)localStorage.setItem(DASH_DEFAULT,JSON.stringify({sort:this.sort,cat:this.cat}));
+        else localStorage.removeItem(DASH_DEFAULT);}catch(_){}
+        toast(e.target.checked?'This is now your default view':'Default view cleared');}});
     m.append(el('div',{class:'bar'},search,hl,this.chips,el('span',{class:'grow'}),
-      el('span',{class:'sub',text:'Sort'}),sorter,this.count));
+      el('span',{class:'sub',text:'Sort'}),sorter,
+      el('label',{class:'sub',for:'dashdef',style:'display:inline-flex;align-items:center;gap:5px;cursor:pointer'},
+        this.defBox,'Default'),this.count));
+    this.syncDef();
     this.host=el('div',{class:'dgrid'});m.append(this.host);this.render();views.devices.refresh();
   },
   filtered(){const q=this.q;return S.devices.filter(d=>(this.cat==='all'||devCat(d)===this.cat)&&(!q||[d.friendly_name,d.model,d.manufacturer,d.ieee,d.description].join(' ').toLowerCase().includes(q))).sort(DSORTERS[this.sort]||DSORTERS.name);},
@@ -1135,7 +1146,13 @@ views.map={
   draw(){
     const cs=getComputedStyle(document.documentElement);const col=v=>cs.getPropertyValue(v).trim();const ctx=this.cv.getContext('2d');ctx.clearRect(0,0,this.W,this.H);
     if(!this.nodes.length){ctx.fillStyle=col('--mute');ctx.font='13px '+col('--sans');ctx.textAlign='center';ctx.fillText('No neighbour data yet — refresh the tables.',this.W/2,this.H/2);return;}
-    for(const l of this.links){const q=l.lqi/255;ctx.strokeStyle=col('--accent');ctx.globalAlpha=.15+q*.7;ctx.lineWidth=.5+q*3;ctx.beginPath();ctx.moveTo(l.a.x,l.a.y);ctx.lineTo(l.b.x,l.b.y);ctx.stroke();}
+    // every link earns a clearly visible line; quality shows as thickness and depth of colour,
+    // and hovering a device pulls its own links forward while the rest step back
+    for(const l of this.links){const q=l.lqi/255;const mine=this.hover&&(l.a===this.hover||l.b===this.hover);
+      ctx.strokeStyle=mine?col('--ink'):col('--accent');
+      ctx.globalAlpha=mine?.95:(this.hover?.18:.45+q*.5);
+      ctx.lineWidth=(mine?1.6:1.2)+q*2.6;
+      ctx.beginPath();ctx.moveTo(l.a.x,l.a.y);ctx.lineTo(l.b.x,l.b.y);ctx.stroke();}
     ctx.globalAlpha=1;ctx.font='12px '+col('--sans');ctx.textAlign='center';
     for(const n of this.nodes){const t=n.n.type;const r=t==='coordinator'?11:t==='router'?8:5;ctx.fillStyle=t==='coordinator'?col('--ink'):t==='router'?col('--accent'):col('--faint');ctx.beginPath();ctx.arc(n.x,n.y,r,0,7);ctx.fill();if(n===this.hover){ctx.strokeStyle=col('--ink');ctx.lineWidth=2;ctx.stroke();}}
     // Labels drawn by importance (coordinator, hovered, routers, then the rest); a label that would
@@ -1194,8 +1211,9 @@ views.coordinator={
           :('Applied, but the radio reports PAN '+r.pan_id+' channel '+r.channel+' (key ok: '+r.key_ok+') — check the Logs.');
         toast('Radio settings applied');this.loadTuning();}catch(e){out.textContent=e.message;toast(e.message,true);}
       apply.disabled=false;}});
-    const quiet=el('button',{class:'btn sm',text:'Quieter mesh (recommended)',title:'Stops the coordinator flooding the whole network with route requests every minute — the firmware default is not to do it at all.',
-      onclick:()=>{if(inputs.concentrator_discovery_seconds)setVal(inputs.concentrator_discovery_seconds,120);toast('Set to 120 s — press Apply to write it');}});
+    const quiet=el('button',{class:'btn sm',text:'Stock routing (recommended)',title:'The values the standard zigbee2mqtt coordinator firmware uses. The route-request flood every 60 s is what keeps far devices reachable: it refreshes their path to the coordinator and the coordinator\'s path back.',
+      onclick:()=>{const stock={concentrator_enable:1,concentrator_discovery_seconds:60,concentrator_radius:10,concentrator_route_cache:1,source_route_expiry_seconds:10,route_discovery_seconds:5,route_expiry_seconds:30,broadcast_retries:2,passive_ack_timeout:5,broadcast_delivery_seconds:30};
+        for(const[k,v]of Object.entries(stock))if(inputs[k])setVal(inputs[k],v);toast('Stock values filled in — press Apply to write them');}});
     clear(this.tuning).append(el('div',{class:'danger-zone'},
       el('h3',{text:'Danger zone — how the radio routes'}),
       el('p',{class:'sub',style:'margin:0 0 10px'},'These are written into the radio and read back by its firmware at every boot, so they change a running installation without re-flashing. They do not touch your keys, your PAN, your channel or your paired devices — but they do change how the mesh behaves, and a bad value can make it worse. ',
@@ -1246,13 +1264,17 @@ views.coordinator={
 
 /* ============ LOGS ============ */
 views.logs={
-  tab:'audit',aFilter:'all',lvl:'ALL',q:'',auto:true,paused:false,pending:[],
+  tab:'audit',aFilter:'all',lvl:'ALL',q:'',dev:'',auto:true,paused:false,pending:[],
   enter(m){
     if(location.hash==='#logs/security'){this.tab='audit';this.aFilter='security';}
     m.append(el('h1',{text:'Logs'}),el('p',{class:'lead',text:'The audit log is a SHA-256 hash chain on disk: every control action and every security alert, who did it, and whether the file has been altered since.'}));
     const tabs=el('div',{class:'seg'});for(const[t,l]of[['audit','Audit'],['app','Application']])tabs.append(el('button',{text:l,class:t===this.tab?'active':'',onclick:()=>{this.tab=t;route();}}));
     this.search=el('input',{type:'search',placeholder:'Search…',value:this.q,oninput:debounce(e=>{this.q=e.target.value.toLowerCase();this.render();},120)});
-    const bar=el('div',{class:'bar'},tabs,this.search);
+    const devs=[...S.devices].sort((a,b)=>String(a.friendly_name||a.ieee).localeCompare(String(b.friendly_name||b.ieee)));
+    this.devSel=sel([['','All devices'],...devs.map(d=>[d.ieee,d.friendly_name||d.ieee])],this.dev,
+      {title:'Show only the lines about one device',onchange:e=>{this.dev=e.target.value;this.render();}});
+    this.count=el('span',{class:'sub'});
+    const bar=el('div',{class:'bar'},tabs,this.search,this.devSel);
     if(this.tab==='audit'){
       const f=el('div',{class:'seg'});for(const[v,l]of[['all','All'],['security','Security']])f.append(el('button',{text:l,class:v===this.aFilter?'active':'',onclick:()=>{this.aFilter=v;f.querySelectorAll('button').forEach((b,i)=>b.classList.toggle('active',i===(v==='all'?0:1)));this.render();}}));
       this.verifyOut=el('span',{class:'sub'});
@@ -1263,15 +1285,34 @@ views.logs={
       const auto=el('label',{class:'sub',style:'display:flex;gap:6px;align-items:center'},el('input',{type:'checkbox',checked:this.auto||null,onchange:e=>{this.auto=e.target.checked;}}),'Auto-scroll');
       bar.append(sel,el('span',{class:'grow'}),auto,this.pauseBtn);
     }
-    bar.append(el('button',{class:'btn',text:'Export JSON',onclick:()=>download('oneroof-'+this.tab+'-'+Date.now()+'.json',this.visible())}));
-    m.append(bar);this.box=el('div',{class:'log'});m.append(this.box);this.render();this.load();
+    bar.append(this.count,el('button',{class:'btn',text:'Export JSON',onclick:()=>download('oneroof-'+this.tab+'-'+Date.now()+'.json',this.visible())}));
+    m.append(bar);this.summary=el('div',{class:'sub',style:'margin:-6px 0 10px'});m.append(this.summary);
+    this.box=el('div',{class:'log'});m.append(this.box);this.render();this.load();
   },
   async load(){try{if(this.tab==='audit'){S.audit=await api('api/audit?n=500&level=all');}else{S.logs=await api('api/logs?n=1000');}this.render();}catch(e){toast(e.message,true);}},
   isSec(r){return r.level==='security'||r.level==='SECURITY'||/^security/.test(r.type||'');},
-  visible(){if(this.tab==='audit')return S.audit.filter(r=>(this.aFilter==='all'||this.isSec(r))&&(!this.q||JSON.stringify(r).toLowerCase().includes(this.q)));const order={DEBUG:0,INFO:1,WARNING:2,ERROR:3,CRITICAL:4};return S.logs.filter(r=>(this.lvl==='ALL'||(order[r.level]??1)>=order[this.lvl])&&(!this.q||(r.msg+' '+r.logger).toLowerCase().includes(this.q)));},
+  aboutDevice(r){
+    if(!this.dev)return true;
+    const d=S.devMap.get(this.dev),name=d&&d.friendly_name;
+    const hay=(this.tab==='audit'?JSON.stringify(r):((r.msg||'')+' '+(r.logger||''))).toLowerCase();
+    return hay.includes(this.dev.toLowerCase())||(!!name&&hay.includes(String(name).toLowerCase()));
+  },
+  visible(){if(this.tab==='audit')return S.audit.filter(r=>(this.aFilter==='all'||this.isSec(r))&&this.aboutDevice(r)&&(!this.q||JSON.stringify(r).toLowerCase().includes(this.q)));const order={DEBUG:0,INFO:1,WARNING:2,ERROR:3,CRITICAL:4};return S.logs.filter(r=>(this.lvl==='ALL'||(order[r.level]??1)>=order[this.lvl])&&this.aboutDevice(r)&&(!this.q||(r.msg+' '+r.logger).toLowerCase().includes(this.q)));},
   rowEl(r){if(this.tab==='audit'){const rest=Object.assign({},r);delete rest.ts;delete rest.level;delete rest.type;const dev=r.ieee&&S.devMap.get(String(r.ieee).toLowerCase());const name=dev&&dev.friendly_name&&dev.friendly_name!==r.ieee?dev.friendly_name:null;const detail=Object.entries(rest).map(([k,v])=>k+'='+(typeof v==='string'?v:JSON.stringify(v))).join('  ');return el('div',{class:'row'+(this.isSec(r)?' sec':'')},el('span',{class:'t',text:fmtTs(r.ts)}),el('span',{class:'l',text:this.isSec(r)?'SEC':(r.level||'')}),el('span',null,el('b',{text:r.type||''}),name?el('a',{class:'devname',href:'#device/'+encodeURIComponent(r.ieee),text:'  '+name+'  '}):'  ',detail));}
     return el('div',{class:'row '+(r.level||'')},el('span',{class:'t',text:fmtTs(r.ts)}),el('span',{class:'l',text:r.level||''}),el('span',null,el('span',{class:'mute',text:(r.logger||'')+' '}),r.msg||''));},
-  render(){if(S.page!=='logs'||!this.box)return;const rows=this.visible();const b=clear(this.box);if(!rows.length){b.append(el('div',{class:'row mute',text:'Nothing to show.'}));return;}const frag=document.createDocumentFragment();for(const r of rows.slice(-1500))frag.append(this.rowEl(r));b.append(frag);if(this.auto)b.scrollTop=b.scrollHeight;},
+  tally(rows){
+    if(!this.summary)return;
+    if(!this.count)return;
+    this.count.textContent=rows.length+(rows.length===1?' line':' lines');
+    if(!this.dev||this.tab!=='audit'){clear(this.summary);return;}
+    const by={};for(const r of rows){const k=r.type||'(event)';by[k]=(by[k]||0)+1;}
+    const top=Object.entries(by).sort((a,b)=>b[1]-a[1]).slice(0,8);
+    const d=S.devMap.get(this.dev),name=(d&&d.friendly_name)||this.dev;
+    clear(this.summary).append(el('b',{text:name+': '}),
+      top.length?top.map(([k,n])=>k+' \u00d7'+n).join('  \u00b7  ')
+                :'nothing in the log for this device');
+  },
+  render(){if(S.page!=='logs'||!this.box)return;const rows=this.visible();this.tally(rows);const b=clear(this.box);if(!rows.length){b.append(el('div',{class:'row mute',text:'Nothing to show.'}));return;}const frag=document.createDocumentFragment();for(const r of rows.slice(-1500))frag.append(this.rowEl(r));b.append(frag);if(this.auto)b.scrollTop=b.scrollHeight;},
   pushAudit(r){S.audit.push(r);if(S.audit.length>2000)S.audit.shift();if(S.page==='logs'&&this.tab==='audit'&&this.visible().includes(r)){if(this.box.firstChild&&this.box.firstChild.classList.contains('mute'))clear(this.box);this.box.append(this.rowEl(r));if(this.auto)this.box.scrollTop=this.box.scrollHeight;}},
   pushLog(r){if(this.paused){this.pending.push(r);if(this.pauseBtn)this.pauseBtn.textContent='Resume ('+this.pending.length+')';return;}S.logs.push(r);if(S.logs.length>3000)S.logs.shift();if(S.page==='logs'&&this.tab==='app'&&this.visible().includes(r)){if(this.box.firstChild&&this.box.firstChild.classList.contains('mute'))clear(this.box);this.box.append(this.rowEl(r));if(this.auto)this.box.scrollTop=this.box.scrollHeight;}},
   async verify(){this.verifyOut.textContent='verifying…';try{const r=await api('api/audit/verify');this.verifyOut.textContent=r.ok?'Chain intact':'Chain broken at line '+r.first_bad_line;this.verifyOut.style.color=r.ok?'var(--ok)':'var(--danger)';}catch(e){this.verifyOut.textContent=e.message;}}

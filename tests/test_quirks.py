@@ -156,7 +156,7 @@ CASES = [
      {"current_heating_setpoint", "system_mode", "fan_mode", "swing", "local_temperature", "temperature", "humidity", "learn_key", "send_key", "protocol",
       "hold", "last_result", "code_count", "temperature_offset", "led_brightness", "led_quiet"},
      {"state", "countdown", "power_on_behavior", "running_state", "current_cooling_setpoint", "target_temperature"},
-     {"climate": ("climate", None), "swing": ("switch", None), "protocol": ("select", None), "learn_key": ("text", None), "send_key": ("text", None),
+     {"climate": ("climate", None), "protocol": ("select", None), "learn_key": ("text", None), "send_key": ("text", None),
       "hold": ("switch", None), "led_quiet": ("switch", None), "temperature_offset": ("number", None), "led_brightness": ("number", None),
       "last_result": ("sensor", None), "code_count": ("sensor", None), "temperature": ("sensor", "temperature"), "humidity": ("sensor", "humidity")}),
     ("bosch_contact", "BOSCH", "RBSH-SWD-ZB", {1: ([0x0000, 0x0001, 0x0003, 0x0500, 0x0B05], [0x0019], 0x0402)}, "battery", False, {"zone_type": 0x0015},
@@ -722,8 +722,10 @@ def test_irblaster_features_exposes_and_discovery():
     assert cl["temperature_command_template"] == '{"current_heating_setpoint": {{ value }} }' and (cl["min_temp"], cl["max_temp"], cl["temp_step"]) == (16, 30, 1)
     assert cl["modes"] == ["off", "auto", "cool", "heat", "dry", "fan_only"] and cl["fan_modes"] == ["low", "medium", "high", "auto"]
     assert cl["fan_mode_command_template"] == '{"fan_mode": "{{ value }}" }'
-    sw = disc["swing"][1]
-    assert sw["name"] == "Swing" and sw["payload_on"] == '{"swing": "ON"}' and sw["value_template"] == "{{ value_json.swing }}"
+    # the louver belongs to the air conditioner: it is the climate entity's swing mode, not a
+    # toggle standing on its own (see test_air_conditioner_louver_is_the_climate_entitys_swing…)
+    assert "swing" not in disc
+    assert cl["swing_modes"] == ["ON", "OFF"] and cl["swing_mode_state_template"] == "{{ value_json.swing }}"
     assert disc["learn_key"][1]["command_template"] == '{"learn_key": "{{ value }}" }' and disc["learn_key"][1]["max"] == 15
     assert disc["protocol"][1]["options"] == ["learn", "auto", "coolix", "gree", "daikin", "electra"]
     assert disc["hold"][1]["payload_on"] == '{"hold": "ON"}'
@@ -878,3 +880,117 @@ def test_air_conditioner_description_is_what_other_apps_expect():
     assert ex["switch"]["features"][0]["property"] == "swing", "the louver is a switch anyone can toggle"
     assert ex["temperature"]["type"] == "numeric" and ex["temperature"]["unit"] == "°C"
     assert ex["humidity"]["type"] == "numeric" and ex["humidity"]["unit"] == "%"
+
+
+def test_air_conditioner_louver_is_the_climate_entitys_swing_not_a_stray_toggle():
+    """The louver is its own on/off endpoint on the wire. Home Assistant models it as the climate
+    entity's swing mode, and every consumer downstream — the Apple Home bridge included — looks for
+    it there; a separate switch entity for the same thing is both a duplicate and invisible to
+    anything that only understands climate."""
+    ac = irblaster()
+    ac.friendly_name = "Bedroom AC"
+    entities = ha(ac, legacy=False)
+
+    component, climate = entities["climate"]
+    assert component == "climate"
+    assert climate["swing_modes"] == ["ON", "OFF"]
+    assert climate["swing_mode_state_template"] == "{{ value_json.swing }}"
+    assert climate["swing_mode_command_template"] == '{"swing": "{{ value }}" }'
+    assert climate["swing_mode_command_topic"] == climate["mode_command_topic"]
+
+    # ...and it is not published twice
+    switches = [oid for oid, (comp, _) in entities.items() if comp == "switch"]
+    assert not any("swing" in oid for oid in switches), switches
+    assert "switch" not in entities, "the louver came back as its own toggle"
+
+
+def test_a_plain_switch_endpoint_is_still_a_switch():
+    """Only an air conditioner's louver is folded away. A two-gang switch keeps both toggles."""
+    gang = mk("Acme", "SW-2", {1: ([0x0006], [], 0x0100), 2: ([0x0006], [], 0x0100)},
+              power="mains", router=True)
+    entities = ha(gang, legacy=False)
+    assert sum(1 for comp, _ in entities.values() if comp == "switch") == 2
+
+
+def test_the_louver_survives_as_state_when_the_device_has_no_setpoint():
+    """No climate entity, no swing mode to fold it into: it stays a toggle rather than vanishing."""
+    fan = mk("Acme", "FAN-1", {1: ([0x0006], [], 0x0100)}, power="mains", router=True)
+    entities = ha(fan, legacy=False)
+    assert any(comp == "switch" for comp, _ in entities.values())
+
+
+async def test_air_conditioner_temperature_survives_a_refused_setpoint_attribute(tmp_path):
+    """An air conditioner has one set temperature but the ZCL has two setpoint attributes, and a
+    device may implement only one of them. When the one we pick is refused, the temperature must
+    still change — otherwise mode, fan and louver all work and only the temperature does nothing."""
+    import json as _json
+    from oneroof_zigbee.znp import commands as c
+    from oneroof_zigbee.znp.unpi import Frame, FrameType, Subsystem
+    from oneroof_zigbee.znp.wire import Writer
+
+    fake, broker, gw, dev, t = await _gateway_with(tmp_path, lambda: irblaster())
+    dev.state["system_mode"] = "cool"
+
+    refused = []
+
+    def hook(f: Frame):
+        dst = int.from_bytes(f.data[0:2], "little")
+        dst_ep, src_ep = f.data[2], f.data[3]
+        cluster = int.from_bytes(f.data[4:6], "little")
+        zframe = f.data[10:]
+        seq, cmd = zframe[1], zframe[2]
+        if cluster != 0x0201 or cmd != 0x02:      # only thermostat writes
+            return []
+        attr = int.from_bytes(zframe[3:5], "little")
+
+        def reply(payload):
+            w = (Writer().u16(0).u16(cluster).u16(dst).u8(dst_ep).u8(src_ep).u8(0).u8(180)
+                 .u8(1).u32(0).u8(seq).lv(payload))
+            return [Frame(FrameType.AREQ, Subsystem.AF, c.AfCmd.INCOMING_MSG, w.bytes())]
+
+        if attr == 0x0011:                        # cooling setpoint: not implemented here
+            refused.append(attr)
+            return reply(bytes([0x18, seq, 0x04, 0x86]) + attr.to_bytes(2, "little"))
+        return reply(bytes([0x18, seq, 0x04, 0x00]))
+
+    fake.on_data_request = hook
+    await broker.inject(f"oneroof/zigbee/{dev.ieee_str}/set", b'{"current_heating_setpoint": 23}',
+                        user="admin")
+    for _ in range(60):
+        await asyncio.sleep(0.05)
+        if _json.loads(broker.last(f"oneroof/zigbee/{dev.ieee_str}/state")).get("current_heating_setpoint") == 23:
+            break
+
+    assert refused == [0x0011], "the cooling setpoint should have been tried first in cool mode"
+    writes = [f.data[10:] for f in fake.requests
+              if f.subsystem is Subsystem.AF and f.command == c.AfCmd.DATA_REQUEST
+              and int.from_bytes(f.data[4:6], "little") == 0x0201 and f.data[12] == 0x02]
+    attrs = [int.from_bytes(w[3:5], "little") for w in writes]
+    assert attrs == [0x0011, 0x0012], f"expected a fallback to the heating setpoint, wrote {attrs}"
+    assert int.from_bytes(writes[-1][6:8], "little") == 2300, "the value must survive the fallback"
+
+    state = _json.loads(broker.last(f"oneroof/zigbee/{dev.ieee_str}/state"))
+    assert state["current_heating_setpoint"] == 23
+    await t.close()
+
+
+async def test_a_command_that_failed_says_so_in_the_log(tmp_path):
+    """The audit records that a command arrived. If carrying it out then failed and nothing said
+    so, the log would read as though the device had done it."""
+    fake, broker, gw, dev, t = await _gateway_with(tmp_path, lambda: irblaster())
+    seen = []
+    gw.audit.subscribe(lambda rec: seen.append(rec))
+
+    fake.on_data_request = lambda f: []           # the device answers nothing at all
+    await broker.inject(f"oneroof/zigbee/{dev.ieee_str}/set", b'{"current_heating_setpoint": 23}',
+                        user="admin")
+    for _ in range(200):
+        await asyncio.sleep(0.05)
+        if any(r.get("type") == "command_failed" for r in seen):
+            break
+
+    failed = [r for r in seen if r.get("type") == "command_failed"]
+    assert failed, [r.get("type") for r in seen]
+    assert failed[0]["ieee"] == dev.ieee_str and failed[0]["keys"] == ["current_heating_setpoint"]
+    assert failed[0]["by"] == "admin" and failed[0]["error"]
+    await t.close()
