@@ -652,17 +652,40 @@ class Gateway:
     _TUYA_SETTLE_ATTRS = [0x0004, 0x0000, 0x0001, 0x0005, 0x0007, 0xFFFE]
 
     async def _vendor_settle(self, dev: Device) -> None:
-        """Vendor-specific one-off after configuration. Tuya mains devices keep reporting a Basic
-        cluster attribute every 200 ms until the coordinator has read this attribute set once."""
-        if not str(dev.manufacturer or "").startswith("_TZ"):
+        """Vendor-specific one-off after configuration.
+
+        Tuya mains devices keep reporting a Basic cluster attribute every 200 ms until the
+        coordinator has read this attribute set once. Aqara/Xiaomi devices carry their private
+        cluster (0xFCC0) and need ``mode = 1`` written there with the LUMI manufacturer code —
+        the same write zigbee2mqtt performs on every configure. It tells the device it lives on
+        a Zigbee hub: without it, some models keep waiting for the proprietary Mi Home presence
+        protocol, decide no hub is there, and say so on their indicator LED — while still
+        answering commands perfectly."""
+        manufacturer = str(dev.manufacturer or "")
+        if manufacturer.startswith("_TZ"):
+            prim = dev.primary_endpoint()
+            ep = next((e.id for e in dev.endpoints.values() if 0x0000 in e.in_clusters), prim.id if prim else 1)
+            try:
+                await self.read_attributes(dev, ep, 0x0000, self._TUYA_SETTLE_ATTRS)
+                self._settled.add(dev.ieee)
+            except (ZnpError, asyncio.TimeoutError) as e:
+                log.info("%s: Tuya settle read failed (%s)", dev.ieee_str, e)
             return
-        prim = dev.primary_endpoint()
-        ep = next((e.id for e in dev.endpoints.values() if 0x0000 in e.in_clusters), prim.id if prim else 1)
-        try:
-            await self.read_attributes(dev, ep, 0x0000, self._TUYA_SETTLE_ATTRS)
-            self._settled.add(dev.ieee)
-        except (ZnpError, asyncio.TimeoutError) as e:
-            log.info("%s: Tuya settle read failed (%s)", dev.ieee_str, e)
+        lumi = manufacturer.upper() in ("LUMI", "AQARA") or str(dev.model or "").startswith("lumi.")
+        if lumi:
+            # Xiaomi devices answer on their private cluster without declaring it in the simple
+            # descriptor, so the endpoint list cannot be trusted as a gate — zigbee2mqtt writes to
+            # endpoint 1 unconditionally, and so do we when the cluster is not declared anywhere.
+            prim = dev.primary_endpoint()
+            lumi_ep = next((e.id for e in dev.endpoints.values() if 0xFCC0 in e.in_clusters),
+                           prim.id if prim else 1)
+            try:
+                await self._write_attr(dev, lumi_ep, 0xFCC0, 0x0009, zcl.DataType.uint8, 1,
+                                       manufacturer=vz.LUMI_MANUFACTURER_CODE)
+                self.audit.event("lumi_zigbee_mode_set", ieee=dev.ieee_str)
+            except (ZnpError, asyncio.TimeoutError) as e:
+                # not every model has the attribute; a refusal is fine, silence was the problem
+                log.info("%s: lumi mode write not accepted (%s)", dev.ieee_str, e)
 
     @staticmethod
     def _reporting_records(dev: Device, cluster: int) -> list[tuple[int, zcl.DataType, int, int, Any]]:
@@ -891,6 +914,21 @@ class Gateway:
                 out = gc.build_cluster_command(frame.seq, cmd_id, body, direction=zcl.DIRECTION_SERVER_TO_CLIENT,
                                                disable_default_response=True)
                 asyncio.create_task(self.coord.send_aps(dev.nwk, m.src_ep, 0x0019, out, wait_confirm=False))
+            return
+        elif (m.cluster == 0x0020 and frame.frame_type == zcl.FRAME_TYPE_CLUSTER
+              and frame.direction == zcl.DIRECTION_SERVER_TO_CLIENT and frame.command == 0x00):
+            # Poll Control check-in: the device asks "hub, are you there?" on a timer and the
+            # spec's answer is a Check-in Response (no fast polling). zigbee2mqtt's stack sends
+            # it automatically; a device whose check-ins go unanswered concludes the hub is gone
+            # — some say so on their indicator LED while still obeying every command.
+            out = gc.build_cluster_command(frame.seq, 0x00, b"\x00\x00\x00",
+                                           direction=zcl.DIRECTION_CLIENT_TO_SERVER,
+                                           disable_default_response=True)
+            asyncio.create_task(self.coord.send_aps(dev.nwk, m.src_ep, 0x0020, out, wait_confirm=False))
+            first = (dev.ieee, 0x0020) not in self._answered
+            self._answered.add((dev.ieee, 0x0020))
+            (log.info if first else log.debug)("%s: answered a poll-control check-in",
+                                               dev.friendly_name or dev.ieee_str)
             return
         elif m.cluster == vz.TUYA_CLUSTER and frame.direction == zcl.DIRECTION_SERVER_TO_CLIENT:
             changed = await self._tuya_report(dev, frame)
@@ -1515,14 +1553,15 @@ class Gateway:
             await self.coord.send_aps(dev.nwk, ep, 0x0006, gc.build_cluster_command(self._next_seq(), 0x42, body))
             self._apply_changes(dev, {key_of("state"): "ON"})
 
-    async def _write_attr(self, dev: Device, ep: int, cluster: int, attr: int, dtype: zcl.DataType, value: Any) -> None:
+    async def _write_attr(self, dev: Device, ep: int, cluster: int, attr: int, dtype: zcl.DataType, value: Any,
+                          manufacturer: int | None = None) -> None:
         """Write one attribute and believe the device about whether it took it.
 
         A Write Attributes Response carries a status per attribute. Ignoring it means a refused
         write looks exactly like a successful one: the state is published as if it had changed, and
         the device sits there doing what it did before."""
         seq = self._next_seq()
-        frame = gc.build_write_attributes(seq, [gc.WriteAttributeRecord(attr, int(dtype), value)])
+        frame = gc.build_write_attributes(seq, [gc.WriteAttributeRecord(attr, int(dtype), value)], manufacturer=manufacturer)
         rsp = await self._request(dev, ep, cluster, frame, seq, gc.CMD_WRITE_ATTRIBUTES_RSP)
         try:
             records = gc.decode_global_command(rsp).records

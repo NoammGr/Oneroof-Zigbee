@@ -994,3 +994,79 @@ async def test_a_command_that_failed_says_so_in_the_log(tmp_path):
     assert failed[0]["ieee"] == dev.ieee_str and failed[0]["keys"] == ["current_heating_setpoint"]
     assert failed[0]["by"] == "admin" and failed[0]["error"]
     await t.close()
+
+
+async def test_aqara_devices_are_told_they_live_on_a_zigbee_hub(tmp_path):
+    """zigbee2mqtt writes mode=1 to Aqara's private cluster (0xFCC0, manufacturer 0x115F) on
+    every configure — it is what tells the device it lives on a Zigbee hub. Without it some
+    models keep waiting for the proprietary Mi Home presence protocol, decide no hub is there,
+    and blink their indicator red/blue while still obeying every command."""
+    from oneroof_zigbee.znp import commands as c
+    from oneroof_zigbee.znp.unpi import Subsystem
+
+    fake, broker, gw, dev, t = await _gateway_with(
+        tmp_path, lambda: mk("LUMI", "lumi.switch.b2lc04",
+                             {1: ([0x0000, 0x0006, 0xFCC0], [0x0019], 0x0100),
+                              2: ([0x0006], [], 0x0100)},
+                             power="mains", router=False, ieee=0x54EF44100000AAAA))
+    fake.requests.clear()
+    await gw._vendor_settle(dev)
+
+    writes = []
+    for f in fake.requests:
+        if f.subsystem is Subsystem.AF and f.command == c.AfCmd.DATA_REQUEST \
+                and int.from_bytes(f.data[4:6], "little") == 0xFCC0:
+            writes.append(f.data[10:])
+    assert writes, "no write ever reached the Aqara private cluster"
+    z = writes[0]
+    assert z[0] & 0x04, "the write must be manufacturer-specific"
+    assert int.from_bytes(z[1:3], "little") == 0x115F, "…with the LUMI manufacturer code"
+    assert z[4] == 0x02, "a Write Attributes command"
+    assert int.from_bytes(z[5:7], "little") == 0x0009 and z[7] == 0x20 and z[8] == 1, \
+        "mode (0x0009), uint8, value 1 — exactly what zigbee2mqtt writes"
+
+
+async def test_the_lumi_write_goes_out_even_when_the_cluster_is_undeclared(tmp_path):
+    """Xiaomi devices answer on 0xFCC0 without declaring it in their simple descriptor — the
+    real lumi.switch.b2lc04 interviews as plain on/off endpoints. Gating the write on the
+    declared cluster list silently skipped exactly the devices that need it."""
+    from oneroof_zigbee.znp import commands as c
+    from oneroof_zigbee.znp.unpi import Subsystem
+    fake, broker, gw, dev, t = await _gateway_with(
+        tmp_path, lambda: mk("LUMI", "lumi.switch.b2lc04",
+                             {1: ([0x0000, 0x0006], [0x0019], 0x0100),   # no 0xFCC0 declared
+                              2: ([0x0006], [], 0x0100)},
+                             power="mains", router=False, ieee=0x54EF44100000AAAB))
+    fake.requests.clear()
+    await gw._vendor_settle(dev)
+    sent = [f for f in fake.requests if f.subsystem is Subsystem.AF and f.command == c.AfCmd.DATA_REQUEST
+            and int.from_bytes(f.data[4:6], "little") == 0xFCC0]
+    assert sent, "the undeclared cluster silently skipped the write again"
+    assert sent[0].data[2] == 1, "defaults to endpoint 1, as zigbee2mqtt does"
+    await t.close()
+
+
+async def test_non_aqara_devices_get_no_lumi_write(tmp_path):
+    from oneroof_zigbee.znp import commands as c
+    from oneroof_zigbee.znp.unpi import Subsystem
+    fake, broker, gw, dev, t2 = await _gateway_with(
+        tmp_path, lambda: mk("Acme", "PLUG-9", {1: ([0x0000, 0x0006], [], 0x0100)},
+                             power="mains", router=True, ieee=0x00124B00000000BB))
+    fake.requests.clear()
+    await gw._vendor_settle(dev)
+    assert not any(f.subsystem is Subsystem.AF and f.command == c.AfCmd.DATA_REQUEST
+                   and int.from_bytes(f.data[4:6], "little") == 0xFCC0 for f in fake.requests)
+    await t2.close()
+
+
+async def test_a_lumi_device_without_the_attribute_still_finishes(tmp_path):
+    """Older lumi models refuse the write; a refusal must stay a shrug, not an error that
+    aborts the rest of the configuration."""
+    fake, broker, gw, dev, t = await _gateway_with(
+        tmp_path, lambda: mk("LUMI", "lumi.sensor_magnet.aq2",
+                             {1: ([0x0000, 0x0006, 0xFCC0], [], 0x0402)},
+                             ieee=0x00158D00000000CC))
+    def refuse(f):
+        return []          # the device never answers at all — worst case
+    fake.on_data_request = refuse
+    await gw._vendor_settle(dev)   # must not raise

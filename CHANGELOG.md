@@ -1,5 +1,39 @@
 # Changelog
 
+## [2.8.1] — 2026-09-03
+
+### Fixed
+- The Aqara ``mode = 1`` write (2.7.0) was gated on the device *declaring* the private cluster in
+  its endpoint list — but Xiaomi devices answer on it without declaring it (the real
+  lumi.switch.b2lc04 interviews as plain on/off endpoints), so the write was silently skipped for
+  exactly the devices that need it. It now goes to endpoint 1 unconditionally for lumi devices,
+  as zigbee2mqtt does. Whether it happened is visible: ``lumi_zigbee_mode_set`` in the audit.
+
+## [2.8.0] — 2026-09-03
+
+### Fixed — "hub, are you there?" is finally answered
+- Devices with the Poll Control cluster send a **check-in** on a timer, and the spec's answer is a
+  Check-in Response — zigbee2mqtt's stack sends it automatically. Ours answered with a generic
+  default response instead of the real one. A device whose check-ins go unanswered concludes the
+  hub is gone; some (Aqara) say so on their indicator LED while still obeying every command. The
+  proper response (no fast polling) is now sent; the first one per device is logged.
+
+### Added — the wire log shows both directions
+- With ``log_level: debug``, outgoing frames are logged too (`-> <address> ep<n> cluster … len=…`),
+  so a device's whole conversation — its questions and our answers — is visible in one filtered
+  view when debugging.
+
+## [2.7.0] — 2026-09-02
+
+### Fixed — Aqara devices are told they live on a Zigbee hub
+- zigbee2mqtt writes ``mode = 1`` to Aqara's private cluster (0xFCC0, manufacturer 0x115F) every
+  time it configures a lumi device. Without that write, some models keep waiting for the
+  proprietary Mi Home presence protocol, decide no hub is there, and **blink their indicator
+  red/blue** — while still obeying every command. The gateway now performs the same write at every
+  interview (so a factory-reset or re-paired device gets it again), audited as
+  ``lumi_zigbee_mode_set``. A model that refuses the write is left in peace — the refusal is
+  logged, nothing fails.
+
 ## [2.6.1] — 2026-09-02
 
 - Re-release of 2.6.0. Several builds were published under the 2.6.0 number while it was being

@@ -1215,6 +1215,8 @@ class Coordinator:
 
     async def send_aps(self, dst: int, dst_ep: int, cluster: int, payload: bytes, *, src_ep: int = GATEWAY_ENDPOINT,
                        wait_confirm: bool = True, timeout: float = 10.0) -> int:
+        # the outgoing half of the wire log: with debug on, a device's whole conversation is visible
+        log.debug("-> %#06x ep%d cluster %#06x len=%d", dst, dst_ep, cluster, len(payload))
         tid = self._next_trans_id()
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[int] = loop.create_future()

@@ -1231,3 +1231,26 @@ async def test_a_report_that_asks_for_a_receipt_gets_one(tmp_path):
     await asyncio.sleep(0.4)
     assert not _outgoing_zcl(fake, 0x0006), "receipted a report that asked for silence"
     await t.close()
+
+
+async def test_a_poll_control_checkin_is_answered_properly(tmp_path):
+    """The device asks "hub, are you there?" on a timer; the spec's answer is a Check-in
+    Response, not a generic default response. A device whose check-ins go unanswered concludes
+    the hub is gone — some say so on their indicator LED while still obeying every command."""
+    fake, coord, broker, gw, t = await _joined(tmp_path)
+
+    # cluster-specific, server→client, checkin (0x00)
+    fake.emit_incoming(NWK, 0x0020, bytes([0x09, 0x66, 0x00]))
+    for _ in range(60):
+        await asyncio.sleep(0.02)
+        if _outgoing_zcl(fake, 0x0020):
+            break
+    sent = _outgoing_zcl(fake, 0x0020)
+    assert sent, "the check-in went unanswered"
+    z = sent[0]
+    assert z[0] & 0x01 and not (z[0] & 0x08), "a cluster-specific reply, client to server"
+    assert z[1] == 0x66, "carrying the check-in's own sequence number"
+    assert z[2] == 0x00, "a Check-in Response"
+    assert z[3:6] == b"\x00\x00\x00", "no fast polling asked of a device that did not offer it"
+    assert z[0] != 0x0B, "and not a generic default response in its place"
+    await t.close()
