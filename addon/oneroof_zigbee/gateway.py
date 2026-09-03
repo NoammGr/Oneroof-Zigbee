@@ -427,11 +427,15 @@ class Gateway:
             self._rotation.note_new_device(dev)
         if j.plain_join and self.cfg.zigbee.rotate_key_after_plain_join:
             dev.context["rotate_after_join"] = True
-        # A device that JOINS was factory-reset or re-paired: its reporting configuration,
-        # bindings and IAS enrolment died with its old life, even when the registry remembers it
-        # as interviewed. Re-run the interview on every join — it is idempotent, and the device
-        # keeps its name and identity either way.
-        self._start_interview(dev)
+        # A device that JOINS through a pairing window was factory-reset or re-paired: its
+        # reporting, bindings and IAS enrolment died with its old life, so the interview re-runs.
+        # A REJOIN is different: the device merely came back (power cut, parent change, a wobble)
+        # with its configuration intact. Re-interviewing those turned every stumble into a storm —
+        # the interview's burst of reads and writes is real load, a marginal device reboots under
+        # it, reboots rejoin, and each rejoin used to start the next interview. A rejoining device
+        # that was never interviewed is still completed.
+        if not (j.rejoin and dev.interviewed):
+            self._start_interview(dev)
 
     async def _maybe_rotate_after_join(self, dev: Device) -> None:
         """A device paired without an install code received the network key under the public key,
@@ -512,9 +516,11 @@ class Gateway:
         self._emit_device_event("offline", dev)
 
     def _start_interview(self, dev: Device) -> None:
-        old = self._interview_tasks.pop(dev.ieee, None)
-        if old:
-            old.cancel()
+        old = self._interview_tasks.get(dev.ieee)
+        if old is not None and not old.done():
+            # one interview at a time: announces arrive in pairs and every restart used to cancel
+            # the running interview and begin again, so a flapping device was interviewed forever
+            return
         self._interview_tasks[dev.ieee] = asyncio.create_task(self._interview(dev), name=f"interview-{dev.ieee_str}")
 
     # --------------------------------------------------------- interview --

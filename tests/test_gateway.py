@@ -838,8 +838,11 @@ async def test_fresh_formation_marks_every_known_device_offline(tmp_path):
 
 
 async def test_rejoin_of_a_known_device_reruns_the_interview(tmp_path):
-    """A device that joins again was factory-reset: its reporting config and bindings are gone,
-    whatever the registry remembers — the interview must run again (it keeps name and identity)."""
+    """A device that joins again THROUGH A PAIRING WINDOW was factory-reset: its reporting config
+    and bindings are gone, whatever the registry remembers — the interview must run again (it
+    keeps name and identity). The window is what marks it a re-pair; a rejoin outside a window is
+    a device merely coming back, and is deliberately not interviewed (see
+    test_a_rejoin_does_not_restart_the_interview)."""
     fake, coord, broker, gw, t = await make(tmp_path)
     events = []
     coord.audit.subscribe(lambda r: events.append(r))
@@ -1253,4 +1256,53 @@ async def test_a_poll_control_checkin_is_answered_properly(tmp_path):
     assert z[2] == 0x00, "a Check-in Response"
     assert z[3:6] == b"\x00\x00\x00", "no fast polling asked of a device that did not offer it"
     assert z[0] != 0x0B, "and not a generic default response in its place"
+    await t.close()
+
+
+async def test_a_rejoin_does_not_restart_the_interview(tmp_path):
+    """A rejoin is a device coming back with its configuration intact. Re-interviewing on every
+    rejoin turned a stumble into a storm: the interview's burst of reads and writes is real load,
+    a marginal no-neutral device reboots under it, reboots rejoin, and every rejoin started the
+    next interview — observed live as a rejoin-and-interview cycle every eight seconds."""
+    fake, coord, broker, gw, t = await _joined(tmp_path)
+    dev = gw.registry.get(IEEE)
+    assert dev.interviewed
+
+    events = []
+    gw.audit.subscribe(lambda rec: events.append(rec.get("type")))
+    fake.emit_announce(IEEE, NWK)          # a plain rejoin (no TC involvement)
+    fake.emit_announce(IEEE, NWK)          # announces arrive in pairs
+    await asyncio.sleep(0.5)
+    assert "device_rejoined" in events
+    assert "interview_started" not in events, "a rejoin of a configured device must not interview"
+
+    # …but a rejoining device that was never interviewed is still completed
+    dev.interviewed = False
+    events.clear()
+    fake.emit_announce(IEEE, NWK)
+    for _ in range(50):
+        await asyncio.sleep(0.02)
+        if "interview_started" in events:
+            break
+    assert "interview_started" in events, "an unconfigured device must still be interviewed"
+    await t.close()
+
+
+async def test_only_one_interview_runs_per_device(tmp_path):
+    """Announces arrive in pairs; each used to cancel the running interview and begin again, so a
+    flapping device was interviewed forever and never finished a single one."""
+    fake, coord, broker, gw, t = await make(tmp_path)
+    await broker.inject("oneroof/zigbee/bridge/request/permit_join", b'{"seconds": 30}', user="admin")
+    starts = []
+    gw.audit.subscribe(lambda rec: starts.append(rec) if rec.get("type") == "interview_started" else None)
+    fake.emit_announce(IEEE, NWK)
+    fake.emit_announce(IEEE, NWK)
+    fake.emit_announce(IEEE, NWK)
+    for _ in range(100):
+        await asyncio.sleep(0.02)
+        d = gw.registry.get(IEEE)
+        if d and d.interviewed:
+            break
+    assert len(starts) == 1, f"{len(starts)} interviews for one joining device"
+    assert gw.registry.get(IEEE).interviewed, "the single interview still completes"
     await t.close()

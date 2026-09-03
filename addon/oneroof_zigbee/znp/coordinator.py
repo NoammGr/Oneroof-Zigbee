@@ -69,6 +69,7 @@ class JoinedDevice:
     parent: int | None
     capabilities: int
     plain_join: bool = False  # joined through a window without install code: the key travelled under the public key
+    rejoin: bool = False      # a known device coming back, not a new or re-paired one
 
 
 ApsCb = Callable[[IncomingAps], Awaitable[None]]
@@ -172,8 +173,14 @@ class Coordinator:
             rekeyed = touched is not None and time.monotonic() - touched < 60.0
             self.audit.event("device_rejoined", ieee=f"0x{a.ieee:016x}", nwk=f"{a.nwk_addr:#06x}",
                              rekeyed_by_tc=rekeyed)
+            # A known device announcing while a pairing window is open is a re-pair (the reset
+            # button was pressed, the window opened for it): its configuration died with its old
+            # life and the interview must run. Outside a window it is a plain rejoin — the device
+            # merely came back, and is left in peace.
+            w = self.guard.window
             dev = JoinedDevice(a.ieee, a.nwk_addr, None, a.capabilities,
-                               plain_join=rekeyed and not self.strict)
+                               plain_join=(rekeyed and not self.strict) or bool(w and not w.install_code),
+                               rejoin=not bool(w))
             for cb in self._join_cbs:
                 await cb(dev)
             return

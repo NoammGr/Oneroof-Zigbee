@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.9.0] — 2026-09-03
+
+### Fixed — a rejoining device is left in peace
+- Every rejoin used to restart the full interview. An interview is a burst of dozens of reads,
+  binds and reporting writes; on a marginal no-neutral device that burst is real load — it reboots
+  under it, a reboot rejoins, announces arrive in pairs, and every announce cancelled the running
+  interview and started the next: a self-sustaining rejoin-and-interview storm, observed live at
+  one cycle every eight seconds, with the device's indicator LED blinking through all of it.
+- Now: a **rejoin outside a pairing window** (a device merely coming back — power cut, parent
+  change, a wobble) is not interviewed at all; a **join through a window** (a factory-reset
+  re-pair — the window is what marks it) is interviewed exactly as before; a rejoining device that
+  was never interviewed is still completed; and **only one interview runs per device** — a second
+  announce no longer cancels and restarts the first.
+
 ## [2.8.1] — 2026-09-03
 
 ### Fixed
