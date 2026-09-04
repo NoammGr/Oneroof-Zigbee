@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.10.2] — 2026-09-04
+
+### Fixed
+- **A bystander rejoin during someone else's pairing window no longer schedules a rotation.**
+  Re-pairing one device opens a window; a wall-switched bulb that happens to power up in those
+  seconds rejoins securely with the key it already holds — the trust centre delivers it nothing,
+  so there is nothing to retire. Only a rejoin the trust centre actually re-keyed during a window
+  is treated as a through-the-window pairing. Genuinely new or factory-reset devices joining
+  through a window rotate exactly as before.
+
 ## [2.10.1] — 2026-09-04
 
 ### Fixed — rotations stop being scheduled after every Aqara reboot

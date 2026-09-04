@@ -807,3 +807,30 @@ async def test_tc_rejoins_are_allowed_and_rekeyed_ones_flagged_for_rotation():
             break
     assert joins and not joins[0].plain_join, "a secure rejoin re-delivers nothing and needs no rotation"
     await t.close()
+
+
+async def test_a_secure_rejoin_during_someone_elses_window_is_not_exposure():
+    """Re-pairing one device opens a window; a wall-switched bulb that happens to power up in
+    those seconds rejoins securely with the key it already holds — the trust centre delivers it
+    nothing. Flagging it scheduled a rotation for every innocent bystander; now only a rejoin
+    the TC actually re-keyed during a window counts as a through-the-window pairing."""
+    fake, coord, t = await make()
+    ieee, nwk = 0x00124B00AABB0002, 0x4322
+    coord.known_ieee.add(ieee)
+    joins = []
+
+    async def on_join(d):
+        joins.append(d)
+
+    coord.on_device_joined(on_join)
+    await coord.permit_join(60, "test")        # a window is open for something else
+
+    fake.emit_announce(ieee, nwk)              # secure rejoin: no tc_device_ind, no key delivered
+    for _ in range(50):
+        await asyncio.sleep(0.02)
+        if joins:
+            break
+    assert joins and not joins[0].plain_join, \
+        "a secure rejoin received no key — window or no window, there is nothing to retire"
+    assert not joins[0].rejoin, "inside a window it still counts as a join for interview purposes"
+    await t.close()

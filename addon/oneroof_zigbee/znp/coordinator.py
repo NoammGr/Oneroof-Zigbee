@@ -184,9 +184,14 @@ class Coordinator:
             # TC-rejoin at boot), each one waiting for days on wall-switched bulbs, for no
             # security gain. Real exposure — a pairing window without an install code — still
             # rotates as always.
+            # …and a KNOWN device that merely rejoins while a window happens to be open for
+            # something else is an innocent bystander: if the trust centre delivered it no key
+            # (a secure rejoin — it still holds the current one), there is nothing to retire and
+            # no rotation is owed. Only a rejoin the TC actually re-keyed during a window is
+            # treated as a through-the-window pairing.
             w = self.guard.window
             dev = JoinedDevice(a.ieee, a.nwk_addr, None, a.capabilities,
-                               plain_join=bool(w and not w.install_code),
+                               plain_join=bool(w and not w.install_code) and rekeyed,
                                rejoin=not bool(w))
             for cb in self._join_cbs:
                 await cb(dev)
