@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.10.1] — 2026-09-04
+
+### Fixed — rotations stop being scheduled after every Aqara reboot
+- A TC-rekeyed rejoin is no longer flagged as key exposure. This coordinator **mandates
+  trust-centre key exchange**, so every device holds a unique verified link key and a rejoin's
+  key re-delivery travels under it — never under the public key. Flagging it scheduled a full
+  rotation after every reboot of an Aqara device (they habitually TC-rejoin at boot), each one
+  then waiting for days on wall-switched bulbs, for no security gain. Real exposure — a pairing
+  window without an install code — still rotates exactly as before. And either way: a pending
+  rotation never needs lights turned on for it; a bulb takes the key within a second of being
+  used naturally, and the network runs safely on the current key until then.
+
 ## [2.10.0] — 2026-09-04
 
 ### Fixed — a restart pauses a key rotation instead of cancelling it

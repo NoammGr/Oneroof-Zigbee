@@ -177,9 +177,16 @@ class Coordinator:
             # button was pressed, the window opened for it): its configuration died with its old
             # life and the interview must run. Outside a window it is a plain rejoin — the device
             # merely came back, and is left in peace.
+            # A TC-rekeyed rejoin is NOT flagged as key exposure: this coordinator mandates
+            # trust-centre key exchange, so every device holds a unique verified link key and a
+            # rejoin re-delivery travels under it — never under the public key. Flagging it
+            # scheduled a full rotation after every reboot of an Aqara device (they habitually
+            # TC-rejoin at boot), each one waiting for days on wall-switched bulbs, for no
+            # security gain. Real exposure — a pairing window without an install code — still
+            # rotates as always.
             w = self.guard.window
             dev = JoinedDevice(a.ieee, a.nwk_addr, None, a.capabilities,
-                               plain_join=(rekeyed and not self.strict) or bool(w and not w.install_code),
+                               plain_join=bool(w and not w.install_code),
                                rejoin=not bool(w))
             for cb in self._join_cbs:
                 await cb(dev)

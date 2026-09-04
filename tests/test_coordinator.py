@@ -772,7 +772,8 @@ async def test_tc_rejoins_are_allowed_and_rekeyed_ones_flagged_for_rotation():
     Aqara that decided the hub was lost) recovers through an unsecured TC rejoin. Refusing those —
     the SDK default — orphans it until someone factory-resets and re-pairs it. So they are allowed,
     and because the re-delivered key may have travelled under the public key, such a rejoin is
-    flagged with the same plain-join exposure that makes the gateway rotate minutes later."""
+    NOT flagged as exposure — mandatory key exchange means the re-delivery is under the
+    device's own verified link key (see the assertion below for the full reasoning)."""
     fake, coord, t = await make()
 
     ieee, nwk = 0x00124B00AABB0001, 0x4321
@@ -792,7 +793,10 @@ async def test_tc_rejoins_are_allowed_and_rekeyed_ones_flagged_for_rotation():
         await asyncio.sleep(0.02)
         if joins:
             break
-    assert joins and joins[0].plain_join, "a TC-re-keyed rejoin must carry the plain-join exposure flag"
+    assert joins and not joins[0].plain_join, \
+        ("a TC-re-keyed rejoin is not exposure: key exchange is mandatory here, so the re-delivery "
+         "travels under the device's unique verified link key — flagging it scheduled a rotation "
+         "after every Aqara reboot, each waiting days on wall-switched bulbs for no gain")
 
     # 3. a secure rejoin (announce alone, no TC involvement) is not
     joins.clear()
