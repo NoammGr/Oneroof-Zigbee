@@ -1306,3 +1306,46 @@ async def test_only_one_interview_runs_per_device(tmp_path):
     assert len(starts) == 1, f"{len(starts)} interviews for one joining device"
     assert gw.registry.get(IEEE).interviewed, "the single interview still completes"
     await t.close()
+
+
+async def test_a_restart_pauses_a_rotation_instead_of_cancelling_it(tmp_path):
+    """An add-on restart tears every task down with the same CancelledError a user cancel uses.
+    A restart is not a decision to stop rotating: the progress must survive (that is the whole
+    point of the pending record), and the audit must say 'paused', not 'cancelled'. Before the
+    distinction, every add-on update quietly cancelled a running rotation and wiped its saved
+    progress — observed live, twice in one evening, at exactly the update times."""
+    from oneroof_zigbee.rotation import KeyRotation
+    from oneroof_zigbee.security import Keystore
+    KeyRotation.MIN_WINDOW_S = 1
+    KeyRotation.RETRY_EVERY_S = 0.2
+    KeyRotation.LOOKUP_TIMEOUT_S = 0.3
+    fake, coord, broker, gw, t = await make(tmp_path)
+    Keystore(tmp_path / "network.keystore").save(coord.secrets)
+    gw.registry.add_or_update(0x00158D0000000001, 0x1234, is_router=True)
+    fake.nwk_to_ieee[0x1234] = 0x00158D0000000001
+    gw.registry.add_or_update(0x00158D0000000007, 0x9999, is_router=True)  # never answers
+    gw.registry.save()
+    events = []
+    coord.audit.subscribe(lambda r: events.append(r))
+    await gw.handle_request("rotate_network_key", {"window_s": 1}, "ui:admin")
+    for _ in range(300):
+        await asyncio.sleep(0.02)
+        if gw.rotation_status()["phase"] == "waiting" and gw.rotation_status()["delivered"]:
+            break
+    for _ in range(40):
+        if Keystore(tmp_path / "network.keystore").load().pending_rotation:
+            break
+        await asyncio.sleep(0.1)
+
+    # the shutdown: the task is cancelled WITHOUT anyone calling cancel()
+    gw._rotation._task.cancel()
+    await asyncio.sleep(0.2)
+
+    assert any(e["type"] == "network_key_rotation_paused" for e in events), \
+        [e["type"] for e in events if "rotation" in e["type"]]
+    assert not any(e["type"] == "network_key_rotation_cancelled" for e in events), \
+        "a restart must not read as a user cancel"
+    pending = Keystore(tmp_path / "network.keystore").load().pending_rotation
+    assert pending is not None, "the saved progress was wiped by the restart"
+    assert pending.get("delivered") == ["0x00158d0000000001"], "…and must still know who has the key"
+    await t.close()

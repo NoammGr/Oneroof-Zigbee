@@ -118,6 +118,7 @@ class KeyRotation:
         self._retry_at: dict[str, float] = {}      # ieee → when this device may be offered the key again
         self._retry_misses: dict[str, int] = {}    # ieee → how many offers it has ignored
         self._dirty = False   # progress to write to the keystore (its KDF is slow: batched, off the event loop)
+        self._user_cancel = False   # a shutdown's CancelledError is a pause, not a decision
 
     @property
     def running(self) -> bool:
@@ -469,6 +470,18 @@ class KeyRotation:
             if st.unreachable:
                 log.warning("after the switch %d router(s) do not answer on the new key: %s", len(st.unreachable), ", ".join(st.unreachable))
         except asyncio.CancelledError:
+            if not self._user_cancel:
+                # An add-on restart tears every task down with the same CancelledError a user
+                # cancel uses. A restart is not a decision to stop rotating: persist where we
+                # stand and let the next start resume — exactly what the progress file is for.
+                # (Before this distinction, every update quietly cancelled a running rotation
+                # and wiped its saved progress.)
+                st.phase = "waiting"
+                await self._persist_progress()
+                self.audit.event("network_key_rotation_paused", by=by, seq=seq, delivered=len(st.delivered),
+                                 missing=sorted({**st.failed, **st.pending}), reason="restart — resumes on next start")
+                raise
+            self._user_cancel = False
             st.phase = "cancelled"
             st.error = "cancelled — the old key stays in force"
             self._clear_pending()
@@ -493,6 +506,7 @@ class KeyRotation:
 
     def cancel(self) -> bool:
         if self.running and self.state.phase in ("delivering", "waiting", "switching"):
+            self._user_cancel = True
             self._task.cancel()  # type: ignore[union-attr]
             return True
         return False

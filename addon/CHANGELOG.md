@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.10.0] — 2026-09-04
+
+### Fixed — a restart pauses a key rotation instead of cancelling it
+- An add-on restart tears every task down with the same signal a user cancel uses, and the
+  rotation treated them identically: every update quietly **cancelled** a running rotation and
+  wiped its saved progress — observed live, twice in one evening, at exactly the update times.
+  A restart now pauses instead: progress is persisted, the audit says
+  ``network_key_rotation_paused (restart — resumes on next start)``, and the next start resumes
+  where it left off, exactly as the pending record was always meant to work. A user's cancel
+  still cancels, keeps the current key, and clears the record.
+
 ## [2.9.1] — 2026-09-03
 
 ### Changed
