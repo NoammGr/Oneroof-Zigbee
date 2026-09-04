@@ -417,3 +417,28 @@ async def test_api_notify_control_gating(ui_notify):
     st, _, _ = await http(server.port, "DELETE", "/api/notify/token", {})
     assert st == 403
     assert n.settings["enabled"] is False
+
+
+async def test_the_same_worry_reaches_the_phone_once_per_window(tmp_path):
+    """A wall-switched bulb 'goes silent' every evening; a marginal plug drops hourly. The audit
+    records every event — the phone hears each (kind, device) once per cooldown window, other
+    devices and other kinds unaffected."""
+    clock = Clock()
+    n, audit, egress = make(tmp_path, enabled=True, clock=clock)
+    silent = {"type": "device_anomaly", "ieee": IEEE_A, "kind": "went_silent",
+              "silent_s": 1800, "typical_s": 9, "level": "event"}
+
+    n.on_audit(dict(silent))
+    assert len(n._pending) + len(n._urgent) == 1, "the first alert goes out"
+
+    clock.t += 3600                                   # an hour later, same device, same story
+    n.on_audit(dict(silent))
+    assert len(n._pending) + len(n._urgent) == 1, "the repeat within the window is kept off the phone"
+
+    n.on_audit({**silent, "ieee": "0x0000000000000002"})  # a different device is its own story
+    n.on_audit({**silent, "kind": "sequence_jump"})   # a different kind of worry too
+    assert len(n._pending) + len(n._urgent) == 3
+
+    clock.t += 6 * 3600 + 1                           # the window passes — the reminder is fair
+    n.on_audit(dict(silent))
+    assert len(n._pending) + len(n._urgent) == 4

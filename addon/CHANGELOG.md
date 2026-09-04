@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.11.0] — 2026-09-04
+
+### Changed — the same worry reaches your phone once, not hourly
+- Recurring per-device notifications (a device going silent, an anomaly repeating) are now sent
+  **at most once per 6 hours per device and kind**. A wall-switched bulb that "goes silent" every
+  evening, or a marginal plug that drops hourly, told you nothing new after the first message —
+  and trained you to ignore the channel that also carries real alerts. The audit still records
+  every single event; only the phone is spared the repeats. A different device, or a different
+  kind of problem on the same device, is always its own message.
+
 ## [2.10.2] — 2026-09-04
 
 ### Fixed

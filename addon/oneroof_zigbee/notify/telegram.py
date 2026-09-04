@@ -52,6 +52,12 @@ CATEGORIES: dict[str, str] = {
 }
 IMMEDIATE = {"security", "anomalies"}
 
+# The same recurring worry about the same device tells you nothing new after the first time:
+# a wall-switched bulb "goes silent" every evening, a marginal plug drops out hourly. The audit
+# records every event; the phone hears each (type, kind, device) at most once per this window.
+REPEAT_COOLDOWN_S = 6 * 3600
+_REPEATING = {"device_anomaly", "device_offline", "device_online"}
+
 DEFAULT_SETTINGS: dict[str, Any] = {
     "enabled": False,
     "categories": {"join_window": True, "devices": True, "security": True, "anomalies": True, "health": False, "liveness": True},
@@ -334,6 +340,7 @@ class TelegramNotifier:
         self._kick: asyncio.Event | None = None
         self._lock = asyncio.Lock()
         self._subscribed = False
+        self._last_repeat: dict[tuple[str, str, str], float] = {}   # (type, kind, ieee) -> last notified
         self._sync_egress()
 
     # -- lifecycle ---------------------------------------------------------
@@ -408,6 +415,16 @@ class TelegramNotifier:
         mapped = describe(rec, self.resolve, bool(self.settings["include_addresses"]))
         if mapped is None:
             return
+        if rec.get("type") in _REPEATING:
+            key = (str(rec.get("type")), str(rec.get("kind", "")), str(rec.get("ieee", "")))
+            now = self.clock()
+            last = self._last_repeat.get(key)
+            if last is not None and now - last < REPEAT_COOLDOWN_S:
+                return   # the audit has it; the phone heard it recently
+            self._last_repeat[key] = now
+            if len(self._last_repeat) > 512:   # bounded: forget the oldest
+                for k in sorted(self._last_repeat, key=self._last_repeat.get)[:128]:
+                    del self._last_repeat[k]
         cat, text = mapped
         if not self.settings["categories"].get(cat, False):
             return
