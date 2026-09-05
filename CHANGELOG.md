@@ -1,5 +1,25 @@
 # Changelog
 
+## [2.11.1] — 2026-09-05
+
+### Added — the One Roof router is recognised as ours
+- A stick running the **One Roof router firmware** (the range extender built from the coordinator
+  repo) now shows up as **One Roof Router** by One Roof, with a description of what it does, instead
+  of "Unknown device" with a blank identity. Its About panel fills in the model, build, date code and
+  ZCL / app / stack versions the firmware reports.
+- **Transmit power** control on the router (−20 … 20 dBm, 9 by default, up to 20 with the stick's
+  amplifier) — the same Basic-cluster attribute the firmware persists across power cycles. It is read
+  once at interview so the panel shows the real value, and appears in Home Assistant as a number
+  entity. Identify blinks the router's green LED for the time you ask.
+- No on/off, brightness or colour controls are offered for it — a relay has nothing to switch.
+
+### Fixed — a relay's link quality no longer reads "—" for a quarter hour after a restart
+- The restart refresh asks devices about their switch, light, cover and thermostat state — a pure
+  relay has none of those, so it was asked nothing yet marked "seen", which also pushed the
+  silent-router poll out 15 minutes. It is now asked for what the model table knows about it
+  (the router's transmit power) or, failing that, its name, so link quality and last-seen are real
+  from the first minute; a device that answers nothing is no longer stamped as seen.
+
 ## [2.11.0] — 2026-09-04
 
 ### Changed — the same worry reaches your phone once, not hourly

@@ -289,18 +289,35 @@ class Gateway:
         across our restarts and its own power cuts; the gateway must not carry a remembered one
         around as if it were true."""
         changed = False
+        heard = False
+        extra = quirks.extra_reads(dev)  # what the model table holds on this device (a router's radio power)
         for ep in dev.endpoints.values():
-            for cluster in self._REFRESH_CLUSTERS:
-                attrs = _READ_ON_JOIN.get(cluster) if cluster in ep.in_clusters else None
+            for cluster in sorted(set(self._REFRESH_CLUSTERS) | set(extra)):
+                if cluster not in ep.in_clusters:
+                    continue
+                attrs = list(_READ_ON_JOIN.get(cluster, ()) if cluster in self._REFRESH_CLUSTERS else ()) + \
+                    [a for a in extra.get(cluster, ()) if a not in _READ_ON_JOIN.get(cluster, ())]
                 if not attrs:
                     continue
                 try:
-                    state = await self.read_attributes(dev, ep.id, cluster, list(attrs))
+                    state = await self.read_attributes(dev, ep.id, cluster, attrs)
                 except (ZnpError, asyncio.TimeoutError):
                     return changed  # asleep or gone: leave the rest alone
+                heard = True
                 if state and self._apply_changes(dev, quirks.translate_state(dev, ep.id, state)):
                     changed = True
-        if changed or dev.endpoints:
+        if not heard and dev.endpoints:
+            # Nothing above applies to it (a pure relay, a device that only measures): ask for its
+            # name so it has been heard once - that is what the link-quality figure and the
+            # silent-router poll go by. Left alone, a restart would show "—" for a quarter hour.
+            ep = dev.primary_endpoint()
+            if ep is not None and 0x0000 in ep.in_clusters:
+                try:
+                    await self.read_attributes(dev, ep.id, 0x0000, [0x0004])
+                    heard = True
+                except (ZnpError, asyncio.TimeoutError):
+                    return changed
+        if heard:
             dev.last_seen = time.time()
             if not dev.available:
                 dev.available = True

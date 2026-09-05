@@ -1069,6 +1069,43 @@ async def test_state_is_fetched_from_the_device_after_a_restart(tmp_path):
     await t.close()
 
 
+async def test_a_pure_relay_is_heard_after_a_restart(tmp_path):
+    """A router with nothing to switch (the One Roof router) has none of the state clusters the
+    restart refresh asks about. It must still be asked something - its model-table attribute and
+    its name - so it has been heard: that is what link quality and last-seen go by. And a device
+    that answered nothing must not be stamped as seen."""
+    from oneroof_zigbee.devices import Endpoint
+    fake, coord, broker, gw, t = await make(tmp_path)
+    dev = gw.registry.add_or_update(IEEE + 52, NWK + 52, is_router=True, manufacturer="One Roof", model="oneroof.router")
+    dev.endpoints[8] = Endpoint(8, 0x0104, 0x0008, [0x0000, 0x0003], [], "unknown")
+    dev.last_seen = 0.0
+    asked = []
+
+    async def answer(d, ep, cluster, attrs):
+        asked.append((ep, cluster, tuple(attrs)))
+        return {"transmit_power": 9} if 0x1337 in attrs else {}
+
+    gw.read_attributes = answer
+    await gw._refresh_state(dev)
+    assert (8, 0x0000, (0x1337,)) in asked, asked
+    assert dev.last_seen > 0 and dev.state.get("transmit_power") == 9
+
+    silent = gw.registry.add_or_update(IEEE + 53, NWK + 53, is_router=True)
+    silent.endpoints[1] = Endpoint(1, 0x0104, 0x0100, [0x0000, 0x0003], [], "unknown")
+    silent.last_seen = 0.0
+    asked.clear()
+
+    async def nobody_home(d, ep, cluster, attrs):
+        asked.append((ep, cluster, tuple(attrs)))
+        raise asyncio.TimeoutError
+
+    gw.read_attributes = nobody_home
+    await gw._refresh_state(silent)
+    assert asked == [(1, 0x0000, (0x0004,))], "an unknown relay is asked for its name"
+    assert silent.last_seen == 0.0, "not heard = not seen"
+    await t.close()
+
+
 def _outgoing_zcl(fake, cluster):
     """Every ZCL frame the gateway sent to a device on one cluster."""
     out = []

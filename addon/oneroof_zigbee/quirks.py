@@ -580,6 +580,16 @@ QUIRKS: tuple[Quirk, ...] = (
        ),
        reporting={_IRB: ((0x0003, DataType.string, 1, 3600, None),)},
        read_on_join={_IRB: (0x0002, 0x0003, 0x0004, 0x0005, 0x0006, 0x0007, 0x0008)}),
+    # One Roof router: our own CC2652P range extender (the coordinator firmware repo, TARGET=router). A pure relay —
+    # one endpoint (8) with Basic + Identify; Basic 0x1337 is the radio's transmit power, readable and writable,
+    # persisted on the stick. Identify blinks its green LED.
+    _q("One Roof", "One Roof Router", "unknown", "One Roof", "oneroof.router",
+       description="Range extender: relays traffic for the devices around it and gives them a nearby parent. Nothing to switch — only its radio power and Identify",
+       remove=("state", "power_on_behavior", "countdown", "brightness", "color_temp", "color"),
+       private_attrs={0x0000: (PrivateAttr(0x1337, "transmit_power", DataType.int8),)},
+       read_on_join={0x0000: (0x1337,)},
+       add=(_f("transmit_power", "Transmit power", "Radio transmit power in dBm — 9 by default, up to 20 with the stick's amplifier. Saved on the stick across power cycles",
+               "numeric", "rw", icon="signal", category="config", endpoint=8, cluster=0x0000, min=-20, max=20, step=1, unit="dBm"),)),
     _q("Aurora", "Smart plug", "plug", "Aurora", ("AU-A1ZBPIAB", "SmartPlug51AU", "SingleSocket50AU", "AU-A1ZBPIA")),
     _q("Aurora", "Contact sensor", "sensor", "Aurora", ("AU-A1ZBDWS", "DoorSensor51AU", "WindowSensor51AU"), remove=_SENSOR_CONTROLS),
     _q("Aurora", "Remote", "remote", "Aurora", ("AU-A1ZBRC", "WallRemote50AU", "Remote50AU", "AU-A1ZBR2GW", "AU-A1ZB2WDM"), remove=_SENSOR_CONTROLS, add=(_battery(), _action(_GENERIC_REMOTE))),

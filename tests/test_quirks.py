@@ -774,6 +774,47 @@ def test_irblaster_private_attribute_encoding_types_and_limits():
     assert quirks.extra_reporting(dev) == {0xFC00: ((0x0003, DataType.string, 1, 3600, None),)}
 
 
+def oneroof_router() -> Device:
+    # the One Roof router firmware: one endpoint (8), Basic + Identify only, mains, router
+    return mk("One Roof", "oneroof.router", {8: ([0x0000, 0x0003], [], 0x0008)}, power="mains", router=True, ieee=0x00124B00AABB0008)
+
+
+def test_oneroof_router_is_ours_not_an_unknown_device():
+    dev = oneroof_router()
+    info = quirks.describe(dev)
+    assert (info.kind, info.vendor, info.category) == ("One Roof Router", "One Roof", "unknown")
+    assert info.description.startswith("Range extender")
+    f = keys(dev)
+    assert set(f) == {"identify", "linkquality", "transmit_power"}
+    tp = f["transmit_power"]
+    assert (tp["endpoint"], tp["cluster"], tp["access"], tp["min"], tp["max"], tp["unit"], tp["category"]) == (8, 0x0000, "rw", -20, 20, "dBm", "config")
+    from oneroof_zigbee.zcl.types import DataType
+    assert quirks.encode_private_attribute(dev, 0x0000, "transmit_power", 20) == (0x1337, DataType.int8, 20)
+    assert quirks.extra_reads(dev) == {0x0000: (0x1337,)}
+    # the read at interview decodes through the model table; the standard Basic attributes still decode normally
+    state, used = quirks.decode_vendor_attributes(dev, 8, 0x0000, [(0x1337, 0x28, 9, None), (0x4000, 0x42, "20260905", None)])
+    assert state == {"transmit_power": 9} and used == {0x1337}
+    disc = ha(dev)
+    assert disc["transmit_power"][0] == "number" and disc["transmit_power"][1]["min"] == -20 and disc["transmit_power"][1]["max"] == 20
+    assert "switch" not in disc and "light" not in disc
+
+
+async def test_gateway_oneroof_router_transmit_power_writes_basic_0x1337_on_ep8(tmp_path):
+    fake, broker, gw, dev, t = await _gateway_with(tmp_path, oneroof_router)
+    writes: list[tuple[int, int, int, int, object]] = []
+
+    async def fake_write(d, ep, cluster, attr, dtype, value):
+        writes.append((ep, cluster, attr, int(dtype), value))
+
+    gw._write_attr = fake_write
+    await broker.inject(f"oneroof/zigbee/{dev.ieee_str}/set", b'{"transmit_power": 20}')
+    assert writes == [(8, 0x0000, 0x1337, 0x28, 20)]
+    state = json.loads(broker.last(f"oneroof/zigbee/{dev.ieee_str}/state"))
+    assert state["transmit_power"] == 20
+    assert json.loads(broker.last("oneroof/zigbee/bridge/devices"))[0]["kind"] == "One Roof Router"
+    await t.close()
+
+
 async def test_gateway_irblaster_commands_write_the_right_attributes(tmp_path):
     fake, broker, gw, dev, t = await _gateway_with(tmp_path, irblaster)
     writes: list[tuple[int, int, int, int, object]] = []

@@ -187,3 +187,11 @@ def test_the_mqtt_service_registration_survives_our_own_restart():
     assert "unregister_mqtt_service()" not in tail, "the service must not be withdrawn on exit"
     announce = src[src.index("def announce_service"):src.index("def announce_service") + 500]
     assert "unregister_mqtt_service()" in announce, "an external broker does withdraw it"
+
+
+def test_changelog_shown_by_home_assistant_matches_the_repository_one():
+    """Home Assistant renders addon/CHANGELOG.md on the Update page; the repository root carries
+    the copy people read on GitHub. They must be the same file, entry for entry."""
+    root = RUN_PY.parent.parent / "CHANGELOG.md"
+    shown = RUN_PY.parent / "CHANGELOG.md"
+    assert shown.read_text() == root.read_text(), "copy CHANGELOG.md to addon/CHANGELOG.md"
