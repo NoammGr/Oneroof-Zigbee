@@ -13,7 +13,7 @@ import struct
 import pytest
 
 from oneroof_zigbee import quirks
-from oneroof_zigbee.devices import Device, Endpoint
+from oneroof_zigbee.devices import Device, Endpoint, ieee_str
 from oneroof_zigbee.features import features_for, generic_features
 from oneroof_zigbee.ha.discovery import discovery_messages
 from oneroof_zigbee.zcl import vendor as vz
@@ -237,6 +237,30 @@ def test_native_layout_object_ids_and_to_json():
     assert j["kind"] == "Contact sensor" and j["vendor"] == "Aqara" and j["category"] == "sensor"
     back = Device.from_json(j)
     assert back.model == "lumi.sensor_magnet.aq2" and back.kind == "Contact sensor"
+
+
+def test_entity_id_proposed_to_ha_follows_the_panel_name():
+    """The object_id in a discovery message is what Home Assistant turns into the entity id the
+    first time it creates the entity. An unnamed device (still called by its address) is therefore
+    offered as binary_sensor.0x..._contact; one named in the panel first gets the friendly id.
+    The unique_id never moves with the name - that is what makes HA keep the entity (and its old
+    id) across a later rename instead of creating a second one."""
+    ieee = 0x00158D00000000D3
+    dev = Device(ieee=ieee, nwk=NWK, friendly_name=ieee_str(ieee), manufacturer="LUMI", model="lumi.sensor_magnet.aq2")
+    dev.endpoints[1] = Endpoint(1, 0x0104, LUMI_SENSOR_EP[2], list(LUMI_SENSOR_EP[0]), list(LUMI_SENSOR_EP[1]))
+    unnamed = ha(dev, legacy=False)["contact"][1]
+    assert unnamed["object_id"] == "0x00158d00000000d3_contact", "the address is the only name the gateway knows"
+    assert unnamed["device"]["name"] == "0x00158d00000000d3"
+    assert unnamed["device_class"] == "door"
+
+    dev.friendly_name = "Back door"
+    named = ha(dev, legacy=False)["contact"][1]
+    assert named["object_id"] == "Back door_contact", "HA slugifies this to binary_sensor.back_door_contact"
+    assert named["device"]["name"] == "Back door"
+    assert named["unique_id"] == unnamed["unique_id"] == f"oneroof_zigbee_{ieee_str(ieee)}_contact"
+
+    # the compatibility layout proposes no object_id at all: HA derives the id from the names
+    assert "object_id" not in ha(dev, legacy=True)["contact"][1]
 
 
 def test_contact_template_is_inverted_for_ha_door_class():

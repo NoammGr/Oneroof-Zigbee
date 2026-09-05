@@ -176,6 +176,12 @@ async def test_03_pair_plug_interview_discovery_state(stack):
     assert dev.model == "TS011F" and dev.manufacturer == "_TZ3000_ko6v90pg" and dev.sw_build == "1.0.0"
     assert dev.endpoints[1].category == "plug"
     ieee = dev.ieee_str
+    # a nameless device is kept from Home Assistant until it is named - HA would keep the
+    # address as the entity id for good
+    await asyncio.sleep(0.3)
+    assert f"homeassistant/switch/{ieee}/switch/config" not in s.got
+    st, _ = await api(s, "POST", f"/api/devices/{ieee}/rename", {"friendly_name": "Plug"})
+    assert st == 200
     # HA discovery: switch + power/energy sensors, with availability + device block
     await wait_for(lambda: f"homeassistant/switch/{ieee}/switch/config" in s.got)
     sw = json.loads(s.got[f"homeassistant/switch/{ieee}/switch/config"])
@@ -215,7 +221,8 @@ async def test_04_pair_sensor_with_install_code(stack):
     await wait_for(lambda: "battery" in json.loads(s.got.get(f"{BASE}/{dev.ieee_str}/state", b"{}")))
     state = json.loads(s.got[f"{BASE}/{dev.ieee_str}/state"])
     assert state["temperature"] == 21.35 and state["humidity"] == 45.12 and state["battery"] == 90
-    assert f"homeassistant/sensor/{dev.ieee_str}/temperature/config" in s.got
+    await api(s, "POST", f"/api/devices/{dev.ieee_str}/rename", {"friendly_name": "Bedroom climate"})
+    await wait_for(lambda: f"homeassistant/sensor/{dev.ieee_str}/temperature/config" in s.got)
     # window auto-closes when the expected device joined? (policy: stays open until timeout) → close it explicitly
     await _gw(s).coord._force_close_join()
     assert s.fake.permit_durations[-1] == 0
@@ -271,6 +278,7 @@ async def test_06_reports_flow_to_mqtt_activity_and_sse(stack):
     dev = await wait_for(lambda: (lambda x: x if x and x.interviewed else None)(_gw(s).registry.get(DOOR_IEEE)), 8)
     assert (0x0500, 0x0010, _gw(s).coord.ieee) in door.written, "CIE address written during enrolment"
     assert any(c == 0x0500 and cmd == 0x00 for c, cmd, _ in door.received_commands), "zone enroll response sent"
+    await api(s, "POST", f"/api/devices/{dev.ieee_str}/rename", {"friendly_name": "Back door"})
     await wait_for(lambda: f"homeassistant/binary_sensor/{dev.ieee_str}/contact/config" in s.got)
     s.world.ias_notify(door, 0x0001)  # alarm1 = open
     await wait_for(lambda: json.loads(s.got[f"{BASE}/{dev.ieee_str}/state"]).get("contact") is False)

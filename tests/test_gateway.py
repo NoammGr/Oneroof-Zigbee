@@ -118,8 +118,9 @@ async def test_join_interview_discovery_and_state(tmp_path):
     assert dev.manufacturer == "Acme!" and dev.model == "Bulb-1"
     assert dev.endpoints[1].in_clusters == [0, 6, 8] and dev.endpoints[1].category == "light"
 
-    # discovery published for a dimmable light
+    # discovery published for a dimmable light - once it has a name (a nameless join waits for one)
     cfg_topic = f"homeassistant/light/{dev.ieee_str}/light/config"
+    await gw.handle_request("rename", {"ieee": dev.ieee_str, "friendly_name": "Hall lamp"}, "admin")
     disc = json.loads(broker.last(cfg_topic))
     assert disc["schema"] == "json" and disc["brightness"] is True and disc["command_topic"] == f"oneroof/zigbee/{dev.ieee_str}/set"
     assert disc["unique_id"] == f"oneroof_zigbee_{dev.ieee_str}_light"
@@ -875,6 +876,97 @@ async def test_rename_rejects_topic_breaking_characters(tmp_path):
         with pytest.raises(ValueError):
             gw.registry.rename(IEEE + 9, bad)
     gw.registry.rename(IEEE + 9, "Living room lamp")
+    await t.close()
+
+
+async def _joined_and_interviewed(fake, broker, gw, ieee, nwk):
+    await broker.inject("oneroof/zigbee/bridge/request/permit_join", b'{"seconds": 30}', user="admin")
+    fake.emit_announce(ieee, nwk)
+    for _ in range(100):
+        await asyncio.sleep(0.02)
+        dev = gw.registry.get(ieee)
+        if dev and dev.interviewed:
+            return dev
+    raise AssertionError("the interview did not finish")
+
+
+async def test_a_fresh_join_waits_for_a_name_before_home_assistant_hears_of_it(tmp_path):
+    """Home Assistant builds the entity id from the first name it is given and keeps it for good, so
+    an unnamed device must not reach it as 0x00158d00000000d3_contact. Naming it in the panel
+    publishes it at once, under the friendly name."""
+    fake, coord, broker, gw, t = await make(tmp_path)
+    dev = await _joined_and_interviewed(fake, broker, gw, IEEE, NWK)
+    cfg_topic = f"homeassistant/light/{dev.ieee_str}/light/config"
+    assert broker.last(cfg_topic) is None
+    assert "ha_name_hold" in dev.context
+    assert json.loads(broker.last(f"oneroof/zigbee/{dev.ieee_str}/state"))["state"] == "ON"  # state still flows
+    await gw._on_ha_status("homeassistant/status", b"online")  # HA restarting mid-hold does not leak the address name either
+    assert broker.last(cfg_topic) is None
+
+    await gw.handle_request("rename", {"ieee": dev.ieee_str, "friendly_name": "Hall lamp"}, "admin")
+    disc = json.loads(broker.last(cfg_topic))
+    assert disc["object_id"] == "Hall lamp_light" and disc["device"]["name"] == "Hall lamp"
+    assert "ha_name_hold" not in dev.context
+    await t.close()
+
+
+async def test_a_join_nobody_names_reaches_home_assistant_after_the_grace_period(tmp_path):
+    fake, coord, broker, gw, t = await make(tmp_path)
+    seen = []
+    gw.audit.subscribe(seen.append)
+    dev = await _joined_and_interviewed(fake, broker, gw, IEEE, NWK)
+    cfg_topic = f"homeassistant/light/{dev.ieee_str}/light/config"
+    await gw._release_name_holds()
+    assert broker.last(cfg_topic) is None  # still inside the hold
+    dev.context["ha_name_hold"] = time.time() - gw.HA_NAME_HOLD_S - 1
+    await gw._release_name_holds()
+    disc = json.loads(broker.last(cfg_topic))
+    assert disc["object_id"] == f"{dev.ieee_str}_light"
+    assert "ha_name_hold" not in dev.context
+    assert any(r["type"] == "ha_announced_unnamed" for r in seen)
+    await t.close()
+
+
+async def test_a_known_device_rejoining_is_not_held_back_from_home_assistant(tmp_path):
+    """Only a device Home Assistant has never seen waits for a name: one that was announced
+    before (a re-pair, a power cut rejoin) keeps its entities without a gap."""
+    fake, coord, broker, gw, t = await make(tmp_path)
+    dev = await _joined_and_interviewed(fake, broker, gw, IEEE, NWK)
+    dev.context["ha_name_hold"] = time.time() - gw.HA_NAME_HOLD_S - 1
+    await gw._release_name_holds()
+    cfg_topic = f"homeassistant/light/{dev.ieee_str}/light/config"
+    assert broker.last(cfg_topic) is not None
+    fake.emit_announce(IEEE, NWK)
+    await asyncio.sleep(0.3)
+    assert "ha_name_hold" not in dev.context
+    published_before = len(broker.published)
+    await gw._on_ha_status("homeassistant/status", b"online")
+    assert any(t == cfg_topic for t, _, _ in broker.published[published_before:])
+    await t.close()
+
+
+async def test_rename_in_the_panel_republishes_discovery_under_the_new_name(tmp_path):
+    """A device paired and left at its address is offered to Home Assistant as
+    binary_sensor.0x..._contact. Renaming it in the panel republishes discovery with the friendly
+    object_id and device name and the same unique_id - HA updates the name but, by its own rules,
+    keeps the entity id it created first; the id is renamed in HA, not here."""
+    import json as _json
+    from oneroof_zigbee.devices import Endpoint
+    fake, coord, broker, gw, t = await make(tmp_path)
+    ieee = 0x00158D00000000D3
+    dev = gw.registry.add_or_update(ieee, NWK + 21, manufacturer="LUMI", model="lumi.sensor_magnet.aq2")
+    dev.endpoints[1] = Endpoint(1, 0x0104, 0x5F01, [0, 3, 0xFFFF, 0x19], [0, 4, 3, 6, 8, 5], "sensor")
+    dev.interviewed = True
+    await gw._announce(dev)
+    topic = f"homeassistant/binary_sensor/{dev.ieee_str}/contact/config"
+    before = _json.loads(broker.last(topic))
+    assert before["object_id"] == "0x00158d00000000d3_contact" and before["device"]["name"] == "0x00158d00000000d3"
+
+    await gw.handle_request("rename", {"ieee": dev.ieee_str, "friendly_name": "Back door"}, "admin")
+    after = _json.loads(broker.last(topic))
+    assert after["object_id"] == "Back door_contact" and after["device"]["name"] == "Back door"
+    assert after["unique_id"] == before["unique_id"], "same entity to HA, so its existing id survives"
+    assert after["state_topic"] == before["state_topic"] == f"oneroof/zigbee/{dev.ieee_str}/state", "topics are by address: a rename moves nothing"
     await t.close()
 
 

@@ -1,5 +1,22 @@
 # Changelog
 
+## [2.12.0] — 2026-09-05
+
+### Changed — a new device reaches Home Assistant with its real name, not its address
+- Home Assistant builds an entity id from the **first** name it hears for a device and keeps it for
+  good — so a contact sensor paired before it was named lived on as
+  `binary_sensor.0x00158d00000000d3_contact` even after it became "Back door" everywhere else. A
+  device that pairs while still called by its address is now kept out of Home Assistant until you
+  name it in the panel; the moment you do, it appears there as `binary_sensor.back_door_contact`.
+  Its state, link quality and the panel itself are not held back — only the Home Assistant
+  announcement. Its device page shows **name it to add to Home Assistant** while it waits.
+- Nothing is hidden for good: a device nobody names goes to Home Assistant under its address after
+  10 minutes, with an audit note, exactly as before. Devices Home Assistant already knows — a
+  re-pair, a rejoin after a power cut, an imported network — are not held; their entities stay put.
+- The tests now pin the whole path: the entity id proposed to Home Assistant follows the panel name,
+  a rename re-announces under the new name with the same unique id and topics, and a fresh join
+  waits for its name.
+
 ## [2.11.1] — 2026-09-05
 
 ### Added — the One Roof router is recognised as ours

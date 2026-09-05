@@ -253,6 +253,9 @@ class Gateway:
             log.debug("profiles.json not saved", exc_info=True)
 
     ROUTER_POLL_AFTER_S = 900  # a mains device silent this long is asked for one attribute
+    # A device that joins still called by its address is kept out of Home Assistant this long, or
+    # until it is named: HA turns the first name it sees into the entity id and never changes it.
+    HA_NAME_HOLD_S = 600
     # A device whose firmware refused to configure reporting cannot announce a physical press.
     # Ask it often enough that its tile still follows the wall switch within about a minute.
     UNREPORTED_POLL_AFTER_S = 60
@@ -275,6 +278,7 @@ class Gateway:
                         await self._publish_availability(dev, False)
                 self._save_profiles()
                 await self._poll_silent_routers()  # cheap: it only acts on devices past their own interval
+                await self._release_name_holds()
                 if tick % 5 == 0:
                     await self.coord.refresh_frame_counter()
                     self._maybe_scheduled_rotation()
@@ -438,6 +442,11 @@ class Gateway:
                                           rx_on_when_idle=bool(j.capabilities & 0x08))
         dev.available = True
         dev.last_seen = time.time()
+        if dev.friendly_name == dev.ieee_str and "discovery_topics" not in dev.context:
+            # New to Home Assistant and nameless: wait for a name before it is announced there,
+            # so the entity id HA creates once - from the first name it sees - is the friendly one
+            # (binary_sensor.back_door_contact, not binary_sensor.0x00158d00000000d3_contact).
+            dev.context["ha_name_hold"] = time.time()
         await self._publish_availability(dev, True)
         self._emit_device_event("joined", dev)
         if self._rotation is not None and self._rotation.running:
@@ -1305,8 +1314,32 @@ class Gateway:
         ("sensor", "power"), ("sensor", "energy"), ("sensor", "current"), ("lock", "child_lock"), ("select", "indicator_mode"),
     )
 
+    def _holding_for_name(self, dev: Device) -> bool:
+        """Still waiting for the owner to name a freshly joined device before Home Assistant hears
+        of it. The hold ends when it is named, or after HA_NAME_HOLD_S with the address as name."""
+        since = dev.context.get("ha_name_hold")
+        if since is None:
+            return False
+        if dev.friendly_name != dev.ieee_str or time.time() - float(since) >= self.HA_NAME_HOLD_S:
+            dev.context.pop("ha_name_hold", None)
+            return False
+        return True
+
+    async def _release_name_holds(self) -> None:
+        """Devices nobody named within the hold go to Home Assistant anyway, under their address."""
+        for dev in self.registry.all():
+            if "ha_name_hold" in dev.context and not self._holding_for_name(dev) and dev.interviewed:
+                self.audit.event("ha_announced_unnamed", ieee=dev.ieee_str,
+                                 hint="name it in the panel, then rename the entity ids in Home Assistant")
+                await self._announce(dev)
+                await self._publish_state(dev)
+
     async def _announce(self, dev: Device) -> None:
         if not self.cfg.homeassistant.discovery:
+            return
+        if self._holding_for_name(dev):
+            log.info("%s: not announced to Home Assistant yet - waiting for a name (up to %d min)",
+                     dev.ieee_str, self.HA_NAME_HOLD_S // 60)
             return
         msgs = discovery_messages(dev, self.base, self.cfg.homeassistant.discovery_prefix, legacy=self.legacy)
         current = {t for t, _ in msgs}

@@ -858,7 +858,8 @@ views.device={
       el('span',{class:'badge',text:d.is_router?'Router':'End device'}),
       el('span',{class:'badge'},svg(/batt/i.test(d.power_source||'')?'battery':'bolt'),powerLabel(d.power_source)),
       d.interviewed?el('span',{class:'badge ok',text:'✓ interviewed'}):el('span',{class:(d.model&&d.interview_error)?'badge':'badge danger',title:d.interview_error||'',text:d.interview_error?((d.model?'descriptors not read yet':'interview failed')+' · retried when the device is awake'):'not interviewed'}),
-      el('span',{class:'badge'+(d.available?' ok':'')},el('i',{class:'dot'+(d.available?' on':'')}),d.available?'online':'offline'));
+      el('span',{class:'badge'+(d.available?' ok':'')},el('i',{class:'dot'+(d.available?' on':'')}),d.available?'online':'offline'),
+      d.awaiting_name?el('span',{class:'badge warn',title:'Home Assistant keeps the first name it sees as the entity id for good. Click the name above to give this device its real name and it appears in Home Assistant right away; unnamed, it goes there under its address after 10 minutes.',text:'name it to add to Home Assistant'}):null);
     const acts=el('div',{class:'acts'},
       el('button',{class:'btn',onclick:async()=>{try{await api(dpath(d,'/identify'),{});toast('Identify sent');}catch(e){toast(e.message,true);}}},svg('sun'),'Identify'),
       el('button',{class:'btn',onclick:async()=>{try{await api(dpath(d,'/interview'),{});toast('Interview started');}catch(e){toast(e.message,true);}}},svg('arrows'),'Re-interview'),

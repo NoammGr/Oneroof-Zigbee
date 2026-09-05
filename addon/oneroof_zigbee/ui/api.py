@@ -193,7 +193,7 @@ class UiApi:
             "joined_at": d.joined_at, "nwk": f"{d.nwk:#06x}", "nwk_decimal": d.nwk,
             "endpoints": {str(e.id): {"category": e.category, "in_clusters": e.in_clusters, "out_clusters": e.out_clusters}
                           for e in d.endpoints.values()},
-            "state": d.state,
+            "state": d.state, "awaiting_name": "ha_name_hold" in d.context,
         }
         if not detail:
             return out

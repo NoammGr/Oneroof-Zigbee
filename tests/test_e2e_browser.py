@@ -253,6 +253,7 @@ async def test_b07_datapoints_tab_teaches_a_tuya_model(stack, browser):  # noqa:
         d = s.world.add(SimDevice(ieee, nwk, "_TZE200_browserz", "TS0601", [0x0000, 0x0004, 0x0005, 0xEF00], [0x0019], 0x0051, router=False, power_source=3))
         s.world.announce(d)
         await wait_for(lambda: (lambda x: x and x.interviewed)(_gw(s).registry.get(ieee)), 8)
+        await api(s, "POST", f"/api/devices/0x{ieee:016x}/rename", {"friendly_name": "Leak sensor"})
     # one report with an ambiguous layout (1 bool only) → raw dp_1, nothing inferred
     s.world.fake.emit_incoming(nwk, 0xEF00, bytes([0x09, 0x31, 0x02, 0x00, 0x01, 0x01, 0x01, 0x00, 0x01, 0x01]))
     await wait_for(lambda: json.loads(s.got.get(f"{BASE}/0x{ieee:016x}/state", b"{}")).get("dp_1") is True, 5)
