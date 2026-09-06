@@ -95,6 +95,16 @@ class Gateway:
         self._lookup_times: dict[int, float] = {}
         self._locate_task: asyncio.Task[None] | None = None
         self._settled: set[int] = set()  # Tuya devices given their settle read this run
+        self._dirty = False  # a state / last-seen change not yet written to the registry file
+        # When a device last gave evidence of what it IS (an on/off, level or thermostat read or
+        # report) — the silent-router poll goes by this, not by any frame: a plug that reports its
+        # power every ten seconds says nothing about whether someone pressed its button.
+        self._state_evidence: dict[int, float] = {}
+        self._poll_failures: dict[int, int] = {}  # consecutive polls a mains device did not answer
+        self._set_locks: dict[int, asyncio.Lock] = {}  # commands to one device run in order
+        self._poll_not_before: dict[int, float] = {}  # a device already marked offline is asked less often
+        self._refresh_tasks: dict[int, asyncio.Task] = {}  # one pending "ask it what it is" per device
+        self._refresh_task: asyncio.Task | None = None  # the sweep of every device after a (re)start
         self.unknown_devices: dict[int, dict[str, Any]] = {}  # ieee -> what we know about an unregistered device on our network
         self._rotation: Any = None  # KeyRotation, created on first use
         from .monitor import Monitor
@@ -252,7 +262,11 @@ class Gateway:
         except OSError:
             log.debug("profiles.json not saved", exc_info=True)
 
-    ROUTER_POLL_AFTER_S = 900  # a mains device silent this long is asked for one attribute
+    ROUTER_POLL_AFTER_S = 900  # a mains device that has not said what it is for this long is asked
+    # A mains device that fails this many polls in a row is offline until it is heard again: a bulb
+    # cut from power at the wall must not keep showing the last thing it reported.
+    OFFLINE_AFTER_FAILED_POLLS = 2
+    REPORTING_RETRY_S = 600  # a reporting setup that failed (timeout, refused bind) is tried again on contact after this
     # A device that joins still called by its address is kept out of Home Assistant this long, or
     # until it is named: HA turns the first name it sees into the entity id and never changes it.
     HA_NAME_HOLD_S = 600
@@ -275,8 +289,10 @@ class Gateway:
                         # The green badge must tell the truth: silent past its own typical
                         # rhythm means offline until it is heard again.
                         dev.available = False
+                        self._dirty = True
                         await self._publish_availability(dev, False)
                 self._save_profiles()
+                self._save_if_dirty()
                 await self._poll_silent_routers()  # cheap: it only acts on devices past their own interval
                 await self._release_name_holds()
                 if tick % 5 == 0:
@@ -287,12 +303,27 @@ class Gateway:
 
     _REFRESH_CLUSTERS = (0x0006, 0x0008, 0x0102, 0x0201, 0x0202, 0x0300)  # what a device IS, not what it measures
 
+    def _save_if_dirty(self) -> None:
+        """The registry file is what the next start publishes before it can ask anyone: a state
+        or an online/offline change that never reached the file comes back as yesterday's truth."""
+        if not self._dirty:
+            return
+        self._dirty = False
+        try:
+            self.registry.save()
+        except OSError:
+            self._dirty = True
+            log.debug("registry not saved", exc_info=True)
+
+    def _note_state_evidence(self, dev: Device, cluster: int, state: dict[str, Any]) -> None:
+        if state and (cluster in self._REFRESH_CLUSTERS or cluster == vz.TUYA_CLUSTER):
+            self._state_evidence[dev.ieee] = time.time()
+
     async def _refresh_state(self, dev: Device) -> bool:
         """Ask a device what it actually is right now — switched on or off, how bright, which
         setpoint, where the cover sits — and publish the answer. A device keeps its own state
         across our restarts and its own power cuts; the gateway must not carry a remembered one
-        around as if it were true."""
-        changed = False
+        around as if it were true. Returns whether the device answered at all."""
         heard = False
         extra = quirks.extra_reads(dev)  # what the model table holds on this device (a router's radio power)
         for ep in dev.endpoints.values():
@@ -306,10 +337,11 @@ class Gateway:
                 try:
                     state = await self.read_attributes(dev, ep.id, cluster, attrs)
                 except (ZnpError, asyncio.TimeoutError):
-                    return changed  # asleep or gone: leave the rest alone
+                    return heard  # asleep or gone: leave the rest alone
                 heard = True
-                if state and self._apply_changes(dev, quirks.translate_state(dev, ep.id, state)):
-                    changed = True
+                self._note_state_evidence(dev, cluster, state)
+                if state:
+                    self._apply_changes(dev, quirks.translate_state(dev, ep.id, state))
         if not heard and dev.endpoints:
             # Nothing above applies to it (a pure relay, a device that only measures): ask for its
             # name so it has been heard once - that is what the link-quality figure and the
@@ -320,14 +352,38 @@ class Gateway:
                     await self.read_attributes(dev, ep.id, 0x0000, [0x0004])
                     heard = True
                 except (ZnpError, asyncio.TimeoutError):
-                    return changed
+                    return heard
         if heard:
             dev.last_seen = time.time()
+            self._poll_failures.pop(dev.ieee, None)
             if not dev.available:
                 dev.available = True
+                self._dirty = True
                 await self._publish_availability(dev, True)
             await self._publish_state(dev)
-        return changed
+        return heard
+
+    def _schedule_refresh(self, dev: Device, delay: float = 3.0) -> None:
+        """Ask a device what it is in a moment: after it rejoined (a power cut leaves a bulb ON at
+        the wall and OFF in our memory), after a command it may not have carried out, after a
+        toggle whose outcome only the device knows. One pending refresh per device."""
+        if not dev.nwk or not dev.endpoints or dev.ieee in self._refresh_tasks:
+            return
+
+        async def run() -> None:
+            try:
+                await asyncio.sleep(delay)
+                if dev.ieee in self._interview_tasks:
+                    return
+                await self._refresh_state(dev)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - a refresh is best effort
+                log.debug("%s: state refresh failed", dev.ieee_str, exc_info=True)
+            finally:
+                self._refresh_tasks.pop(dev.ieee, None)
+
+        self._refresh_tasks[dev.ieee] = asyncio.get_running_loop().create_task(run(), name=f"refresh-{dev.ieee_str}")
 
     async def _refresh_all_states(self) -> None:
         """After a restart of ours, ask every device that can answer where it stands. Sleepy
@@ -356,36 +412,44 @@ class Gateway:
             return self.UNREPORTED_POLL_AFTER_S
         return self.ROUTER_POLL_AFTER_S
 
+    def _has_state_cluster(self, dev: Device) -> bool:
+        return any(c in ep.in_clusters for ep in dev.endpoints.values() for c in (*self._REFRESH_CLUSTERS, vz.TUYA_CLUSTER))
+
     async def _poll_silent_routers(self) -> None:
-        """Mains devices that do not report by themselves (not yet bound, or models that only answer)
-        are asked for one attribute now and then: keeps last-seen and link quality fresh, feeds the
-        liveness monitor, and their pending binding/reporting setup runs on that contact."""
+        """Mains devices that have not said what they ARE for a while are asked. Not "heard from":
+        a plug that reports its power every ten seconds is heard constantly and says nothing about
+        whether someone pressed its button; a device whose binding failed never says. The poll
+        goes by the last on/off, level, cover, thermostat or colour evidence, reads every endpoint
+        that carries such a cluster (a two-gang switch has two answers), and a device that fails
+        two polls in a row is offline until it is heard again — a bulb cut from power at the wall
+        must not keep showing ON. Their pending binding/reporting setup runs on that contact."""
         now = time.time()
         for dev in self.registry.all():
             if not (dev.is_router or dev.rx_on_when_idle) or not dev.nwk or not dev.endpoints:
                 continue
-            if dev.last_seen and now - dev.last_seen < self._poll_after(dev):
+            if dev.ieee in self._interview_tasks or dev.ieee in self._refresh_tasks:
                 continue
-            if dev.ieee in self._interview_tasks:
+            if now < self._poll_not_before.get(dev.ieee, 0.0):
                 continue
-            # Ask for what this device actually is. A thermostat that cannot report its setpoints
-            # (some firmware refuses: ZCL "unreportable attribute") would otherwise never refresh
-            # its temperature or mode at all, because on/off says nothing about either.
-            ep = next((e for e in dev.endpoints.values() if 0x0201 in e.in_clusters), None)
-            attrs = [0x0000, 0x0011, 0x0012, 0x001C]  # local temperature, both setpoints, system mode
-            cluster = 0x0201
-            if ep is None:
-                ep = next((e for e in dev.endpoints.values() if 0x0006 in e.in_clusters), None) or dev.primary_endpoint()
-                if ep is None:
-                    continue
-                cluster, attrs = (0x0006, [0x0000]) if 0x0006 in ep.in_clusters else (0x0000, [0x0004])
-            try:
-                state = await self.read_attributes(dev, ep.id, cluster, attrs)
-                if state:
-                    self._apply_changes(dev, state)
-                    await self._publish_state(dev)
-            except (ZnpError, asyncio.TimeoutError) as e:
-                log.debug("%s: poll failed (%s)", dev.ieee_str, e)
+            # A device with nothing to switch is asked for its name when silent: that keeps its
+            # last-seen and link quality honest, which is all there is to know about it.
+            since = self._state_evidence.get(dev.ieee, 0.0) if self._has_state_cluster(dev) else (dev.last_seen or 0.0)
+            if since and now - since < self._poll_after(dev):
+                continue
+            heard = await self._refresh_state(dev)
+            if heard:
+                self._poll_not_before.pop(dev.ieee, None)
+            else:
+                n = self._poll_failures[dev.ieee] = self._poll_failures.get(dev.ieee, 0) + 1
+                log.debug("%s: poll %d unanswered", dev.ieee_str, n)
+                if n >= self.OFFLINE_AFTER_FAILED_POLLS:
+                    self._poll_not_before[dev.ieee] = now + 300  # one attempt per five minutes from here on
+                    if dev.available:
+                        dev.available = False
+                        self._dirty = True
+                        await self._publish_availability(dev, False)
+                        self._emit_device_event("offline", dev)
+                        self.audit.event("device_unanswering", ieee=dev.ieee_str, polls=n)
             await asyncio.sleep(0.5)
 
     def _load_activity(self) -> None:
@@ -426,7 +490,21 @@ class Gateway:
             t.cancel()
         for t in self._timers.values():
             t.cancel()
+        for t in self._refresh_tasks.values():
+            t.cancel()
+        self._save_if_dirty()
         await self.broker.publish(f"{self.base}/bridge/state", self.topics.bridge_state_payload(False), retain=True)
+
+    async def coordinator_lost(self) -> None:
+        """The radio is gone: nothing we show can be trusted from here on. Say so on bridge/state
+        (Home Assistant marks every device unavailable) rather than keep the last word of each."""
+        await self.broker.publish(f"{self.base}/bridge/state", self.topics.bridge_state_payload(False), retain=True)
+
+    async def coordinator_back(self) -> None:
+        """The radio is back: everything may have happened meanwhile. Go online and ask."""
+        await self.broker.publish(f"{self.base}/bridge/state", self.topics.bridge_state_payload(True), retain=True)
+        if self._refresh_task is None or self._refresh_task.done():
+            self._refresh_task = asyncio.create_task(self._refresh_all_states(), name="state-refresh")
 
     # ------------------------------------------------------------ events --
 
@@ -462,6 +540,10 @@ class Gateway:
         # that was never interviewed is still completed.
         if not (j.rejoin and dev.interviewed):
             self._start_interview(dev)
+        elif dev.is_router or dev.rx_on_when_idle:
+            # It came back from something - most often a power cut - and may well have come back
+            # in another state than it left (a bulb switched at the wall is ON when power returns).
+            self._schedule_refresh(dev)
 
     async def _maybe_rotate_after_join(self, dev: Device) -> None:
         """A device paired without an install code received the network key under the public key,
@@ -674,6 +756,34 @@ class Gateway:
     def _may_bind(policy: tuple[int, ...] | None, cluster: int) -> bool:
         return policy is None or cluster in policy
 
+    @staticmethod
+    def _reporting_to_retry(dev: Device) -> list[tuple[int, int]]:
+        """(endpoint, cluster) pairs whose reporting setup failed for a reason worth retrying: a
+        timeout or a refused bind. A ZCL status from the device ("unreportable attribute") is its
+        final word and is not asked again."""
+        out: list[tuple[int, int]] = []
+        for r in dev.reporting or []:
+            st = str(r.get("status", ""))
+            if (st.startswith("failed") or st.startswith("bind failed")) and (r["endpoint"], r["cluster"]) not in out:
+                out.append((r["endpoint"], r["cluster"]))
+        return out
+
+    async def _retry_reporting(self, dev: Device) -> None:
+        try:
+            policy = quirks.binding_policy(dev)
+            done = 0
+            for ep, cluster in self._reporting_to_retry(dev):
+                if ep not in dev.endpoints or not self._may_bind(policy, cluster):
+                    continue
+                await self._setup_reporting(dev, ep, cluster)
+                done += 1
+            if done:
+                still = self._reporting_to_retry(dev)
+                self.audit.event("reporting_retried", ieee=dev.ieee_str, clusters=done, remaining=len(still))
+                self.registry.save()
+        finally:
+            self._interview_tasks.pop(dev.ieee, None)
+
     async def _tuya_query(self, dev: Device, ep: int) -> None:
         """Ask a Tuya datapoint device to report every datapoint (dataQuery)."""
         try:
@@ -745,7 +855,16 @@ class Gateway:
     async def _setup_reporting(self, dev: Device, ep: int, cluster: int) -> None:
         rows = self._reporting_records(dev, cluster)
         try:
-            await self.coord.bind(dev.nwk, dev.ieee, ep, cluster)
+            bound = await self.coord.bind(dev.nwk, dev.ieee, ep, cluster)
+            if bound != 0:
+                # The device said no (a full binding table, an endpoint that does not bind). It
+                # will never tell us about a physical press: say so, so it is polled instead, and
+                # never call this "ok" - that is how a light shows ON hours after the wall switch.
+                log.info("%s: bind of endpoint %d %s refused by the device (ZDO status %#04x)",
+                         dev.ieee_str, ep, zcl.cluster_name(cluster), bound)
+                for a, _dt, mn, mx, ch in rows:
+                    self._record_reporting(dev, ep, cluster, a, mn, mx, ch, f"bind failed ({bound:#04x})")
+                return
             status = await self._configure_reporting(dev, ep, cluster, rows)
             if status != "ok":
                 # Some firmware refuses a zero minimum interval with a generic failure — Aqara wall
@@ -865,11 +984,14 @@ class Gateway:
             return
         dev.last_seen = time.time()
         dev.lqi = m.lqi
+        self._poll_failures.pop(dev.ieee, None)
+        self._poll_not_before.pop(dev.ieee, None)
         if self._rotation is not None and self._rotation.running:
             self._rotation.device_heard(dev)  # a sleeping device is awake: hand it the new key now
         if not dev.available:
             # Heard from it: it is online, whatever its import/registry state said.
             dev.available = True
+            self._dirty = True
             await self._publish_availability(dev, True)
             self._emit_device_event("online", dev)
         if (str(dev.manufacturer or "").startswith("_TZ") and dev.ieee not in self._settled
@@ -883,6 +1005,13 @@ class Gateway:
                 self._interview_tasks[dev.ieee] = asyncio.create_task(self._post_import_setup(dev), name=f"post-import-{dev.ieee_str}")
             else:
                 self._start_interview(dev)  # no endpoints, or never marked interviewed: learn/confirm now
+        elif (dev.interviewed and dev.endpoints and dev.ieee not in self._interview_tasks
+              and time.time() >= dev.context.get("reporting_retry_at", 0) and self._reporting_to_retry(dev)):
+            # Its reporting setup did not get through last time (it fell asleep mid-interview, the
+            # radio timed out, the bind was refused). It is talking now, so it is listening now:
+            # the only moment a battery device can be configured at all.
+            dev.context["reporting_retry_at"] = time.time() + self.REPORTING_RETRY_S
+            self._interview_tasks[dev.ieee] = asyncio.create_task(self._retry_reporting(dev), name=f"reporting-retry-{dev.ieee_str}")
         # m.secure is the *APS-layer* flag; ordinary ZCL traffic is NWK-encrypted only,
         # so it is informational, not an alert. NWK security is enforced by the firmware.
         try:
@@ -920,6 +1049,7 @@ class Gateway:
             if frame.command in (gc.CMD_REPORT_ATTRIBUTES, gc.CMD_READ_ATTRIBUTES_RSP):
                 decoded = gc.decode_global_command(frame)
                 changed = self._decode_records(dev, m.src_ep, m.cluster, [r for r in decoded.records if getattr(r, "status", 0) == 0])
+                self._note_state_evidence(dev, m.cluster, changed)
                 changed = quirks.translate_state(dev, m.src_ep, changed)
                 if (frame.command == gc.CMD_REPORT_ATTRIBUTES
                         and not frame.disable_default_response and not m.group):
@@ -964,6 +1094,7 @@ class Gateway:
             return
         elif m.cluster == vz.TUYA_CLUSTER and frame.direction == zcl.DIRECTION_SERVER_TO_CLIENT:
             changed = await self._tuya_report(dev, frame)
+            self._note_state_evidence(dev, m.cluster, changed)
             if not frame.disable_default_response:
                 asyncio.create_task(self._default_response(dev, m, frame))
         else:
@@ -1112,6 +1243,8 @@ class Gateway:
             if not changed:
                 return []
         events = dev.record_changes(changed, now)
+        if events:
+            self._dirty = True
         if dev.lqi is not None:
             dev.record_changes({"linkquality": dev.lqi}, now)
         for ev in events:
@@ -1412,14 +1545,29 @@ class Gateway:
             body = json.loads(payload or b"{}")
         except ValueError:
             body = {}
-        if isinstance(body, dict) and "state" in body and dev.primary_endpoint() and 0x0006 in dev.primary_endpoint().in_clusters:
-            try:
-                ep = dev.primary_endpoint().id
-                state = await self.read_attributes(dev, ep, 0x0006, [0x0000])
-                self._apply_changes(dev, quirks.translate_state(dev, ep, state))
-            except (ZnpError, asyncio.TimeoutError):
-                pass
+        if isinstance(body, dict) and "state" in body:
+            await self._read_on_off(dev)
         await self._publish_state(dev)
+
+    async def _read_on_off(self, dev: Device) -> bool:
+        """Ask every switching endpoint whether it is on. A two-gang switch has two answers, and
+        each goes through the model's translation so the second gang's answer lands on state_l2
+        and never overwrites the first's."""
+        heard = False
+        for ep in dev.endpoints.values():
+            if 0x0006 not in ep.in_clusters:
+                continue
+            try:
+                state = await self.read_attributes(dev, ep.id, 0x0006, [0x0000])
+            except (ZnpError, asyncio.TimeoutError):
+                return heard
+            heard = True
+            self._note_state_evidence(dev, 0x0006, state)
+            if state:
+                self._apply_changes(dev, quirks.translate_state(dev, ep.id, state))
+        if heard:
+            dev.last_seen = time.time()
+        return heard
 
     async def apply_command(self, dev: Device, cmd: dict[str, Any]) -> None:
         """Apply a JSON command. Keys are feature keys (``state``, ``state_l2``, ``brightness``, ``child_lock`` …);
@@ -1458,8 +1606,14 @@ class Gateway:
                             k, dev.friendly_name)
                 per_ep.setdefault(forced_ep if forced_ep is not None else ep_obj.id, {})[k] = v
         transition = int(float(cmd.get("transition", 0)) * 10)
-        for ep, body in per_ep.items():
-            await self._apply_command_ep(dev, ep, body, transition)
+        try:
+            for ep, body in per_ep.items():
+                await self._apply_command_ep(dev, ep, body, transition)
+        except Exception:
+            # Part of it may have gone through and part not; whatever was written to the state
+            # in good faith is now a guess. The device knows - ask it.
+            self._schedule_refresh(dev, delay=1.0)
+            raise
         await self._publish_state(dev)
 
     async def _apply_command_ep(self, dev: Device, ep: int, cmd: dict[str, Any], transition: int) -> None:
@@ -1505,6 +1659,12 @@ class Gateway:
                     await send(0x0006, s.lower(), {})
                     if s != "TOGGLE":
                         self._apply_changes(dev, {key_of("state"): s})
+                    else:
+                        self._schedule_refresh(dev, delay=0.5)  # only the device knows which way it went
+                if s == "OFF":
+                    # {"state": "OFF", "brightness": N} (Home Assistant remembers the level it will
+                    # come back at): OFF is the order. A level command here would switch it on again.
+                    cmd = {k: v for k, v in cmd.items() if k != "brightness"}
         if "brightness" in cmd and 0x0008 in ins:
             level = max(0, min(254, int(cmd["brightness"])))
             await send(0x0008, "move_to_level_with_on_off", {"level": level, "transition_time": transition})

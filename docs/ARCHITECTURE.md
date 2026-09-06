@@ -149,3 +149,35 @@ oneroof/zigbee/<ieee>/set                        JSON command
 oneroof/zigbee/<ieee>/availability               online|offline
 homeassistant/<component>/<ieee>_<object>/config   HA discovery (retained)
 ```
+
+## What the gateway says a device *is* (gateway.py)
+
+A published state is a claim about the world, and every consumer (Home Assistant, the Apple Home
+bridge, the Statistics app) repeats it. The rules that keep it honest:
+
+* **Reports are the primary source.** At interview the gateway binds each state cluster to itself
+  and configures reporting. A bind the device refuses (ZDO status) is recorded as
+  `bind failed (0x..)`, never as `ok`; a setup that timed out is recorded as `failed: …`. Both are
+  retried the next time the device talks (that is the only moment a battery device listens), at
+  most every `REPORTING_RETRY_S`. A ZCL refusal (`status 0x8c`, unreportable attribute) is the
+  device's final word and is not retried.
+* **Devices that cannot or do not report are asked.** `_poll_silent_routers` runs each monitor
+  tick and goes by *state evidence* — the last on/off, level, cover, thermostat, colour or Tuya
+  datapoint read or report — not by any frame: a plug reporting power every ten seconds says
+  nothing about its button. Mains devices past `ROUTER_POLL_AFTER_S` (or
+  `UNREPORTED_POLL_AFTER_S` when their reporting is not `ok`) get a full `_refresh_state`: every
+  endpoint, every state cluster, through `quirks.translate_state` so a second gang lands on
+  `state_l2`. Two unanswered polls in a row mark the device offline (`availability` = offline,
+  audit `device_unanswering`); it is then tried every five minutes and comes back the moment it is
+  heard.
+* **Nothing remembered is trusted after a gap.** After our own start, after the serial link comes
+  back (`coordinator_back`), and after a device rejoins (a power cut), every device that can answer
+  is asked (`_refresh_all_states` / `_schedule_refresh`). While the radio is gone `bridge/state` is
+  `offline` — on the built-in broker by the gateway, on an external broker by that broker's last
+  will — so consumers mark everything unavailable rather than show the last word.
+* **Commands are optimistic only where the outcome is certain.** `{"state": "OFF", "brightness": N}`
+  is an off order (the level command would switch the light back on). `TOGGLE` and any command
+  that raised are followed by a read; only the device knows what they left behind.
+* **The registry file follows the truth.** State and availability changes set `_dirty`; the
+  monitor tick and `stop()` write the file, so a restart publishes the last known state and not one
+  from the last incidental save.

@@ -1000,8 +1000,11 @@ def translate_state(dev: Device, ep: int, changed: dict[str, Any], features: lis
     from .features import features_for
     feats = features if features is not None else features_for(dev)
     by_ep_base: dict[tuple[int, str], str] = {}
+    by_base: dict[str, list[str]] = {}
     for f in feats:
         by_ep_base.setdefault((f["endpoint"], f["base"]), f["key"])
+        if f["key"] not in by_base.setdefault(f["base"], []):
+            by_base[f["base"]].append(f["key"])
     out: dict[str, Any] = {}
     for k, v in changed.items():
         if q and q.on_off_as and k == "state" and isinstance(v, str):
@@ -1016,8 +1019,17 @@ def translate_state(dev: Device, ep: int, changed: dict[str, Any], features: lis
             continue
         key = by_ep_base.get((ep, k))
         if key is None and k in ("state", "brightness", "power_on_behavior", "countdown"):
-            # a report from an endpoint we have no feature for (e.g. the shared ep 0xF2): keep the plain key
-            key = k
+            # A report from an endpoint we have no feature for (the shared ep 0xF2, a bulb that
+            # answers on an endpoint its descriptor did not list). One feature of that kind on the
+            # device: it is that one. Several (a multi-gang switch): nobody knows which gang spoke,
+            # and writing it to the plain key would show one gang's answer as the whole device's.
+            keys = by_base.get(k, [])
+            if len(keys) == 1:
+                key = keys[0]
+            elif keys:
+                continue
+            else:
+                key = k
         out[key or k] = v
     if q and q.single_setpoint and "current_cooling_setpoint" in out:
         # both ZCL setpoints mean the same thing here: report them as the one set temperature

@@ -662,3 +662,24 @@ async def test_login_failures_and_lockouts_are_audited(broker: Broker) -> None:
     lock = next(r for r in recs if r["type"] == "auth_lockout")
     assert lock["level"] == "security" and lock["user"] == "ro" and lock["failures"] == 5
     assert all("nope" not in json.dumps(r) for r in recs), "passwords never audited"
+
+
+async def test_external_broker_carries_a_last_will(broker: Broker) -> None:
+    """On an external broker the gateway's death must be announced by the broker itself: without
+    a will, Home Assistant and the Apple Home bridge keep showing every device's last word."""
+    from oneroof_zigbee.mqtt.external import ExternalBroker
+    ext = ExternalBroker(f"mqtt://127.0.0.1:{broker.port}", user="gw", password="gwpw", ca=None, client_id="gw-ext",
+                         will_topic="oz/bridge/state", will_payload=b"offline")
+    await ext.start()
+    watcher = await connect(broker, "ha", "hapw")
+    got = Collector()
+    await watcher.subscribe("oz/bridge/state", got)
+    await ext.publish("oz/bridge/state", b"online", retain=True)
+    assert (await got.wait(1)) == [("oz/bridge/state", b"online")]
+    # the gateway process dies: the socket closes without a DISCONNECT
+    ext._client.reconnect = False
+    ext._client._writer.transport.abort()  # type: ignore[union-attr]
+    msgs = await got.wait(2)
+    assert msgs[-1] == ("oz/bridge/state", b"offline"), msgs
+    assert broker.retained("oz/bridge/state") == b"offline"
+    await watcher.disconnect()

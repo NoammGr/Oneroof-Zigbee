@@ -221,7 +221,11 @@ def test_model_kind_features_and_discovery(case):
             assert payload.get("device_class") == dclass, f"{obj}: device_class {payload.get('device_class')!r}"
         assert payload["unique_id"] == f"{dev.ieee_str}_{obj}_zigbee2mqtt"
         assert payload["device"]["identifiers"] == [f"zigbee2mqtt_{dev.ieee_str}"]
-        assert payload["state_topic"] == "oz/test"
+        if comp == "cover":
+            # the shared payload is not "open"/"closed": a cover goes by its position (or assumes)
+            assert "state_topic" not in payload and payload.get("position_topic", "oz/test") == "oz/test"
+        else:
+            assert payload["state_topic"] == "oz/test"
     # plug-only controls never leak onto sensors/remotes
     if category in ("sensor", "remote"):
         assert not {"switch", "power_on_behavior", "countdown"} & set(disc)
@@ -1135,3 +1139,37 @@ async def test_a_lumi_device_without_the_attribute_still_finishes(tmp_path):
         return []          # the device never answers at all — worst case
     fake.on_data_request = refuse
     await gw._vendor_settle(dev)   # must not raise
+
+
+def test_a_report_from_an_unlisted_endpoint_never_speaks_for_the_whole_device():
+    """Some devices answer on an endpoint their descriptors did not list (Aqara's shared 0xF2).
+    A single-switch device: that is its switch. A two-gang switch: nobody knows which gang spoke,
+    and the old plain-key fallback showed one gang's answer as a "state" of the whole device -
+    which the Apple Home bridge then displayed as the light."""
+    two = mk("_TZ3000_owgcnkrh", "TS0012", {1: ([0x0000, 0x0004, 0x0005, 0x0006], [0x0019], 0x0100),
+                                            2: ([0x0004, 0x0005, 0x0006], [], 0x0100)}, power="mains", router=True)
+    assert quirks.translate_state(two, 0xF2, {"state": "ON"}) == {}, "ambiguous: dropped"
+    assert quirks.translate_state(two, 2, {"state": "ON"}) == {"state_l2": "ON"}, "a listed endpoint maps as before"
+    one = mk("_TZ3000_ko6v90pg", "TS011F", {1: ([0x0000, 0x0006, 0x0B04], [0x0019], 0x0051)}, power="mains", router=True)
+    assert quirks.translate_state(one, 0xF2, {"state": "OFF"}) == {"state": "OFF"}, "one switch: that one"
+    assert quirks.translate_state(one, 0xF2, {"countdown": 5}) == {"countdown": 5}
+
+
+def test_a_second_dimmer_channel_is_a_template_light_in_home_assistant():
+    """A two-channel dimmer publishes state_l2 / brightness_l2 in the shared payload. The JSON
+    light schema only knows "state" and "brightness": under it the second channel showed the
+    first channel's state and switched the first channel. The template schema names the keys."""
+    dev = mk("Acme", "Dimmer-2", {1: ([0x0000, 0x0006, 0x0008], [], 0x0101), 2: ([0x0006, 0x0008], [], 0x0101)},
+             power="mains", router=True)
+    feats = keys(dev)
+    assert {"state_l1", "brightness_l1", "state_l2", "brightness_l2"} <= set(feats), sorted(feats)
+    disc = ha(dev)
+    comp, l2 = disc["light_l2"]
+    assert comp == "light" and l2["schema"] == "template"
+    assert l2["state_template"] == "{{ 'on' if value_json.state_l2 == 'ON' else 'off' }}"
+    assert l2["brightness_template"] == "{{ value_json.brightness_l2 }}"
+    assert l2["command_on_template"].startswith('{"state_l2": "ON"') and '"brightness_l2": {{ brightness }}' in l2["command_on_template"]
+    assert l2["command_off_template"].startswith('{"state_l2": "OFF"')
+    assert l2["state_topic"] == "oz/test"
+    single = mk("Acme", "Bulb", {1: ([0x0000, 0x0006, 0x0008], [], 0x0101)}, power="mains", router=True)
+    assert ha(single)["light"][1]["schema"] == "json", "one channel keeps the JSON schema HA knows best"

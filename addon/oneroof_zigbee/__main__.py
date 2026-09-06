@@ -67,7 +67,10 @@ async def run(cfg: Config, config_path: Path | None = None, *, managed: bool = F
     if cfg.mqtt.external is not None:
         from .mqtt.external import ExternalBroker
         e = cfg.mqtt.external
-        broker = ExternalBroker(e.server, user=e.user, password=e.password, ca=str(e.ca) if e.ca else None, client_id=e.client_id)
+        from .ha import Topics
+        t = Topics(cfg.mqtt.base_topic, cfg.homeassistant.discovery_prefix, cfg.compat.legacy_layout)
+        broker = ExternalBroker(e.server, user=e.user, password=e.password, ca=str(e.ca) if e.ca else None, client_id=e.client_id,
+                                will_topic=f"{cfg.mqtt.base_topic}/bridge/state", will_payload=t.bridge_state_payload(False))
         await broker.start()
         log.warning("using EXTERNAL broker %s — the built-in broker is not running; MQTT control requests are refused "
                     "(use the UI); switch to the built-in TLS broker from Settings when ready", e.server)
@@ -207,6 +210,7 @@ async def run(cfg: Config, config_path: Path | None = None, *, managed: bool = F
         log.error("coordinator serial link closed — reconnecting")
         gw.coordinator_online = False
         audit.security("coordinator_offline", reason="serial link closed")
+        await gw.coordinator_lost()
         await transport.close()
         delay = 2.0
         while not (stop.is_set() or restart.is_set()):
@@ -227,6 +231,7 @@ async def run(cfg: Config, config_path: Path | None = None, *, managed: bool = F
             gw.coordinator_online = True
             audit.event("coordinator_online")
             log.info("coordinator reconnected")
+            await gw.coordinator_back()
             break
         if restart.is_set():
             audit.event("restart_requested")

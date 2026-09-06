@@ -1478,3 +1478,231 @@ async def test_a_restart_pauses_a_rotation_instead_of_cancelling_it(tmp_path):
     assert pending is not None, "the saved progress was wiped by the restart"
     assert pending.get("delivered") == ["0x00158d0000000001"], "…and must still know who has the key"
     await t.close()
+
+
+# --------------------------------------------------------------- the truth about state --
+# A light that shows ON in Apple Home while it is dark in the room. Every path by which the
+# gateway could carry a remembered or guessed state around as if it were true is closed here.
+
+
+def _bulb(gw, ieee, nwk, clusters=(0, 6, 8)):
+    from oneroof_zigbee.devices import Endpoint
+    dev = gw.registry.add_or_update(ieee, nwk, is_router=True)
+    dev.endpoints[1] = Endpoint(1, 0x0104, 0x0100, list(clusters), [], "light")
+    dev.interviewed = True
+    return dev
+
+
+async def test_state_changes_reach_the_registry_file(tmp_path):
+    """The file is what the next start publishes before it can ask anyone. A state that changed
+    after the last incidental save used to come back as yesterday's truth; now a change marks the
+    registry dirty, the monitor tick writes it, and stop() writes it once more."""
+    fake, coord, broker, gw, t = await make(tmp_path)
+    dev = _bulb(gw, IEEE + 61, NWK + 61)
+    gw.registry.save()
+    gw._apply_changes(dev, {"state": "ON"})
+    assert gw._dirty, "a state change is worth writing"
+    gw._save_if_dirty()
+    assert not gw._dirty
+    saved = json.loads((tmp_path / "devices.json").read_text())
+    me = next(d for d in saved["devices"] if d["ieee"] == dev.ieee_str)
+    assert me["state"]["state"] == "ON"
+    gw._apply_changes(dev, {"state": "ON"})
+    assert not gw._dirty, "the same value again is not a change"
+    dev.available = False
+    gw._apply_changes(dev, {"state": "OFF"})
+    await gw.stop()
+    me = next(d for d in json.loads((tmp_path / "devices.json").read_text())["devices"] if d["ieee"] == dev.ieee_str)
+    assert me["state"]["state"] == "OFF" and me["available"] is False, "stop() writes the last word"
+    await t.close()
+
+
+async def test_a_refused_bind_is_never_called_reporting_ok(tmp_path):
+    """The bind is what makes a device report a physical press. A device that refuses it (ZDO
+    status, a full binding table) used to be recorded as reporting "ok" - and then showed the
+    state of its last command for ever. Now the refusal is recorded and the device is polled."""
+    fake, coord, broker, gw, t = await make(tmp_path)
+    dev = _bulb(gw, IEEE + 62, NWK + 62)
+    fake.bind_status = 0x8C
+    await gw._setup_reporting(dev, 1, 0x0006)
+    rec = [r for r in dev.reporting if r["cluster"] == 0x0006]
+    assert rec and rec[0]["status"] == "bind failed (0x8c)", rec
+    assert not dev.bindings if hasattr(dev, "bindings") else True
+    assert gw._poll_after(dev) == gw.UNREPORTED_POLL_AFTER_S, "asked every minute instead"
+    assert gw._reporting_to_retry(dev) == [(1, 0x0006)], "and tried again when it next talks"
+    fake.bind_status = 0x00
+    await t.close()
+
+
+async def test_failed_reporting_setup_is_retried_when_the_device_talks(tmp_path):
+    """A device that fell asleep or dropped a frame during its interview never got its reporting
+    configured, and nothing retried it: it kept its old state until someone restarted the
+    gateway. The moment it talks it is listening, so that is when it is tried again."""
+    fake, coord, broker, gw, t = await make(tmp_path)
+    dev = _bulb(gw, IEEE + 63, NWK + 63)
+    dev.reporting = [{"endpoint": 1, "cluster": 0x0006, "attribute": 0, "status": "failed: timeout"}]
+    fake.emit_incoming(NWK + 63, 0x0006, bytes([0x18, 0x33, 0x0A, 0x00, 0x00, 0x10, 0x01]))
+    for _ in range(100):
+        await asyncio.sleep(0.02)
+        if dev.ieee not in gw._interview_tasks and dev.context.get("reporting_retry_at"):
+            break
+    rec = [r for r in dev.reporting if r["cluster"] == 0x0006]
+    assert rec and rec[0]["status"] == "ok", rec
+    assert dev.context["reporting_retry_at"] > time.time() + 60, "the next attempt waits a while"
+    # a ZCL refusal is the device's final word: not retried
+    dev.reporting = [{"endpoint": 1, "cluster": 0x0006, "attribute": 0, "status": "status 0x8c"}]
+    assert gw._reporting_to_retry(dev) == []
+    await t.close()
+
+
+async def test_a_rejoining_device_is_asked_what_it_is(tmp_path):
+    """A rejoin is most often a power cut. The bulb comes back ON at the wall while we remember
+    it OFF; it is not re-interviewed (that storm is over) but it is asked."""
+    from oneroof_zigbee.znp import JoinedDevice
+    fake, coord, broker, gw, t = await make(tmp_path)
+    dev = _bulb(gw, IEEE + 64, NWK + 64)
+    dev.state["state"] = "OFF"
+    asked = []
+
+    async def answer(d, ep, cluster, attrs):
+        asked.append(cluster)
+        return {"state": "ON"} if cluster == 0x0006 else {}
+
+    gw.read_attributes = answer
+    gw._schedule_refresh = lambda d, delay=3.0: Gateway._schedule_refresh(gw, d, delay=0.05)
+    await gw._on_joined(JoinedDevice(ieee=dev.ieee, nwk=dev.nwk, parent=None, capabilities=0x8E, rejoin=True))
+    assert dev.ieee not in gw._interview_tasks, "no interview storm on a rejoin"
+    assert dev.ieee in gw._refresh_tasks
+    for _ in range(50):
+        await asyncio.sleep(0.02)
+        if dev.ieee not in gw._refresh_tasks:
+            break
+    assert 0x0006 in asked and dev.state["state"] == "ON"
+    await t.close()
+
+
+async def test_a_router_that_stops_answering_goes_offline(tmp_path):
+    """A bulb cut from power at the wall answers nothing. Two unanswered polls and it is offline -
+    Apple Home shows "No Response" instead of the last thing it said - and it is polled less
+    often from then on, until it is heard again."""
+    fake, coord, broker, gw, t = await make(tmp_path)
+    dev = _bulb(gw, IEEE + 65, NWK + 65)
+    dev.available = True
+    dev.last_seen = time.time()          # its power reports were arriving right up to the cut
+    gw._state_evidence[dev.ieee] = 0.0   # but it has not said what it IS in a long time
+
+    async def nobody_home(d, ep, cluster, attrs):
+        raise asyncio.TimeoutError
+
+    gw.read_attributes = nobody_home
+    await gw._poll_silent_routers()
+    assert dev.available, "one miss is a lost frame"
+    await gw._poll_silent_routers()
+    assert not dev.available, "two misses is a device that is gone"
+    assert broker.last(f"oneroof/zigbee/{dev.ieee_str}/availability") == b"offline"
+    assert gw._poll_not_before[dev.ieee] > time.time() + 200
+    n = len(broker.published)
+    await gw._poll_silent_routers()
+    assert len(broker.published) == n, "an offline device is not hammered every minute"
+
+    fake.emit_incoming(NWK + 65, 0x0006, bytes([0x18, 0x33, 0x0A, 0x00, 0x00, 0x10, 0x01]))
+    await asyncio.sleep(0.05)
+    assert dev.available and dev.ieee not in gw._poll_not_before, "heard: online, and polled normally again"
+    await t.close()
+
+
+async def test_a_chatty_plug_is_still_asked_about_its_switch(tmp_path):
+    """A plug that reports its power every ten seconds is heard constantly; that says nothing
+    about whether someone pressed its button. The poll goes by state evidence, not by any frame."""
+    fake, coord, broker, gw, t = await make(tmp_path)
+    dev = _bulb(gw, IEEE + 66, NWK + 66, clusters=(0, 6, 0x0B04))
+    dev.last_seen = time.time()
+    gw._state_evidence[dev.ieee] = time.time() - gw.ROUTER_POLL_AFTER_S - 1
+    asked = []
+
+    async def answer(d, ep, cluster, attrs):
+        asked.append(cluster)
+        return {"state": "OFF"}
+
+    gw.read_attributes = answer
+    await gw._poll_silent_routers()
+    assert 0x0006 in asked
+    assert gw._state_evidence[dev.ieee] > time.time() - 5, "the answer is evidence"
+    asked.clear()
+    await gw._poll_silent_routers()
+    assert not asked, "fresh evidence: left alone"
+    await t.close()
+
+
+async def test_off_with_a_brightness_switches_off(tmp_path):
+    """Home Assistant sends {"state": "OFF", "brightness": N} (the level it will come back at).
+    The level command used to follow the off command and switch the light back on."""
+    fake, coord, broker, gw, t = await make(tmp_path)
+    dev = _bulb(gw, IEEE + 67, NWK + 67)
+    fake.requests.clear()
+    await gw.apply_command(dev, {"state": "OFF", "brightness": 120})
+    reqs = [f for f in fake.requests if f.subsystem is Subsystem.AF and f.command == c.AfCmd.DATA_REQUEST]
+    clusters = [int.from_bytes(f.data[4:6], "little") for f in reqs]
+    assert clusters == [0x0006], clusters
+    assert dev.state["state"] == "OFF"
+    await t.close()
+
+
+async def test_a_toggle_and_a_failed_command_ask_the_device(tmp_path):
+    """Only the device knows which way a toggle went, and what a half-failed command left behind."""
+    fake, coord, broker, gw, t = await make(tmp_path)
+    dev = _bulb(gw, IEEE + 68, NWK + 68)
+    dev.state["state"] = "OFF"
+    await gw.apply_command(dev, {"state": "TOGGLE"})
+    assert dev.ieee in gw._refresh_tasks, "a read follows the toggle"
+    gw._refresh_tasks.pop(dev.ieee).cancel()
+    assert dev.state["state"] == "OFF", "a toggle is not guessed at"
+
+    async def refuse(*a, **k):
+        raise asyncio.TimeoutError
+
+    gw.coord.send_aps = refuse
+    try:
+        await gw.apply_command(dev, {"state": "ON"})
+    except asyncio.TimeoutError:
+        pass
+    assert dev.ieee in gw._refresh_tasks, "a failed command is followed by a read"
+    gw._refresh_tasks.pop(dev.ieee).cancel()
+    await t.close()
+
+
+async def test_get_asks_every_switching_endpoint(tmp_path):
+    """A two-gang switch has two answers; asking only the first endpoint left the second gang
+    frozen for whoever asked (the Apple Home bridge at its start)."""
+    from oneroof_zigbee.devices import Endpoint
+    fake, coord, broker, gw, t = await make(tmp_path)
+    dev = gw.registry.add_or_update(IEEE + 69, NWK + 69, is_router=True)
+    dev.endpoints[1] = Endpoint(1, 0x0104, 0x0100, [0, 6], [], "switch")
+    dev.endpoints[2] = Endpoint(2, 0x0104, 0x0100, [6], [], "switch")
+    dev.interviewed = True
+    asked = []
+
+    async def answer(d, ep, cluster, attrs):
+        asked.append(ep)
+        return {"state": "ON" if ep == 2 else "OFF"}
+
+    gw.read_attributes = answer
+    await broker.inject(f"oneroof/zigbee/{dev.ieee_str}/get", b'{"state": ""}')
+    assert asked == [1, 2]
+    st = json.loads(broker.last(f"oneroof/zigbee/{dev.ieee_str}/state"))
+    assert st.get("state_l1") == "OFF" and st.get("state_l2") == "ON", st
+    await t.close()
+
+
+async def test_radio_loss_is_told_to_everyone(tmp_path):
+    """While the coordinator is unplugged nothing we show can be trusted: bridge/state goes
+    offline (Home Assistant marks every device unavailable) and, when it is back, every device
+    that can answer is asked again."""
+    fake, coord, broker, gw, t = await make(tmp_path)
+    await gw.coordinator_lost()
+    assert broker.last("oneroof/zigbee/bridge/state") == b"offline"
+    await gw.coordinator_back()
+    assert broker.last("oneroof/zigbee/bridge/state") == b"online"
+    assert gw._refresh_task is not None and not gw._refresh_task.done()
+    gw._refresh_task.cancel()
+    await t.close()

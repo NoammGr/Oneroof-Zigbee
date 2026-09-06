@@ -69,6 +69,7 @@ class FakeZnp:
         self.beacons: list[tuple] = []  # (src, pan, ch, permit, router_cap, dev_cap, lqi, depth, update_id, ext_pan)
         self.refuse_scan = False
         self.on_data_request = None  # optional hook: Frame -> list[Frame] of AREQs to emit
+        self.bind_status = 0x00  # ZDO status the "device" answers a bind request with (0x8C: table full)
 
     # --- emit AREQ from "the radio" ---
     # MT ids of ZDO responses that the real firmware delivers only through the message callback
@@ -252,7 +253,7 @@ class FakeZnp:
                                 Writer().u16(nwk).u8(0).u16(nwk).u8(1).u8(0x40).u8(0x8E).u16(0x1037).u8(80).u16(160).raw(bytes(6)).bytes()))
             elif cmd == c.ZdoCmd.BIND_REQ:
                 self._srsp(f, b"\x00")
-                self.emit(Frame(FrameType.AREQ, Subsystem.ZDO, c.ZdoCmd.BIND_RSP, f.data[0:2] + b"\x00"))
+                self.emit(Frame(FrameType.AREQ, Subsystem.ZDO, c.ZdoCmd.BIND_RSP, f.data[0:2] + bytes([self.bind_status])))
             elif cmd == c.ZdoCmd.UNBIND_REQ:
                 self._srsp(f, b"\x00")
                 self.emit(Frame(FrameType.AREQ, Subsystem.ZDO, c.ZdoCmd.UNBIND_RSP, f.data[0:2] + b"\x00"))

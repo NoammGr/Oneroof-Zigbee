@@ -85,6 +85,16 @@ def _topics(base: str, prefix: str, legacy: bool) -> Topics:
     return Topics(base, prefix, legacy)
 
 
+def _template_on(st: dict[str, Any], br: dict[str, Any] | None, ct: dict[str, Any] | None) -> str:
+    parts = ['{"%s": "ON"' % st["key"]]
+    if br:
+        parts.append('{%% if brightness is defined %%}, "%s": {{ brightness }}{%% endif %%}' % br["key"])
+    if ct:
+        parts.append('{%% if color_temp is defined %%}, "%s": {{ color_temp }}{%% endif %%}' % ct["key"])
+    parts.append('{% if transition is defined %}, "transition": {{ transition }}{% endif %}}')
+    return "".join(parts)
+
+
 def _suffix(f: dict[str, Any]) -> str:
     """Object-id suffix for a feature: the gang name or endpoint suffix it carries."""
     key, base = f["key"], f["base"]
@@ -142,10 +152,26 @@ def discovery_messages(dev: Device, base: str, prefix: str, *, legacy: bool = Fa
         if st and st["key"] not in handled and st["cluster"] == 0x0006 and st["access"] == "rw":
             sfx = _suffix(st)
             br, ct, col = bases.get("brightness"), bases.get("color_temp"), bases.get("color")
-            if br or ct or col:
+            if (br or ct or col) and not sfx:
                 cfg: dict[str, Any] = {"name": None, "schema": "json", "command_topic": set_topic, "brightness": bool(br),
                                        "supported_color_modes": (["xy", "color_temp"] if ct or col else ["brightness"])}
                 if ct:
+                    cfg["min_mireds"], cfg["max_mireds"] = ct.get("min", 153), ct.get("max", 500)
+                add("light", f"light{sfx}", cfg)
+                handled |= {x["key"] for x in (st, br, ct, col) if x}
+            elif br or ct or col:
+                # A second dimmer on the same device (two-channel LED controllers): its keys are
+                # state_l2 / brightness_l2 in the shared payload. The JSON schema only knows
+                # "state" and "brightness", so a JSON light here would show the first channel's
+                # state and switch the first channel: the template schema names the keys.
+                cfg = {"name": st["name"], "schema": "template", "command_topic": set_topic,
+                       "state_template": f"{{{{ 'on' if value_json.{st['key']} == 'ON' else 'off' }}}}",
+                       "command_on_template": _template_on(st, br, ct),
+                       "command_off_template": '{"%s": "OFF"{%% if transition is defined %%}, "transition": {{ transition }}{%% endif %%}}' % st["key"]}
+                if br:
+                    cfg["brightness_template"] = f"{{{{ value_json.{br['key']} }}}}"
+                if ct:
+                    cfg["color_temp_template"] = f"{{{{ value_json.{ct['key']} }}}}"
                     cfg["min_mireds"], cfg["max_mireds"] = ct.get("min", 153), ct.get("max", 500)
                 add("light", f"light{sfx}", cfg)
                 handled |= {x["key"] for x in (st, br, ct, col) if x}
@@ -166,7 +192,10 @@ def discovery_messages(dev: Device, base: str, prefix: str, *, legacy: bool = Fa
         pos, cov = bases.get("position"), bases.get("cover")
         if cov or (pos and pos["access"] == "rw"):
             sfx = _suffix(pos or cov)
-            cfg = {"name": None, "command_topic": set_topic}
+            # No state topic: the shared payload is not "open"/"closed", and a cover given it as
+            # its state shows "unknown" for ever. Where the position is known HA derives open and
+            # closed from it; where only the commands are, the cover is honest about assuming.
+            cfg = {"name": None, "command_topic": set_topic, "state_topic": None}
             if cov:
                 cfg.update({"payload_open": '{"state": "OPEN"}', "payload_close": '{"state": "CLOSE"}', "payload_stop": '{"state": "STOP"}'})
             if pos:

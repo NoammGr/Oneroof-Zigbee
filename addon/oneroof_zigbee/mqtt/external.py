@@ -17,7 +17,7 @@ from collections.abc import Awaitable, Callable
 from urllib.parse import urlparse
 
 from .client import Client
-from .packets import topic_matches
+from .packets import Publish, topic_matches
 
 log = logging.getLogger("oneroof_zigbee.mqtt.external")
 
@@ -26,7 +26,7 @@ LocalCallback = Callable[[str, bytes, "str | None"], Awaitable[None]]
 
 class ExternalBroker:
     def __init__(self, server: str, *, user: str | None, password: str | None, ca: str | None, client_id: str,
-                 will_topic: str | None = None) -> None:
+                 will_topic: str | None = None, will_payload: bytes = b"offline") -> None:
         u = urlparse(server)
         self.host = u.hostname or "localhost"
         self.port = u.port or (8883 if u.scheme == "mqtts" else 1883)
@@ -34,8 +34,12 @@ class ExternalBroker:
         if u.scheme == "mqtts":
             self.tls = ssl.create_default_context(cafile=ca) if ca else ssl.create_default_context()
         self._subs: list[tuple[str, LocalCallback]] = []
+        # The last will: if the gateway dies or loses the broker, the broker itself says so on
+        # bridge/state, and Home Assistant marks every device unavailable instead of showing the
+        # last thing each one said, for as long as it takes someone to notice.
+        will = Publish(will_topic, will_payload, qos=1, retain=True) if will_topic else None
         self._client = Client(self.host, self.port, username=user or "", password=password or "", client_id=client_id,
-                              tls=self.tls, will=None)
+                              tls=self.tls, will=will)
         self._will_topic = will_topic
         self.external = True
 

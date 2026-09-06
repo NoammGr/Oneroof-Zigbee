@@ -1,5 +1,58 @@
 # Changelog
 
+## [2.13.0] — 2026-09-06
+
+### Fixed — a light that shows ON while it is dark: every way a stale state could survive
+An end-to-end check of the path from a device to Apple Home / Home Assistant found several ways
+the gateway could keep saying what a device *was* rather than what it *is*. All closed:
+
+- **A refused bind was recorded as reporting "ok".** The bind is what makes a device report a
+  physical press; a device that refused it (a full binding table, an endpoint that does not bind)
+  was written up as reporting fine, never reported anything, and showed the state of its last
+  command for ever. The ZDO status is now checked: a refusal is recorded as `bind failed (0x..)`,
+  the device is polled every minute like any device that cannot report, and the setup is retried.
+- **A reporting setup that failed was never retried.** A device that fell asleep or dropped a frame
+  during its interview kept its old state until somebody restarted the gateway. It is now tried
+  again the next time the device talks (the one moment a battery device listens), backing off ten
+  minutes between attempts. A firmware refusal (unreportable attribute) is final and not retried.
+- **The silent-device poll went by "heard from", not by "said what it is".** A plug reporting its
+  power every ten seconds was never asked about its button; a two-gang switch was asked about one
+  gang; the answer skipped the model's translation, so a second gang could overwrite the first.
+  The poll now goes by the last on/off, level, cover, thermostat, colour or Tuya evidence, asks
+  every endpoint, and translates the answers. A mains device that fails two polls in a row is now
+  marked **offline** (Apple Home shows "No Response", Home Assistant "unavailable") instead of
+  showing the last thing it said — a bulb switched off at the wall used to look ON for up to four
+  hours. It is tried every five minutes and is back the moment it is heard.
+- **A rejoin was not followed by a question.** A device coming back from a power cut is not
+  re-interviewed (that storm is over) — but a bulb comes back ON at the wall while the gateway
+  remembered it OFF. It is now asked what it is a few seconds after it rejoins.
+- **Losing the coordinator said nothing.** While the serial link was gone every device kept its
+  last state. `bridge/state` now goes offline for the outage (everything downstream marks its
+  devices unavailable) and every device is asked again when the link is back. On an **external
+  broker** the gateway now leaves a last will, so a crash is announced by the broker itself.
+- **`{"state": "OFF", "brightness": N}` switched the light back on.** Home Assistant sends the
+  level it will come back at with the off order; the level command followed the off command and
+  the light was on again at that level — with the panel, HA and Apple Home all agreeing it was on.
+  OFF is now the order. `TOGGLE` (only the device knows which way it went) and any command that
+  failed part-way are followed by a read instead of a guess.
+- **A report from an endpoint the descriptors did not list** (Aqara's shared 0xF2) was written to
+  the plain `state` key. On a single switch that is fine and now maps to its one switch; on a
+  multi-gang device nobody knows which gang spoke and the value was shown as the whole device's —
+  it is dropped.
+- **The registry file lagged behind.** State and online/offline changes only reached
+  `devices.json` when something else happened to save it, so a restart published a state from
+  hours earlier before it could ask anyone. Changes now mark the registry dirty; the monitor tick
+  and a clean stop write it.
+
+### Fixed — Home Assistant discovery
+- A **second dimmer channel** (`state_l2` / `brightness_l2`) was announced as a JSON-schema light,
+  which only knows `state` and `brightness`: it showed the first channel's state and switched the
+  first channel. It is now a template light that names its own keys.
+- A **cover** was given the shared state payload as its state topic; the payload is not
+  `open`/`closed`, so the cover sat on "unknown". It now goes by its position (or assumes state
+  where only the commands are known).
+- `<name>/get` with `{"state": ""}` now reads every switching endpoint, not just the first.
+
 ## [2.12.0] — 2026-09-05
 
 ### Changed — a new device reaches Home Assistant with its real name, not its address
