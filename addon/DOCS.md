@@ -29,12 +29,13 @@ Zigbee gateway **and** MQTT broker in one add-on, designed around security.
 
 Requires a TI CC2652/CC1352 coordinator (Sonoff ZBDongle-P, SMLIGHT, ZigStar, …).
 
-## One Roof Bridge, One Roof Energy and One Roof NVR
+## One Roof Bridge, One Roof Statistics and One Roof NVR
 * **Bridge** (Apple Home) finds this broker through the Supervisor's MQTT service automatically and
   builds its accessories from the device descriptions on `<base>/bridge/devices`. After updating this
   add-on, restart Bridge once so it re-reads the list.
-* **Energy** finds this broker the same way and reads power from the device list and
-  `<base>/<ieee>/state` — nothing to set up on either side.
+* **Statistics** (formerly Energy) finds this broker the same way and reads power, contact,
+  occupancy, on/off and sensor values from the device list and `<base>/<ieee>/state` — nothing
+  to set up on either side.
 * **NVR** runs outside Home Assistant, so it needs a way in: in this add-on's **Network** section map
   host port **8883** (TLS; or 1883 plain if the client cannot do TLS), create a user for it under
   web UI → Settings → Users & access (role *client*), then in the NVR's MQTT settings: host, port
