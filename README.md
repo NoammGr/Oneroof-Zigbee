@@ -7,7 +7,7 @@ One process, one UI: pair your Zigbee devices, and Home Assistant connects strai
 
 **[→ Installation guide](INSTALL.md)** — one badge click, pick your adapter, start. Migrating from Zigbee2MQTT keeps every device without re-pairing.
 
-> Part of the OneRoof family, alongside [OneRoof Bridge](https://github.com/NoammGr/oneroof-bridge), [OneRoof NVR](https://github.com/NoammGr/oneroof-nvr) and [OneRoof Statistics](https://github.com/NoammGr/Oneroof-Energy).
+> Part of the OneRoof family, alongside [OneRoof Bridge](https://github.com/NoammGr/oneroof-bridge), [OneRoof NVR](https://github.com/NoammGr/oneroof-nvr) and [OneRoof Statistics](https://github.com/NoammGr/Oneroof-Statistics).
 
 ---
 
