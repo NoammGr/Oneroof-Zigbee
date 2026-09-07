@@ -419,3 +419,67 @@ async def test_b11_dashboard_default_view_checkbox(stack, browser):  # noqa: F81
                "c.checked=false;c.dispatchEvent(new Event('change',{bubbles:true}));})()")
     assert await b.js("localStorage.getItem('oneroof.dashboard.default')") is None
     assert b.errors == [], f"console errors: {b.errors}"
+
+
+async def test_b12_automatic_rotation_is_the_owners_switch_and_the_check_names_devices(stack, browser):  # noqa: F811
+    """Settings carries a live 'Automatic key rotation' card (off by default, saved without a
+    restart), Maintenance can 'Check first' and names who would hold a rotation up, and the
+    log page shows device names where the gateway wrote addresses."""
+    s, b = stack, browser
+    base = f"http://127.0.0.1:{s.ui.port}/"
+    if _gw(s).registry.get(PLUG_IEEE) is None:
+        await api(s, "POST", "/api/permit_join", {"seconds": 30})
+        s.world.announce(s.world.add(plug(PLUG_IEEE, PLUG_NWK)))
+        await wait_for(lambda: (lambda x: x and x.interviewed)(_gw(s).registry.get(PLUG_IEEE)), 8)
+    ieee = f"0x{PLUG_IEEE:016x}"
+    await api(s, "POST", f"/api/devices/{ieee}/rename", {"friendly_name": "Kitchen kettle plug"})
+
+    # the switch: off by default, saved live
+    await b.go(base, "settings", 2.0)
+    assert await b.js("/Automatic rotation is off/.test(document.body.textContent)")
+    saved = await b.js("""(async()=>{const h=[...document.querySelectorAll('h2')].find(h=>h.textContent.startsWith('Automatic key rotation'));
+      const card=h.nextElementSibling;const c=card.querySelector('input[type=checkbox]');c.checked=true;c.dispatchEvent(new Event('change',{bubbles:true}));
+      const n=card.querySelector('input[type=number]');n.value='14';n.dispatchEvent(new Event('input',{bubbles:true}));
+      [...card.querySelectorAll('button')].find(x=>x.textContent.trim()==='Save').click();await new Promise(r=>setTimeout(r,800));return card.textContent;})()""")
+    assert "Automatic rotation is on" in saved and "every 14 days" in saved, saved
+    st, body = await api(s, "GET", "/api/rotation_policy")
+    assert st == 200 and body["policy"] == {"after_plain_join": True, "every_days": 14}
+    # the policy is live: whatever b05 left in the restart banner, nothing about rotation joined it
+    banner = await b.js("(()=>{const n=document.querySelector('.notice.restart');return n&&!n.classList.contains('hidden')?n.textContent:'';})()")
+    assert "rotat" not in banner.lower(), banner
+    st, body = await api(s, "POST", "/api/rotation_policy", {"after_plain_join": False, "every_days": 0})
+    assert st == 200 and body["policy"] == {"after_plain_join": False, "every_days": 0}
+
+    # a second router that has gone quiet: paired, named, then it stops answering address queries
+    gone_ieee, gone_nwk = 0xA4C1380000000077, 0x7777
+    if _gw(s).registry.get(gone_ieee) is None:
+        await api(s, "POST", "/api/permit_join", {"seconds": 30})
+        s.world.announce(s.world.add(plug(gone_ieee, gone_nwk)))
+        await wait_for(lambda: (lambda x: x and x.interviewed)(_gw(s).registry.get(gone_ieee)), 8)
+    gone = f"0x{gone_ieee:016x}"
+    await api(s, "POST", f"/api/devices/{gone}/rename", {"friendly_name": "Hall lamp"})
+    s.fake.nwk_to_ieee.pop(gone_nwk, None)
+
+    # the check: names, not addresses; the quiet router is called out first
+    await b.click_text("Check first")
+    for _ in range(40):  # a router that never answers costs two address-query timeouts
+        await asyncio.sleep(0.5)
+        text = await b.js("document.getElementById('main').textContent")
+        if "would hold a rotation up" in text:
+            break
+    # earlier tests may have left other devices in this stack; the quiet router is the only one not ready
+    assert "would hold a rotation up" in text and "1 router does not answer" in text, text[-900:]
+    rows = await b.js("[...document.querySelectorAll('.rc-list a.devname')].map(a=>a.title+'='+a.textContent)")
+    assert rows[0] == f"{gone}=Hall lamp" and f"{ieee}=Kitchen kettle plug" in rows, rows
+    assert gone not in text and ieee not in text
+
+    # the log: an address inside a detail line reads as the device's name (the address stays on hover)
+    await b.go(base, "logs", 2.0)
+    # b10 may have left the page narrowed to one device — widen it again
+    await b.js("(()=>{const s=[...document.querySelectorAll('.bar select')].find(x=>x.title&&x.title.indexOf('one device')>=0);"
+               "if(s&&s.value){s.value='';s.dispatchEvent(new Event('change',{bubbles:true}));}})()")
+    await asyncio.sleep(0.8)
+    row = await b.js("(()=>{const r=[...document.querySelectorAll('.log .row')].find(r=>r.textContent.includes('key_rotation_checked'));"
+                     "return r?{text:r.textContent,links:[...r.querySelectorAll('a.devname')].map(a=>a.title)}:null;})()")
+    assert row and row["links"] == [gone] and "Hall lamp" in row["text"] and gone not in row["text"], row
+    assert b.errors == [], f"console errors: {b.errors}"

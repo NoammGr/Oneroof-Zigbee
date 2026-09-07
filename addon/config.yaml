@@ -1,5 +1,5 @@
 name: One Roof Zigbee
-version: "2.13.1"
+version: "2.14.0"
 slug: oneroof_zigbee
 description: Zigbee gateway with a built-in MQTT broker, designed around security - pair devices, import a previous setup, everything under one roof.
 url: https://github.com/NoammGr/Oneroof-Zigbee
@@ -49,7 +49,7 @@ options:
   permit_join_max_seconds: 120
   permit_join_require_install_code: false
   permit_join_close_after_first_join: true
-  rotate_key_after_plain_join: true
+  rotate_key_after_plain_join: false  # seeds Settings → Automatic key rotation; the switch in the UI decides from then on
   mqtt_port: 8883
   mqtt_plaintext_port: 1883
   tls_require_client_cert: false

@@ -45,6 +45,9 @@ Security:
 | `api/map/refresh` | `{}` | walks neighbour tables of coordinator + routers (takes seconds) |
 | `api/rotate_network_key` | `{mode: "over_the_air", window_s: 300}` (default) → `{rotation: {phase, delivered[], failed{}, switch_at, seconds_left}}`; or `{mode: "repair", confirm: "I understand all devices must be re-paired"}` → `{restart_required: true}` | control-only |
 | `GET api/rotate_network_key` | — | rotation status `{phase: idle\|delivering\|waiting\|switching\|done\|failed, …}` |
+| `api/rotate_network_key` | `{mode: "check"}` → `{check: {devices: [{ieee, name, kind: router\|battery, last_seen, ready, why}], ready, total, checked_at, last}}` | control-only; sends no key — asks every router to answer on the current key, judges a battery device by when it last spoke; refused while a rotation runs |
+| `GET api/rotation_policy` | — | `{policy: {after_plain_join, every_days}, last_rotation_ts, running_by, configured}` — whether the key rotates by itself; any user may read it |
+| `api/rotation_policy` | `{after_plain_join?: bool, every_days?: 0..3650}` → same as GET plus `stopped` (a running policy rotation was cancelled by the change) | control-only; live, persisted in `rotation_policy.json`; the add-on option `rotate_key_after_plain_join` only seeds the first value |
 | `api/settings` | `{log_level?: "DEBUG"}` | runtime-only settings |
 
 Errors: `{ok: false, error: "..."}` with 400/403/404/500.

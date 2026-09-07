@@ -88,11 +88,11 @@ class ZigbeeConfig:
     permit_join_max_seconds: int = 120
     permit_join_require_install_code: bool = False
     permit_join_close_after_first_join: bool = True   # one device per plain window
-    rotate_key_after_plain_join: bool = True          # a key exposed during pairing must not live long
+    rotate_key_after_plain_join: bool = False         # seeds the live policy (Settings → Automatic key rotation); off until the owner turns it on
     permit_join_cooldown_seconds: int = 5
     rotation_require_all: bool = True                 # switch keys only when every device demonstrably has the new one
     rotation_max_window_seconds: int = 21600          # how long a rotation may wait for sleeping / unreachable devices
-    rotation_interval_days: int = 30                  # rotate on a schedule too (0 = only after joins / by hand)
+    rotation_interval_days: int = 0                   # seeds the live policy: rotate on a schedule too (0 = only after joins / by hand)
 
 
 @dataclass
@@ -201,11 +201,11 @@ class Config:
             permit_join_max_seconds=int(z.get("permit_join_max_seconds", 120)),
             permit_join_require_install_code=bool(z.get("permit_join_require_install_code", False)),
             permit_join_close_after_first_join=bool(z.get("permit_join_close_after_first_join", True)),
-            rotate_key_after_plain_join=bool(z.get("rotate_key_after_plain_join", True)),
+            rotate_key_after_plain_join=bool(z.get("rotate_key_after_plain_join", False)),
             permit_join_cooldown_seconds=int(z.get("permit_join_cooldown_seconds", 5)),
             rotation_require_all=bool(z.get("rotation_require_all", True)),
             rotation_max_window_seconds=int(z.get("rotation_max_window_seconds", 21600)),
-            rotation_interval_days=int(z.get("rotation_interval_days", 30)),
+            rotation_interval_days=int(z.get("rotation_interval_days", 0)),
         )
         if not 0 <= zig.rotation_interval_days <= 3650:
             raise ConfigError("zigbee.rotation_interval_days must be 0..3650")

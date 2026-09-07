@@ -263,6 +263,7 @@ async def test_plain_join_closes_the_window_and_rotates_the_key(tmp_path):
     KeyRotation.MIN_WINDOW_S = 1
     fake, coord, broker, gw, t = await make(tmp_path)
     gw.ROTATE_AFTER_JOIN_QUIET_S = 0.05
+    gw.rotation_policy.after_plain_join = True  # the owner switched it on (off by default since 2.14)
     Keystore(tmp_path / "network.keystore").save(coord.secrets)
     old_key = coord.secrets.network_key
     events = []
@@ -296,6 +297,128 @@ async def test_plain_join_closes_the_window_and_rotates_the_key(tmp_path):
     assert gw.rotation_status()["phase"] == "done"
     assert Keystore(tmp_path / "network.keystore").load().network_key != old_key
     assert fake.active_key == coord.secrets.network_key
+    await t.close()
+
+
+async def test_plain_join_does_not_rotate_unless_the_owner_asked(tmp_path):
+    """2.14: automatic rotation is the owner's decision, off until switched on — a pairing without
+    an install code no longer starts a rotation by itself."""
+    fake, coord, broker, gw, t = await make(tmp_path)
+    gw.ROTATE_AFTER_JOIN_QUIET_S = 0.05
+    assert gw.rotation_policy.after_plain_join is False and gw.rotation_policy.every_days == 0
+    events = []
+    coord.audit.subscribe(lambda r: events.append(r))
+    await broker.inject("oneroof/zigbee/bridge/request/permit_join", b'{"seconds": 60}', user="admin")
+    fake.nwk_to_ieee[NWK] = IEEE
+    fake.emit_announce(IEEE, NWK)
+    for _ in range(100):
+        await asyncio.sleep(0.02)
+        if gw.registry.get(IEEE) and gw.registry.get(IEEE).interviewed:
+            break
+    await asyncio.sleep(0.2)
+    types = [e["type"] for e in events]
+    assert "key_rotation_scheduled" not in types and "key_rotation_after_plain_join" not in types
+    assert gw._rotation is None or not gw._rotation.running
+    await t.close()
+
+
+async def test_rotation_policy_is_live_persisted_and_stops_the_rotation_it_started(tmp_path):
+    """Settings → Automatic key rotation: read by anyone, changed by control users only, kept in
+    the data folder across restarts, and switching it off cancels a policy rotation in flight."""
+    from oneroof_zigbee.rotation import KeyRotation, RotationPolicy
+    from oneroof_zigbee.security import Keystore
+    KeyRotation.MIN_WINDOW_S = 1
+    fake, coord, broker, gw, t = await make(tmp_path)
+    Keystore(tmp_path / "network.keystore").save(coord.secrets)
+    events = []
+    coord.audit.subscribe(lambda r: events.append(r))
+    r = await gw.handle_request("rotation_policy", {}, "homeassistant")
+    assert r["ok"] and r["policy"] == {"after_plain_join": False, "every_days": 0} and r["running_by"] is None
+    denied = await gw.handle_request("rotation_policy", {"policy": {"after_plain_join": True}}, "homeassistant")
+    assert not denied["ok"] and denied["error"] == "not authorized"
+    bad = await gw.handle_request("rotation_policy", {"policy": {"every_days": -3}}, "ui:admin")
+    assert not bad["ok"] and "every_days" in bad["error"]
+    r = await gw.handle_request("rotation_policy", {"policy": {"after_plain_join": True, "every_days": 90}}, "ui:admin")
+    assert r["ok"] and r["policy"] == {"after_plain_join": True, "every_days": 90} and r["stopped"] is None
+    assert gw.rotation_policy.every_days == 90
+    assert any(e["type"] == "key_rotation_policy_changed" and e["every_days"] == 90 for e in events)
+    # the decision survives a restart: the file wins over the configured seed values
+    again = RotationPolicy.load(tmp_path / "rotation_policy.json", after_plain_join=False, every_days=0)
+    assert again == RotationPolicy(after_plain_join=True, every_days=90)
+    # a policy rotation in flight is stopped when its policy is switched off; a manual one is not
+    gw.registry.add_or_update(0x00158D0000000009, 0x1111, is_router=False)  # asleep: the rotation waits for it
+    gw._start_policy_rotation()
+    await asyncio.sleep(0.05)
+    assert gw._rotation.running and gw.rotation_status()["by"] == "policy:rotate_after_plain_join"
+    r = await gw.handle_request("rotation_policy", {"policy": {"after_plain_join": False}}, "ui:admin")
+    assert r["ok"] and r["stopped"] == "policy:rotate_after_plain_join"
+    for _ in range(50):
+        await asyncio.sleep(0.02)
+        if not gw._rotation.running:
+            break
+    assert gw.rotation_status()["phase"] == "cancelled"
+    assert any(e["type"] == "network_key_rotation_cancelled_by_policy" for e in events)
+    await t.close()
+
+
+async def test_rotation_check_reports_who_would_hold_a_rotation_up(tmp_path):
+    """Maintenance → Check first: the rotation's own evidence, per device, before anything is sent."""
+    from oneroof_zigbee.security import Keystore
+    fake, coord, broker, gw, t = await make(tmp_path)
+    Keystore(tmp_path / "network.keystore").save(coord.secrets)
+    ok_router = gw.registry.add_or_update(0x00158D0000000001, 0x1234, is_router=True)
+    ok_router.friendly_name = "Kitchen plug"
+    fake.nwk_to_ieee[0x1234] = 0x00158D0000000001
+    dead_router = gw.registry.add_or_update(0x00158D0000000002, 0x2222, is_router=True)  # no answer on the current key
+    sleeper = gw.registry.add_or_update(0x00158D0000000003, 0x3333, is_router=False)
+    sleeper.last_seen = time.time() - 600
+    gone = gw.registry.add_or_update(0x00158D0000000004, 0x4444, is_router=False)
+    gone.last_seen = time.time() - 3 * 86400
+    r = await gw.handle_request("rotate_network_key", {"mode": "check"}, "ui:admin")
+    assert r["ok"], r
+    chk = r["check"]
+    by = {d["ieee"]: d for d in chk["devices"]}
+    assert chk["total"] == 4 and chk["ready"] == 2
+    assert by[ok_router.ieee_str]["ready"] and by[ok_router.ieee_str]["name"] == "Kitchen plug" and by[ok_router.ieee_str]["kind"] == "router"
+    assert not by[dead_router.ieee_str]["ready"] and "does not answer" in by[dead_router.ieee_str]["why"]
+    assert by[sleeper.ieee_str]["ready"] and by[sleeper.ieee_str]["kind"] == "battery"
+    assert not by[gone.ieee_str]["ready"] and "silent" in by[gone.ieee_str]["why"]
+    assert [d["ready"] for d in chk["devices"]] == [False, False, True, True], "the ones needing attention come first"
+    assert gw.rotation_status()["phase"] == "idle", "a check is not a rotation"
+    await t.close()
+
+
+async def test_a_refused_transport_to_a_battery_device_keeps_it_asleep_not_in_the_retry_loop(tmp_path, monkeypatch):
+    """Seen on a real network: a Xiaomi sensor whose key transport was refused the moment it spoke
+    landed in `failed` AND `pending`, and was then knocked on every half hour like a dead router
+    for six hours. A battery device is only reachable when it speaks — a miss keeps it 'asleep'."""
+    from oneroof_zigbee.rotation import KeyRotation
+    from oneroof_zigbee.security import Keystore
+    from oneroof_zigbee.znp import ZnpError
+    fake, coord, broker, gw, t = await make(tmp_path)
+    Keystore(tmp_path / "network.keystore").save(coord.secrets)
+    KeyRotation.MIN_WINDOW_S = 1
+    KeyRotation.RETRY_EVERY_S = 0.2
+    sleeper = gw.registry.add_or_update(0x00158D0000000002, 0x5678, is_router=False, rx_on_when_idle=False)
+    sleeper.last_seen = time.time()  # awake right now: offered the key at once
+    offers = []
+
+    async def refuse(nwk, seq, key):
+        offers.append(nwk)
+        raise ZnpError("NWK_NO_ROUTE")
+    monkeypatch.setattr(coord, "deliver_network_key", refuse)
+    await gw.handle_request("rotate_network_key", {"window_s": 1}, "ui:admin")
+    for _ in range(100):
+        await asyncio.sleep(0.02)
+        if gw.rotation_status()["phase"] == "waiting":
+            break
+    await asyncio.sleep(0.8)  # several router retry periods
+    st = gw.rotation_status()
+    assert list(st["pending"]) == [sleeper.ieee_str] and not st["failed"]
+    assert "asleep" in st["pending"][sleeper.ieee_str] and "NWK_NO_ROUTE" in st["pending"][sleeper.ieee_str]
+    assert offers == [0x5678], "one offer while it was awake; no knocking on a sleeping door"
+    await gw.handle_request("rotate_network_key", {"mode": "cancel"}, "ui:admin")
+    await asyncio.sleep(0.05)
     await t.close()
 
 
@@ -756,6 +879,7 @@ async def test_pairing_session_triggers_one_rotation_and_adopts_late_joiners(tmp
     KeyRotation.MIN_WINDOW_S = 1
     fake, coord, broker, gw, t = await make(tmp_path)
     gw.ROTATE_AFTER_JOIN_QUIET_S = 0.3
+    gw.rotation_policy.after_plain_join = True
     events = []
     coord.audit.subscribe(lambda r: events.append(r))
     for i in (0, 1):
@@ -803,7 +927,7 @@ async def test_scheduled_rotation_fires_when_the_key_is_old(tmp_path):
     fake, coord, broker, gw, t = await make(tmp_path)
     events = []
     coord.audit.subscribe(lambda r: events.append(r))
-    gw.cfg.zigbee.rotation_interval_days = 1
+    gw.rotation_policy.every_days = 1
     coord.secrets.last_rotation_ts = None
     gw._maybe_scheduled_rotation()
     assert coord.secrets.last_rotation_ts is not None, "clock started"

@@ -109,6 +109,11 @@ class Gateway:
         self._refresh_task: asyncio.Task | None = None  # the sweep of every device after a (re)start
         self.unknown_devices: dict[int, dict[str, Any]] = {}  # ieee -> what we know about an unregistered device on our network
         self._rotation: Any = None  # KeyRotation, created on first use
+        from .rotation import RotationPolicy
+        # When the key rotates by itself: the owner's live decision, kept in the data folder;
+        # the configured values only seed it (see RotationPolicy).
+        self.rotation_policy = RotationPolicy.load(self._rotation_policy_file(), after_plain_join=self.cfg.zigbee.rotate_key_after_plain_join,
+                                                   every_days=self.cfg.zigbee.rotation_interval_days)
         from .monitor import Monitor
         self.monitor = Monitor(lambda t, **f: self.audit.security(t, **f))
         self._monitor_task: asyncio.Task[None] | None = None
@@ -550,7 +555,7 @@ class Gateway:
         self._emit_device_event("joined", dev)
         if self._rotation is not None and self._rotation.running:
             self._rotation.note_new_device(dev)
-        if j.plain_join and self.cfg.zigbee.rotate_key_after_plain_join:
+        if j.plain_join and self.rotation_policy.after_plain_join:
             dev.context["rotate_after_join"] = True
         # A device that JOINS through a pairing window was factory-reset or re-paired: its
         # reporting, bindings and IAS enrolment died with its old life, so the interview re-runs.
@@ -571,7 +576,7 @@ class Gateway:
         so a sniffer present at that moment may hold it. Now that the device has its own link key
         (trust-centre key exchange is mandatory here), rotate the network key over the air: the new
         key reaches every device under per-device keys and the exposed one dies within minutes."""
-        if not dev.context.pop("rotate_after_join", False):
+        if not dev.context.pop("rotate_after_join", False) or not self.rotation_policy.after_plain_join:
             return
         # One rotation per pairing session: every plain join re-arms the timer; the rotation
         # starts once the session has been quiet for a while and no join window is open. A device
@@ -593,7 +598,7 @@ class Gateway:
     def _maybe_scheduled_rotation(self) -> None:
         """Rotate on a schedule, not only after joins: an old key is a standing target. Same
         evidence engine; skipped while a pairing session or another rotation is active."""
-        days = self.cfg.zigbee.rotation_interval_days
+        days = self.rotation_policy.every_days
         if not days or not self._started:
             return
         s = self.coord.secrets
@@ -610,6 +615,48 @@ class Gateway:
             return
         self.audit.security("scheduled_key_rotation_due", days=days)
         self._start_policy_rotation(by="policy:scheduled")
+
+    def _rotation_policy_file(self) -> Path:
+        return self.cfg.data_dir / "rotation_policy.json"
+
+    async def _req_rotation_policy(self, body: dict[str, Any], who: str) -> dict[str, Any]:
+        """Read or change when the key rotates by itself. Live: no restart. Switching an automatic
+        rotation off also stops the one it may be running right now — a rotation nobody asked for
+        any more should not keep knocking on sleeping devices for hours."""
+        from .rotation import RotationPolicy
+        patch = body.get("policy")
+        if patch is not None:
+            # anyone may read the policy (the UI shows it); changing it is a control action
+            bare = who.split(":", 1)[1] if who.startswith("ui:") else who
+            if bare not in self.control_users:
+                self.audit.security("request_denied", action="rotation_policy", by=who, reason="user not in control_users")
+                raise PermissionError("not authorized")
+            new = RotationPolicy.from_json(patch, self.rotation_policy)
+            if new != self.rotation_policy:
+                try:
+                    new.save(self._rotation_policy_file())
+                except OSError as e:
+                    raise ValueError(f"policy not saved: {e}") from e
+                self.rotation_policy = new
+                self.audit.security("key_rotation_policy_changed", by=who, **new.to_json())
+                stopped = None
+                if not new.after_plain_join and self._rotate_debounce is not None:
+                    self._rotate_debounce.cancel()
+                    self._rotate_debounce = None
+                running = self._rotation is not None and self._rotation.running
+                if running and ((not new.after_plain_join and self._rotation.state.by == "policy:rotate_after_plain_join")
+                                or (not new.every_days and self._rotation.state.by == "policy:scheduled")):
+                    stopped = self._rotation.state.by
+                    self._rotation.cancel()
+                    self.audit.security("network_key_rotation_cancelled_by_policy", by=who, was=stopped)
+                return {"policy": self.rotation_policy.to_json(), "stopped": stopped, **self._rotation_policy_facts()}
+        return {"policy": self.rotation_policy.to_json(), **self._rotation_policy_facts()}
+
+    def _rotation_policy_facts(self) -> dict[str, Any]:
+        running = self._rotation is not None and self._rotation.running
+        return {"last_rotation_ts": getattr(self.coord.secrets, "last_rotation_ts", None),
+                "running_by": self._rotation.state.by if running else None,
+                "configured": {"after_plain_join": self.cfg.zigbee.rotate_key_after_plain_join, "every_days": self.cfg.zigbee.rotation_interval_days}}
 
     def _start_policy_rotation(self, by: str = "policy:rotate_after_plain_join") -> None:
         from .rotation import KeyRotation
@@ -1944,7 +1991,7 @@ class Gateway:
         handler = {
             "permit_join": self._req_permit_join, "remove": self._req_remove, "rename": self._req_rename,
             "interview": self._req_interview, "rotate_network_key": self._req_rotate_key, "devices": self._req_devices, "scan_air": self._req_scan_air,
-            "radio_tuning": self._req_radio_tuning,
+            "radio_tuning": self._req_radio_tuning, "rotation_policy": self._req_rotation_policy,
             "verify_audit": self._req_verify_audit,
         }.get(action)
         if handler is None:
@@ -2108,12 +2155,16 @@ class Gateway:
             if self._rotation is None or not self._rotation.cancel():
                 raise ValueError("no key rotation is waiting")
             return {"cancelled": True}
-        if mode != "over_the_air":
-            raise ValueError("mode must be over_the_air, finish, rollback, cancel or repair")
+        if mode not in ("over_the_air", "check"):
+            raise ValueError("mode must be over_the_air, check, finish, rollback, cancel or repair")
         from .rotation import DEFAULT_WINDOW_S, KeyRotation
         if self._rotation is None:
             self._rotation = KeyRotation(self.coord, self.registry, ks, self.audit,
                                          require_all=self.cfg.zigbee.rotation_require_all, max_window_s=self.cfg.zigbee.rotation_max_window_seconds)
+        if mode == "check":
+            # the rotation's own evidence, gathered up front: who would take the key, who would hold it up
+            self.audit.event("key_rotation_check_requested", by=who)
+            return {"check": await self._rotation.check()}
         st = self._rotation.start(window_s=int(body.get("window_s", DEFAULT_WINDOW_S)), by=who)
         return {"rotation": st.to_json()}
 

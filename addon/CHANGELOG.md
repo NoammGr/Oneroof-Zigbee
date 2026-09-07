@@ -1,5 +1,39 @@
 # Changelog
 
+## [2.14.0] — 2026-09-07
+
+### Changed — automatic key rotation is your decision, and off by default
+On a real network the automatic rotation after a plain pairing ran for four days without ever
+finishing: three routers never answered on the current key, three battery sensors refused the
+key every time they woke up, and each retry offered a security frame to the most fragile devices
+again. Under Home Assistant there was no way to stop it short of editing the add-on options.
+
+- **Settings → Automatic key rotation**: a live switch for *after a pairing without an install
+  code* and a number for *also every N days* (0 = never). Applied at once, no restart, persisted
+  in `rotation_policy.json`; switching a policy off cancels the rotation it started (the current
+  key stays in force). Both are **off by default** now. The add-on option
+  `rotate_key_after_plain_join` only seeds the first value; the two fields left the read-only
+  Zigbee card. Reading the policy is open to every UI user, changing it needs a control user
+  (`key_rotation_policy_changed` in the audit).
+- **Check first** (Settings → Maintenance, next to *Rotate key over the air*): sends no key —
+  asks every router to answer on the current key and judges each battery device by when it last
+  spoke — and lists, by name, who would hold a rotation up and what to do about it
+  (`api/rotate_network_key` with `mode: "check"`; audit `key_rotation_checked`).
+- What the gateway can and cannot prove, said plainly in the help: "delivered" means the radio
+  accepted the send; after the switch every router is verified on the new key; a battery device
+  is handed the key the moment it next speaks and cannot be verified until it does.
+
+### Fixed — a sleeping sensor whose key offer was refused was retried like a dead router
+A battery device is reachable only in the seconds after it speaks. When the transport refused
+the offer at that moment (`NWK_NO_ROUTE`), the device landed in the *failed* list as well as
+the *pending* one and was knocked on every half hour for hours. It now stays *asleep* — offered
+again the moment it next speaks, nothing in between.
+
+### Changed — the log shows device names
+Every device address in a log line (audit and application log) is shown as the device's name;
+the address stays on hover, and the name opens the device page. A list of who is missing from
+a rotation now reads as rooms, not hex.
+
 ## [2.13.1] — 2026-09-07
 
 ### Fixed — a plug that reports but never answers flapped offline/online all night

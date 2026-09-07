@@ -122,6 +122,21 @@ you press *Update* for that one device. The gateway never downloads firmware.
 * Only **control users** (and the UI acting as one) can open the window. Home
   Assistant's user cannot, on purpose.
 
+## Network key rotation
+
+The network key can be rotated over the air (Settings → Maintenance): every device
+is handed the new key under its own link key, the gateway waits for the whole
+network to have it, then switches. **Automatic** rotation — after a pairing without
+an install code, or every *N* days — is **off by default** and is your decision, taken
+live under Settings → *Automatic key rotation*. A rotation that cannot finish is worse
+than none: it keeps offering a security frame to the most fragile devices for hours,
+so use **Check first** before you turn it on — it asks every router to answer on the
+current key and judges each battery device by when it last spoke, and names who would
+hold a rotation up. What the gateway can and cannot prove: after the switch every
+router is verified on the new key; a battery device is handed the key the moment it
+next speaks, and cannot be verified until it does. The log shows device names, not
+addresses.
+
 ## Layout
 
 ```

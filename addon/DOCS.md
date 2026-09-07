@@ -27,6 +27,16 @@ Zigbee gateway **and** MQTT broker in one add-on, designed around security.
 * Everything else — users, TLS, join policy, backups, firmware, log level — is in the web UI → Settings,
   with help on every setting.
 
+## Network key rotation
+* Manual: web UI → Settings → Maintenance → *Rotate key over the air*. Press **Check first** before it:
+  the add-on asks every router to answer on the current key and judges each battery device by when it
+  last spoke, and names who would hold the rotation up — power-cycle or remove those first.
+* Automatic (after a pairing without an install code, or every *N* days) is **off by default** and is
+  switched under web UI → Settings → *Automatic key rotation* — live, no restart. The add-on option
+  `rotate_key_after_plain_join` only seeds the first value.
+* What can be proven: after the switch every router is verified on the new key. A battery device is
+  handed the key the moment it next speaks and cannot be verified until then.
+
 Requires a TI CC2652/CC1352 coordinator (Sonoff ZBDongle-P, SMLIGHT, ZigStar, …).
 
 ## One Roof Bridge, One Roof Statistics and One Roof NVR

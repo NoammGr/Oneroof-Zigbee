@@ -44,10 +44,12 @@ a fresh pairing (new seed) excludes them; the UI says so.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from .devices import Device, Registry
@@ -57,6 +59,54 @@ from .znp import Coordinator, ZnpError
 log = logging.getLogger("oneroof_zigbee.rotation")
 
 DEFAULT_WINDOW_S = 300
+MAX_INTERVAL_DAYS = 3650
+GONE_AFTER_S = 24 * 3600   # a battery device silent this long is not asleep, it is gone (or dead)
+
+
+@dataclass
+class RotationPolicy:
+    """When the key rotates by itself. The owner decides, live, from the UI — no restart, no
+    add-on options round trip — and the decision is kept in `<data_dir>/rotation_policy.json`.
+    Until that file exists the configured values apply (in the add-on: its option), so nothing
+    changes under anyone's feet."""
+    after_plain_join: bool = False   # a key exposed during a pairing without an install code
+    every_days: int = 0              # 0 = never on a schedule
+
+    @classmethod
+    def load(cls, path: Path, *, after_plain_join: bool, every_days: int) -> RotationPolicy:
+        try:
+            raw = json.loads(path.read_text())
+        except (OSError, ValueError):
+            return cls(bool(after_plain_join), max(0, min(int(every_days), MAX_INTERVAL_DAYS)))
+        return cls.from_json(raw, cls(bool(after_plain_join), max(0, min(int(every_days), MAX_INTERVAL_DAYS))))
+
+    @classmethod
+    def from_json(cls, raw: Any, base: RotationPolicy | None = None) -> RotationPolicy:
+        base = base or cls()
+        if not isinstance(raw, dict):
+            raise ValueError("policy must be an object")
+        pol = cls(base.after_plain_join, base.every_days)
+        if "after_plain_join" in raw:
+            pol.after_plain_join = bool(raw["after_plain_join"])
+        if "every_days" in raw:
+            try:
+                days = int(raw["every_days"] or 0)
+            except (TypeError, ValueError) as e:
+                raise ValueError("every_days must be a whole number of days") from e
+            if not 0 <= days <= MAX_INTERVAL_DAYS:
+                raise ValueError(f"every_days must be 0..{MAX_INTERVAL_DAYS}")
+            pol.every_days = days
+        return pol
+
+    @property
+    def automatic(self) -> bool:
+        return self.after_plain_join or self.every_days > 0
+
+    def save(self, path: Path) -> None:
+        path.write_text(json.dumps(self.to_json(), indent=1))
+
+    def to_json(self) -> dict[str, Any]:
+        return {"after_plain_join": self.after_plain_join, "every_days": self.every_days}
 
 
 @dataclass
@@ -212,7 +262,15 @@ class KeyRotation:
         try:
             await self.coord.deliver_network_key(dev.nwk, self._seq, self._key)
         except ZnpError as e:
-            st.failed[dev.ieee_str] = str(e)
+            if self._awake_device(dev):
+                # A battery device is only reachable in the seconds after it speaks; a transport
+                # that missed that moment is not a reason to keep knocking on a sleeping door
+                # every half hour (that is the retry loop for routers). It stays "asleep" and is
+                # offered the key again the next time it is heard.
+                st.pending[dev.ieee_str] = f"asleep — the last offer did not get through ({e}); offered again the moment it speaks"
+                st.failed.pop(dev.ieee_str, None)
+            else:
+                st.failed[dev.ieee_str] = str(e)
             log.info("key delivery to %s refused: %s", dev.ieee_str, e)
             return False
         st.failed.pop(dev.ieee_str, None)
@@ -503,6 +561,48 @@ class KeyRotation:
             st.failed.pop(gone, None)
             st.pending.pop(gone, None)
             log.info("%s removed from the registry — no longer waited for", gone)
+
+    async def check(self) -> dict[str, Any]:
+        """Before rotating: the same evidence the rotation itself will ask for, gathered now and
+        reported per device — so the owner learns in a minute, not after six hours, who would hold
+        a rotation up. A router is asked to answer an address query on the current key; a battery
+        device cannot be asked (it is asleep), so its last contact says whether it will be heard
+        again. Nothing is delivered and nothing changes on the network."""
+        if self.running:
+            raise ValueError("a key rotation is in progress — check again when it has finished")
+        now = time.time()
+        rows: list[dict[str, Any]] = []
+        lock = asyncio.Semaphore(3)   # a few lookups at a time: fast enough, and no burst on the air
+
+        async def one(dev: Device) -> dict[str, Any]:
+            row: dict[str, Any] = {"ieee": dev.ieee_str, "name": dev.friendly_name or dev.ieee_str,
+                                   "kind": "battery" if self._awake_device(dev) else "router",
+                                   "last_seen": dev.last_seen, "ready": False, "why": ""}
+            if not dev.nwk:
+                row["why"] = "address unknown — it has never spoken to this gateway"
+                return row
+            if self._awake_device(dev):
+                if not dev.last_seen:
+                    row["why"] = "never heard — a rotation would wait for it forever"
+                elif now - dev.last_seen > GONE_AFTER_S:
+                    row["why"] = "silent for over a day — probably gone; it would hold a rotation up"
+                else:
+                    row["ready"] = True
+                    row["why"] = "asleep — it gets the key the moment it next speaks"
+                return row
+            async with lock:
+                ok = await self._reachable(dev)
+            row["ready"] = ok
+            row["why"] = "answers on the current key" if ok else "does not answer on the current key — power-cycle it, or remove it if it is gone"
+            return row
+
+        rows = list(await asyncio.gather(*(one(d) for d in self.registry.all())))
+        rows.sort(key=lambda r: (r["ready"], r["kind"] != "router", str(r["name"]).lower()))
+        ready = [r for r in rows if r["ready"]]
+        self.audit.event("key_rotation_checked", devices=len(rows), ready=len(ready),
+                         not_ready=sorted(r["ieee"] for r in rows if not r["ready"]))
+        return {"devices": rows, "ready": len(ready), "total": len(rows), "checked_at": now,
+                "last": self.state.to_json() if self.state.phase != "idle" else None}
 
     def cancel(self) -> bool:
         if self.running and self.state.phase in ("delivering", "waiting", "switching"):

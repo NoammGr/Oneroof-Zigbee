@@ -203,6 +203,7 @@ details summary{cursor:pointer;font-weight:700;padding:4px 0}
 .log{font-family:var(--mono);font-size:12.5px;background:var(--card);border:1px solid var(--line);border-radius:var(--r);height:60vh;min-height:300px;overflow:auto;box-shadow:var(--shadow)}
 .log .row{display:grid;grid-template-columns:150px 64px 1fr;gap:10px;padding:6px 14px;border-bottom:1px solid var(--line2);white-space:pre-wrap;word-break:break-word}
 .log .row.sec{background:var(--danger-soft);border-left:3px solid var(--danger)}
+.rc-list{margin-top:8px;border:1px solid var(--line);border-radius:var(--r);max-height:280px;overflow:auto}.rc-row{display:flex;gap:10px;align-items:baseline;padding:8px 12px;border-bottom:1px solid var(--line2);flex-wrap:wrap}.rc-row:last-child{border-bottom:0}.rc-row.bad{background:var(--warn-soft)}.rc-row .devname{flex:none}
 .log .row.ERROR{color:var(--danger)}.log .row.WARNING{color:var(--warn)}
 .log .row.DEBUG{color:var(--faint)}
 .log .t{color:var(--faint)}.log .l{color:var(--mute)}
@@ -428,7 +429,10 @@ const HELP={
   'zigbee.rotation_require_all':'Switch to the new key only when every device demonstrably received it: routers must answer on the current key first, battery devices are handed the key the moment they are heard, and the key keeps being offered for as long as it takes — through restarts too. Past the maximum wait a "stalled" alert names who is holding it up: remove a device that is gone for good, or cancel. Off: switch anyway after the maximum wait; the devices that missed it must rejoin.',
   'zigbee.rotation_interval_days':'The key also rotates by itself every this many days (0 = never) — an old key is a standing target. It runs through the same evidence rules as a manual rotation and waits politely: never while you are pairing devices, never while another rotation runs.',
   'zigbee.rotation_max_window_minutes':'After this long with devices still missing the rotation raises a "stalled" alert (and, with the option above off, switches anyway). Battery sensors that report rarely need hours.',
-  'zigbee.rotate_key_after_plain_join':'A device paired without an install code receives the network key under the public key; a sniffer present at that moment may have captured it. After such a pairing the key is rotated over the air within minutes (the new device already has its own link key by then), so the exposed key dies young.',
+  'zigbee.rotate_key_after_plain_join':'A device paired without an install code receives the network key under the public key; a sniffer present at that moment may have captured it. With this on, the key is rotated over the air a couple of minutes after such a pairing (the new device already has its own link key by then). It only pays off when every device on your network takes the new key — use "Check first" under Maintenance to see whether yours do.',
+  'rotation.auto':'The network key can rotate by itself: after a pairing without an install code, on a schedule, or never. This is your decision, taken here and applied at once — no restart, and the add-on option only seeds the first value. A rotation that cannot finish (a router that does not answer, a battery sensor that never takes the key) is worse than none: it keeps offering a security frame to the most fragile devices for hours. Off by default; a manual rotation is always available under Maintenance, further down this page.',
+  'rotation.every_days':'Rotate on a schedule too (0 = never). The clock starts at the last rotation, or at the first start after this was set. Never during a pairing session, never while another rotation runs.',
+  'maintenance.rotate_check':'Gathers the very evidence a rotation would ask for, per device, without sending any key: every router is asked to answer on the current key; a battery device is judged by when it last spoke. The result tells you in a minute who would hold a rotation up — power-cycle or remove those first.',
   'zigbee.strict_install_codes':'Replaces the public ZigBeeAlliance09 link key with a random one, so a device can only join with its install code. Strongest setting, but devices that do not print an install code cannot be paired at all.',
   'mqtt.listen':'Interface the broker binds to. 0.0.0.0 = all interfaces (needed when Home Assistant runs elsewhere); 127.0.0.1 keeps it local to this host.',
   'mqtt.port':'TCP port of the MQTT broker. 8883 is the convention for MQTT over TLS, 1883 for plaintext. Home Assistant connects here — no separate broker is needed.',
@@ -1327,8 +1331,11 @@ views.logs={
     return hay.includes(this.dev.toLowerCase())||(!!name&&hay.includes(String(name).toLowerCase()));
   },
   visible(){if(this.tab==='audit')return S.audit.filter(r=>(this.aFilter==='all'||this.isSec(r))&&this.aboutDevice(r)&&(!this.q||JSON.stringify(r).toLowerCase().includes(this.q)));const order={DEBUG:0,INFO:1,WARNING:2,ERROR:3,CRITICAL:4};return S.logs.filter(r=>(this.lvl==='ALL'||(order[r.level]??1)>=order[this.lvl])&&this.aboutDevice(r)&&(!this.q||(r.msg+' '+r.logger).toLowerCase().includes(this.q)));},
-  rowEl(r){if(this.tab==='audit'){const rest=Object.assign({},r);delete rest.ts;delete rest.level;delete rest.type;const dev=r.ieee&&S.devMap.get(String(r.ieee).toLowerCase());const name=dev&&dev.friendly_name&&dev.friendly_name!==r.ieee?dev.friendly_name:null;const detail=Object.entries(rest).map(([k,v])=>k+'='+(typeof v==='string'?v:JSON.stringify(v))).join('  ');return el('div',{class:'row'+(this.isSec(r)?' sec':'')},el('span',{class:'t',text:fmtTs(r.ts)}),el('span',{class:'l',text:this.isSec(r)?'SEC':(r.level||'')}),el('span',null,el('b',{text:r.type||''}),name?el('a',{class:'devname',href:'#device/'+encodeURIComponent(r.ieee),text:'  '+name+'  '}):'  ',detail));}
-    return el('div',{class:'row '+(r.level||'')},el('span',{class:'t',text:fmtTs(r.ts)}),el('span',{class:'l',text:r.level||''}),el('span',null,el('span',{class:'mute',text:(r.logger||'')+' '}),r.msg||''));},
+  // Every device address in a line is shown as the device's name (the address stays on hover and
+  // in the export) — a list of who is missing from a rotation should read as rooms, not hex.
+  named(text){const out=[];const re=/0x[0-9a-fA-F]{16}/g;let last=0,m;while((m=re.exec(text))){const ieee=m[0].toLowerCase(),d=S.devMap.get(ieee),name=d&&d.friendly_name&&d.friendly_name.toLowerCase()!==ieee?d.friendly_name:null;if(!name)continue;if(m.index>last)out.push(text.slice(last,m.index));out.push(el('a',{class:'devname',href:'#device/'+encodeURIComponent(ieee),title:m[0],text:name}));last=m.index+m[0].length;}if(last<text.length)out.push(text.slice(last));return out;},
+  rowEl(r){if(this.tab==='audit'){const rest=Object.assign({},r);delete rest.ts;delete rest.level;delete rest.type;const dev=r.ieee&&S.devMap.get(String(r.ieee).toLowerCase());const name=dev&&dev.friendly_name&&dev.friendly_name!==r.ieee?dev.friendly_name:null;if(name)delete rest.ieee;const detail=Object.entries(rest).map(([k,v])=>k+'='+(typeof v==='string'?v:JSON.stringify(v))).join('  ');return el('div',{class:'row'+(this.isSec(r)?' sec':'')},el('span',{class:'t',text:fmtTs(r.ts)}),el('span',{class:'l',text:this.isSec(r)?'SEC':(r.level||'')}),el('span',null,el('b',{text:r.type||''}),name?el('a',{class:'devname',href:'#device/'+encodeURIComponent(r.ieee),title:r.ieee,text:'  '+name+'  '}):'  ',...this.named(detail)));}
+    return el('div',{class:'row '+(r.level||'')},el('span',{class:'t',text:fmtTs(r.ts)}),el('span',{class:'l',text:r.level||''}),el('span',null,el('span',{class:'mute',text:(r.logger||'')+' '}),...this.named(r.msg||'')));},
   tally(rows){
     if(!this.summary)return;
     if(!this.count)return;
@@ -1420,7 +1427,7 @@ views.settings={
     if(ro)h.append(el('div',{class:'notice warn'},el('b',{text:'Managed configuration. '}),'These settings are managed by the Home Assistant add-on configuration (Settings → Add-ons → OneRoof Zigbee → Configuration). Users, backups, restart and the log level can still be changed here.'));
     if(!ok)h.append(el('div',{class:'notice warn'},el('b',{text:'Read-only session. '}),'The UI acts as ',el('span',{class:'mono',text:(S.bridge||{}).ui_user||'?'}),', which is not in control_users; saving is disabled.'));
     this.usersHost=el('div');
-    h.append(el('h2',{text:'Coordinator'}),this.cardCoordinator(ro),el('h2',{text:'Zigbee network & security'}),this.cardZigbee(ro),el('h2',{text:'MQTT broker'}),this.cardMqtt(ro),this.usersHost,el('h2',{text:'Home Assistant & UI'}),this.cardHa(ro),el('h2',{text:'Backup & restore'}),this.cardBackup(ok),el('h2',{text:'Import a previous setup'}),this.cardImport(ok),el('h2',{text:'Firmware library'}),this.cardFirmware(ok),el('h2',null,'Device definitions',help('definitions.card',null,'Device definitions')),this.cardDefinitions(ok),el('h2',null,'Telegram notifications',help('notify.card',null,'Telegram notifications')),this.cardNotify(ok),el('h2',null,'Outbound connections',help('egress.card',null,'Outbound connections')),this.cardEgress(),el('h2',{text:'Maintenance'}),this.cardMaint(ok));
+    h.append(el('h2',{text:'Coordinator'}),this.cardCoordinator(ro),el('h2',{text:'Zigbee network & security'}),this.cardZigbee(ro),el('h2',null,'Automatic key rotation',help('rotation.auto',null,'Automatic key rotation')),this.cardRotationPolicy(ok),el('h2',{text:'MQTT broker'}),this.cardMqtt(ro),this.usersHost,el('h2',{text:'Home Assistant & UI'}),this.cardHa(ro),el('h2',{text:'Backup & restore'}),this.cardBackup(ok),el('h2',{text:'Import a previous setup'}),this.cardImport(ok),el('h2',{text:'Firmware library'}),this.cardFirmware(ok),el('h2',null,'Device definitions',help('definitions.card',null,'Device definitions')),this.cardDefinitions(ok),el('h2',null,'Telegram notifications',help('notify.card',null,'Telegram notifications')),this.cardNotify(ok),el('h2',null,'Outbound connections',help('egress.card',null,'Outbound connections')),this.cardEgress(),el('h2',{text:'Maintenance'}),this.cardMaint(ok));
     this.renderUsers();
   },
   showBanner(){const b=this.banner;if(!b)return;clear(b);const keys=[...this.pending];if(!keys.length){b.classList.add('hidden');return;}b.classList.remove('hidden');b.append(el('div',{class:'grow'},el('b',{text:'Restart required to apply: '}),el('span',{class:'mono',text:keys.join(', ')})),el('button',{class:'btn primary',text:'Restart now',onclick:()=>this.restart()}));},
@@ -1461,11 +1468,33 @@ views.settings={
     const cd=num(z.permit_join_cooldown_seconds,0,86400);f.reg('zigbee.permit_join_cooldown_seconds',()=>+cd.value,cd);f.setter('zigbee.permit_join_cooldown_seconds',v=>setVal(cd,v));
     const[ric,ricRow]=chk('Require install code',z.permit_join_require_install_code,null,'zigbee.permit_join_require_install_code');f.reg('zigbee.permit_join_require_install_code',()=>ric.checked,ric);f.setter('zigbee.permit_join_require_install_code',v=>{ric.checked=!!v;});
     const[one,oneRow]=chk('One device per join window',z.permit_join_close_after_first_join!==false,null,'zigbee.permit_join_close_after_first_join');f.reg('zigbee.permit_join_close_after_first_join',()=>one.checked,one);f.setter('zigbee.permit_join_close_after_first_join',v=>{one.checked=!!v;});
-    const[rk,rkRow]=chk('Rotate key after a pairing without install code',z.rotate_key_after_plain_join!==false,null,'zigbee.rotate_key_after_plain_join');f.reg('zigbee.rotate_key_after_plain_join',()=>rk.checked,rk);f.setter('zigbee.rotate_key_after_plain_join',v=>{rk.checked=!!v;});
     const[st,stRow]=chk('Strict install codes',z.strict_install_codes,'Devices without an install code cannot join at all.','zigbee.strict_install_codes');f.reg('zigbee.strict_install_codes',()=>st.checked,st);f.setter('zigbee.strict_install_codes',v=>{st.checked=!!v;});
     const[ra,raRow]=chk('Switch keys only when every device has the new one',z.rotation_require_all!==false,'Otherwise the switch goes ahead after the maximum wait and devices that missed it must rejoin.','zigbee.rotation_require_all');f.reg('zigbee.rotation_require_all',()=>ra.checked,ra);f.setter('zigbee.rotation_require_all',v=>{ra.checked=!!v;});
-    const mw=num(Math.round((z.rotation_max_window_seconds||21600)/60),1,10080);const ri=num(z.rotation_interval_days??30,0,3650);f.reg('zigbee.rotation_interval_days',()=>Math.max(0,parseInt(ri.value,10)||0),ri);f.setter('zigbee.rotation_interval_days',v=>setVal(ri,v??30));f.reg('zigbee.rotation_max_window_seconds',()=>Math.max(60,(+mw.value||360)*60),mw);f.setter('zigbee.rotation_max_window_seconds',v=>setVal(mw,Math.round((v||21600)/60)));
-    return f.card(el('div',{class:'fgrid'},fld('Channel',ch,'Changing it re-forms the network.','zigbee.channel'),fld('Max join window (s)',mx,null,'zigbee.permit_join_max_seconds'),fld('Join cooldown (s)',cd,null,'zigbee.permit_join_cooldown_seconds'),fld('Key rotation: longest wait (min)',mw,null,'zigbee.rotation_max_window_minutes'),fld('Rotate the key every (days)',ri,null,'zigbee.rotation_interval_days')),oneRow,rkRow,raRow,ricRow,stRow);
+    const mw=num(Math.round((z.rotation_max_window_seconds||21600)/60),1,10080);f.reg('zigbee.rotation_max_window_seconds',()=>Math.max(60,(+mw.value||360)*60),mw);f.setter('zigbee.rotation_max_window_seconds',v=>setVal(mw,Math.round((v||21600)/60)));
+    return f.card(el('div',{class:'fgrid'},fld('Channel',ch,'Changing it re-forms the network.','zigbee.channel'),fld('Max join window (s)',mx,null,'zigbee.permit_join_max_seconds'),fld('Join cooldown (s)',cd,null,'zigbee.permit_join_cooldown_seconds'),fld('Key rotation: longest wait (min)',mw,null,'zigbee.rotation_max_window_minutes')),oneRow,raRow,ricRow,stRow);
+  },
+  cardRotationPolicy(ok){
+    // Live and owner-decided: this card talks to api/rotation_policy, not to the managed config.
+    const tip=ok?'':NOCTL;const card=el('div',{class:'card'});const host=el('div',{class:'sub',text:'Loading…'});card.append(host);
+    const render=(r)=>{
+      const p=r.policy||{};clear(host);host.className='';
+      const aj=el('input',{type:'checkbox',checked:p.after_plain_join?true:null,disabled:!ok||null});
+      const ajRow=el('div',{class:'chk',style:'align-items:center'},el('label',{class:'sw'},aj,el('i')),el('span',null,el('b',{text:'Rotate the key by itself after a pairing without an install code'}),help('zigbee.rotate_key_after_plain_join',null,'After a pairing without an install code'),el('div',{class:'hint',text:'A couple of minutes after the pairing session goes quiet.'})));
+      const ed=num(p.every_days??0,0,3650);ed.disabled=!ok;ed.style.width='90px';
+      const edRow=el('div',{class:'bar',style:'margin-top:10px;flex-wrap:wrap'},el('span',null,el('b',{text:'Also rotate every'})),ed,el('span',null,'days ',el('span',{class:'sub',text:'(0 = never)'}),help('rotation.every_days',null,'Rotate on a schedule')));
+      const on=p.after_plain_join||(p.every_days|0)>0;
+      const state=el('div',{class:'notice'+(on?'':' warn'),style:'margin:12px 0 0'},el('b',{text:on?'Automatic rotation is on. ':'Automatic rotation is off. '}),
+        on?'The key rotates by itself'+(p.after_plain_join?' after a pairing without an install code':'')+(p.after_plain_join&&p.every_days?' and':'')+(p.every_days?' every '+p.every_days+' day'+(p.every_days===1?'':'s'):'')+'.':'The key changes only when you rotate it yourself under Maintenance, further down this page.',
+        ' Last rotation: '+(r.last_rotation_ts?rel(r.last_rotation_ts)+' ('+fmtTs(r.last_rotation_ts)+')':'none on record')+'.',
+        r.running_by?el('div',{style:'margin-top:6px'},el('b',{text:'A rotation is running now'}),' (started by '+(String(r.running_by).startsWith('policy:')?'this policy':r.running_by)+'). Switching its policy off cancels it; the current key stays in force.'):null);
+      const out=el('div',{class:'sub',style:'margin-top:8px'});
+      const save=el('button',{class:'btn primary',text:'Save',disabled:!ok,title:tip,onclick:async()=>{
+        const body={after_plain_join:aj.checked,every_days:Math.max(0,parseInt(ed.value,10)||0)};
+        save.disabled=true;try{const r2=await api('api/rotation_policy',body);toast(r2.stopped?'Saved — the running rotation was cancelled':'Automatic rotation '+((body.after_plain_join||body.every_days)?'on':'off'));render(r2);}catch(e){toast(e.message,true);save.disabled=!ok;}}});
+      host.append(el('p',{class:'sub',style:'margin:0 0 10px'},'Your decision, applied at once — no restart. ',help('rotation.auto',null,'Automatic key rotation')),ajRow,edRow,state,el('div',{class:'bar',style:'margin-top:12px'},save,out));
+    };
+    api('api/rotation_policy').then(render).catch(e=>{host.textContent=e.message;});
+    return card;
   },
   cardMqtt(ro){
     const m=CFG.mqtt||{},t=m.tls||{},tls=this.cfg.tls||{},ha=this.cfg.ha_setup||{};const f=new Form(ro);
@@ -1716,11 +1745,28 @@ views.settings={
     const btn=el('button',{class:'btn primary',text:'Rotate key over the air',disabled:!ok,title:ok?'':'UI user is not in control_users',onclick:async()=>{
       if(!(await confirmDlg('Rotate the network key over the air?',[el('p',{text:'Each device receives the new key encrypted under its own link key; after the waiting period everyone switches. Devices stay paired. Anyone holding only the old network key is locked out.'}),el('p',{class:'sub',text:'Not excluded: someone who also has the trust-centre seed (e.g. from the previous setup\'s backup files). For that, use "Rotate and re-pair everything".'})],'Rotate now',false)))return;
       try{const r=await api('api/rotate_network_key',{mode:'over_the_air',window_s:parseInt(win.value,10)});toast('Key rotation started');this._rotPoll(status,btn);}catch(e){toast(e.message,true);}}});
+    const checkOut=el('div');
+    const check=el('button',{class:'btn',text:'Check first',disabled:!ok,title:ok?'':NOCTL,onclick:async()=>{check.disabled=true;check.textContent='Checking\u2026';clear(checkOut).append(el('div',{class:'sub',text:'Asking every router to answer on the current key\u2026'}));
+      try{const r=await api('api/rotate_network_key',{mode:'check'});this.renderRotationCheck(checkOut,r.check||{});}catch(e){clear(checkOut);toast(e.message,true);}
+      check.disabled=!ok;check.textContent='Check first';}});
     const box=el('div',{style:'margin-top:14px'},el('h3',null,'Rotate network key',help('maintenance.rotate',null,'Rotate network key')),
-      el('p',{class:'sub',style:'margin:0 0 6px',text:'Devices stay paired. Use it after any suspicion that the key was seen by someone else.'}),
-      el('div',{class:'bar'},el('span',{class:'sub',text:'Wait before switching'},help('maintenance.rotate_window',null,'Wait before switching')),win,btn),status);
+      el('p',{class:'sub',style:'margin:0 0 6px',text:'Devices stay paired. Use it after any suspicion that the key was seen by someone else. Automatic rotation is decided above, under Automatic key rotation.'}),
+      el('div',{class:'bar',style:'flex-wrap:wrap'},el('span',{class:'sub',text:'Wait before switching'},help('maintenance.rotate_window',null,'Wait before switching')),win,check,help('maintenance.rotate_check',null,'Check first'),btn),checkOut,status);
     this._rotPoll(status,btn,true);
     return box;
+  },
+  renderRotationCheck(host,c){
+    const rows=c.devices||[],bad=rows.filter(d=>!d.ready),routersBad=bad.filter(d=>d.kind==='router'),battBad=bad.filter(d=>d.kind!=='router');
+    const asleep=rows.filter(d=>d.ready&&d.kind!=='router');
+    const verdict=!rows.length?el('div',{class:'notice',style:'margin-top:8px',text:'No devices are paired \u2014 nothing to rotate.'})
+      :!bad.length?el('div',{class:'notice',style:'margin-top:8px'},el('b',{text:'Ready. '}),'Every router answers on the current key'+(asleep.length?'; '+asleep.length+' battery device'+(asleep.length===1?'':'s')+' will take the key the moment '+(asleep.length===1?'it':'they')+' next speak'+(asleep.length===1?'s':'')+' \u2014 that can take as long as their reporting interval.':'.'))
+      :el('div',{class:'notice warn',style:'margin-top:8px'},el('b',{text:bad.length+' of '+rows.length+' would hold a rotation up. '}),
+        routersBad.length?routersBad.length+' router'+(routersBad.length===1?' does':'s do')+' not answer on the current key \u2014 power-cycle '+(routersBad.length===1?'it':'them')+', or remove what is gone. ':'',
+        battBad.length?battBad.length+' battery device'+(battBad.length===1?' has':'s have')+' not spoken for over a day \u2014 wake '+(battBad.length===1?'it':'them')+' (press its button) or remove '+(battBad.length===1?'it':'them')+'. ':'',
+        'With "switch only when every device has the key" on, the rotation waits for these until you act.');
+    const line=d=>el('div',{class:'rc-row'+(d.ready?'':' bad')},el('span',{class:'badge '+(d.ready?'ok':'warn'),style:'white-space:nowrap',text:d.ready?'ready':'not ready'}),
+      el('a',{class:'devname',href:'#device/'+encodeURIComponent(d.ieee),text:d.name||d.ieee,title:d.ieee}),el('span',{class:'sub',text:(d.kind==='router'?'router':'battery')+' \u00b7 '+d.why+(d.last_seen?' \u00b7 last heard '+rel(d.last_seen):'')}));
+    clear(host).append(verdict,el('div',{class:'rc-list'},...rows.map(line)));
   },
   rollbackFromBackup(status,btn){
     const file=el('input',{type:'file',accept:'.ozbk'}),pw=pwd('backup password');
