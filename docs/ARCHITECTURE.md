@@ -167,9 +167,16 @@ bridge, the Statistics app) repeats it. The rules that keep it honest:
   nothing about its button. Mains devices past `ROUTER_POLL_AFTER_S` (or
   `UNREPORTED_POLL_AFTER_S` when their reporting is not `ok`) get a full `_refresh_state`: every
   endpoint, every state cluster, through `quirks.translate_state` so a second gang lands on
-  `state_l2`. Two unanswered polls in a row mark the device offline (`availability` = offline,
-  audit `device_unanswering`); it is then tried every five minutes and comes back the moment it is
-  heard.
+  `state_l2`. Two unanswered polls in a row and *nothing heard since the first miss* mark the
+  device offline (`availability` = offline, audit `device_unanswering`); it is then tried after
+  5, 10, 15, 30 minutes (`POLL_BACKOFF_S`) and comes back the moment it is heard, with a refresh
+  scheduled — it came back in whatever state its firmware chose. A device that fails the polls
+  but *has* been heard since the first miss (a plug whose reports arrive while our unicasts to
+  it die on a broken route) is alive: it stays online with what it last reported, is written up
+  once (`device_not_answering_reads`, log line "reports but does not answer reads"), and is asked
+  on the same growing backoff. Its reports do not clear that backoff — only an answered read or
+  an offline→online transition does; clearing it on every frame is what made such a device flap
+  offline/online every minute or two all night in 2.13.0.
 * **Nothing remembered is trusted after a gap.** After our own start, after the serial link comes
   back (`coordinator_back`), and after a device rejoins (a power cut), every device that can answer
   is asked (`_refresh_all_states` / `_schedule_refresh`). While the radio is gone `bridge/state` is

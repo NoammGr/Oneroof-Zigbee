@@ -1,5 +1,29 @@
 # Changelog
 
+## [2.13.1] — 2026-09-07
+
+### Fixed — a plug that reports but never answers flapped offline/online all night
+Seen on a real network the first night on 2.13.0: a smart plug in the garage whose power reports
+kept arriving while every read the gateway sent it timed out (its route to us worked, ours to it
+did not). The 2.13.0 poll called it offline after two unanswered reads, its next power report a
+few seconds later cleared the miss count *and* the five-minute backoff and marked it online, the
+next poll a minute later failed again — offline, online, offline, every one to three minutes,
+all night. Every consumer (One Roof Bridge, Home Assistant) asked for its state on each
+"back online", so each flip cost the whole network another timed-out read as well.
+
+- A device that fails its polls but **has been heard since the first miss** is alive, just not
+  answering: it stays online with the state it last reported and is asked again after 5, then
+  10, 15, 30 minutes — not every minute. It is written up once in the log ("reports but does not
+  answer reads — check its link quality and route") and in the audit
+  (`device_not_answering_reads`).
+- A device that fails its polls **and has not been heard since the first miss** is gone, as
+  before: offline after two misses, then tried on the same growing backoff.
+- A report no longer clears the backoff. Only an answered read, or the device coming back after
+  being offline, resets the bookkeeping.
+- A device that comes back online after being offline is now asked what it *is* straight away
+  (`_schedule_refresh`), not on the next poll — a bulb cut from power comes back in whatever
+  state its firmware chose.
+
 ## [2.13.0] — 2026-09-06
 
 ### Fixed — a light that shows ON while it is dark: every way a stale state could survive

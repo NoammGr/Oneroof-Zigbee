@@ -101,6 +101,8 @@ class Gateway:
         # power every ten seconds says nothing about whether someone pressed its button.
         self._state_evidence: dict[int, float] = {}
         self._poll_failures: dict[int, int] = {}  # consecutive polls a mains device did not answer
+        self._poll_first_miss: dict[int, float] = {}  # when the current run of unanswered polls began
+        self._unanswering_noted: set[int] = set()  # devices already written up as "talks, never answers" this run
         self._set_locks: dict[int, asyncio.Lock] = {}  # commands to one device run in order
         self._poll_not_before: dict[int, float] = {}  # a device already marked offline is asked less often
         self._refresh_tasks: dict[int, asyncio.Task] = {}  # one pending "ask it what it is" per device
@@ -266,6 +268,11 @@ class Gateway:
     # A mains device that fails this many polls in a row is offline until it is heard again: a bulb
     # cut from power at the wall must not keep showing the last thing it reported.
     OFFLINE_AFTER_FAILED_POLLS = 2
+    # After that many misses a device is asked again after 5, 10, 15, 30 minutes - not every
+    # minute: each unanswered read holds the radio for its full timeout, and a device that never
+    # answers (a plug whose route back to us is broken while its own reports still arrive) would
+    # otherwise cost the whole network that time all night long.
+    POLL_BACKOFF_S = (300, 600, 900, 1800)
     REPORTING_RETRY_S = 600  # a reporting setup that failed (timeout, refused bind) is tried again on contact after this
     # A device that joins still called by its address is kept out of Home Assistant this long, or
     # until it is named: HA turns the first name it sees into the entity id and never changes it.
@@ -356,6 +363,9 @@ class Gateway:
         if heard:
             dev.last_seen = time.time()
             self._poll_failures.pop(dev.ieee, None)
+            self._poll_first_miss.pop(dev.ieee, None)
+            self._poll_not_before.pop(dev.ieee, None)
+            self._unanswering_noted.discard(dev.ieee)
             if not dev.available:
                 dev.available = True
                 self._dirty = True
@@ -437,14 +447,25 @@ class Gateway:
             if since and now - since < self._poll_after(dev):
                 continue
             heard = await self._refresh_state(dev)
-            if heard:
-                self._poll_not_before.pop(dev.ieee, None)
-            else:
+            if not heard:
                 n = self._poll_failures[dev.ieee] = self._poll_failures.get(dev.ieee, 0) + 1
+                first_miss = self._poll_first_miss.setdefault(dev.ieee, now)
                 log.debug("%s: poll %d unanswered", dev.ieee_str, n)
                 if n >= self.OFFLINE_AFTER_FAILED_POLLS:
-                    self._poll_not_before[dev.ieee] = now + 300  # one attempt per five minutes from here on
-                    if dev.available:
+                    backoff = self.POLL_BACKOFF_S[min(n - self.OFFLINE_AFTER_FAILED_POLLS, len(self.POLL_BACKOFF_S) - 1)]
+                    self._poll_not_before[dev.ieee] = now + backoff
+                    if (dev.last_seen or 0.0) >= first_miss:
+                        # It has been heard since the first miss: alive, just not answering what
+                        # we ask (its reports reach us, our unicasts do not reach it). Offline
+                        # would be a lie that flips back on its next report - and every flip
+                        # makes the consumers ask for its state again. It stays online with the
+                        # state it last reported, and is asked less and less often.
+                        if dev.ieee not in self._unanswering_noted:
+                            self._unanswering_noted.add(dev.ieee)
+                            log.info("%s: reports but does not answer reads (%d misses) - kept online, asked again in %d min; "
+                                     "check its link quality and route", dev.friendly_name, n, backoff // 60)
+                            self.audit.event("device_not_answering_reads", ieee=dev.ieee_str, polls=n, next_poll_s=backoff)
+                    elif dev.available:
                         dev.available = False
                         self._dirty = True
                         await self._publish_availability(dev, False)
@@ -984,16 +1005,24 @@ class Gateway:
             return
         dev.last_seen = time.time()
         dev.lqi = m.lqi
-        self._poll_failures.pop(dev.ieee, None)
-        self._poll_not_before.pop(dev.ieee, None)
         if self._rotation is not None and self._rotation.running:
             self._rotation.device_heard(dev)  # a sleeping device is awake: hand it the new key now
         if not dev.available:
-            # Heard from it: it is online, whatever its import/registry state said.
+            # Heard from it: it is online, whatever its import/registry state said. Its poll
+            # bookkeeping starts over and it is asked what it IS now - a device that was cut from
+            # power came back in whatever state its firmware chose. A device that is online and
+            # merely fails our reads keeps its backoff: this frame is one more report, not an
+            # answer, and clearing the backoff on every report is what made such a device flap
+            # offline/online all night.
             dev.available = True
             self._dirty = True
+            self._poll_failures.pop(dev.ieee, None)
+            self._poll_first_miss.pop(dev.ieee, None)
+            self._poll_not_before.pop(dev.ieee, None)
             await self._publish_availability(dev, True)
             self._emit_device_event("online", dev)
+            if dev.is_router or dev.rx_on_when_idle:
+                self._schedule_refresh(dev)
         if (str(dev.manufacturer or "").startswith("_TZ") and dev.ieee not in self._settled
                 and dev.ieee not in self._interview_tasks and dev.context.get("reporting_done")):
             self._settled.add(dev.ieee)  # once per device per start (the device forgets it on its own power cycle)

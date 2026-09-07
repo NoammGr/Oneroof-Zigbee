@@ -1608,6 +1608,82 @@ async def test_a_router_that_stops_answering_goes_offline(tmp_path):
     fake.emit_incoming(NWK + 65, 0x0006, bytes([0x18, 0x33, 0x0A, 0x00, 0x00, 0x10, 0x01]))
     await asyncio.sleep(0.05)
     assert dev.available and dev.ieee not in gw._poll_not_before, "heard: online, and polled normally again"
+    assert dev.ieee not in gw._poll_failures and dev.ieee not in gw._poll_first_miss, "a fresh start"
+    assert dev.ieee in gw._refresh_tasks, "and asked what it is now - it came back in whatever state its firmware chose"
+    await t.close()
+
+
+async def test_a_plug_that_reports_but_never_answers_does_not_flap(tmp_path):
+    """Seen on a real network: a plug in the garage whose power reports arrive all night while
+    every read we send it times out (its route back is broken, ours is not). 2.13.0 called it
+    offline after two misses and online again on its next report - every minute or two, all
+    night, with every consumer asking for its state on each "back online". A device heard since
+    the first miss is alive: it stays online with what it last reported, and is asked less and
+    less often instead of every minute."""
+    fake, coord, broker, gw, t = await make(tmp_path)
+    dev = _bulb(gw, IEEE + 67, NWK + 67, clusters=(0, 6, 0x0B04))
+    dev.available = True
+    gw._state_evidence[dev.ieee] = 0.0
+    noted = []
+    coord.audit.subscribe(lambda r: noted.append(r) if r.get("type") == "device_not_answering_reads" else None)
+
+    async def nobody_home(d, ep, cluster, attrs):
+        raise asyncio.TimeoutError
+
+    gw.read_attributes = nobody_home
+    power_report = bytes([0x18, 0x33, 0x0A, 0x0B, 0x05, 0x29, 0x10, 0x00])  # active power 16 W
+
+    fake.emit_incoming(NWK + 67, 0x0B04, power_report)
+    await asyncio.sleep(0.05)
+    await gw._poll_silent_routers()
+    fake.emit_incoming(NWK + 67, 0x0B04, power_report)  # it keeps talking between the polls
+    await asyncio.sleep(0.05)
+    assert dev.ieee in gw._poll_failures, "a report is not an answer: the miss still counts"
+    await gw._poll_silent_routers()
+    assert dev.available, "heard since the first miss: alive, just not answering"
+    assert broker.last(f"oneroof/zigbee/{dev.ieee_str}/availability") != b"offline"
+    assert not [e for e in broker.published if e[0].endswith("/availability") and e[1] == b"offline"]
+    assert gw._poll_not_before[dev.ieee] > time.time() + 250, "and asked again in five minutes, not one"
+    assert len(noted) == 1, "written up once"
+
+    fake.emit_incoming(NWK + 67, 0x0B04, power_report)
+    await asyncio.sleep(0.05)
+    assert gw._poll_not_before[dev.ieee] > time.time() + 250, "another report does not re-arm the poll"
+    assert dev.available
+    n = len(broker.published)
+    await gw._poll_silent_routers()
+    assert len(broker.published) == n, "not asked again before its time"
+
+    # the backoff grows: 5, 10, 15, 30 minutes
+    gw._poll_not_before[dev.ieee] = 0.0
+    await gw._poll_silent_routers()
+    assert gw._poll_not_before[dev.ieee] > time.time() + 550
+    assert len(noted) == 1, "not written up again"
+
+    # one answered read and everything is back to normal
+    async def answer(d, ep, cluster, attrs):
+        return {"state": "ON"} if cluster == 0x0006 else {}
+
+    gw.read_attributes = answer
+    gw._poll_not_before[dev.ieee] = 0.0
+    await gw._poll_silent_routers()
+    assert dev.ieee not in gw._poll_failures and dev.ieee not in gw._poll_not_before
+    assert dev.state["state"] == "ON"
+    gw.read_attributes = nobody_home
+    gw._state_evidence[dev.ieee] = 0.0
+    await gw._poll_silent_routers()
+    fake.emit_incoming(NWK + 67, 0x0B04, power_report)
+    await asyncio.sleep(0.05)
+    await gw._poll_silent_routers()
+    assert dev.available and len(noted) == 2, "a new run is written up again"
+
+    # silent AND unanswering is a different thing: that is a device that is gone
+    for book in (gw._poll_failures, gw._poll_first_miss, gw._poll_not_before):
+        book.pop(dev.ieee)
+    await asyncio.sleep(0.01)
+    await gw._poll_silent_routers()
+    await gw._poll_silent_routers()
+    assert not dev.available, "nothing heard since the first miss: offline"
     await t.close()
 
 
