@@ -1768,6 +1768,8 @@ class Gateway:
                 # one that matches the mode being set or already in force — heating in heat, cooling
                 # otherwise.
                 mode = str(cmd.get("system_mode") or dev.state.get(key_of("system_mode")) or "")
+                if mode == "off":
+                    mode = str(dev.context.get("single_setpoint_mode") or "")
                 attr, other = (0x0012, 0x0011) if mode == "heat" else (0x0011, 0x0012)
             raw = int(round(value * 100))
             try:

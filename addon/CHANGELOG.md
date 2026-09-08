@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.14.1] — 2026-09-08
+
+### Fixed — the air conditioner's temperature jumped back a degree a second after you set it
+Pick 25 °C in Apple Home (or Home Assistant) and a second later it read 24; set it again and it
+stayed. ZCL forbids an air conditioner's two setpoints being equal — they sit at least one
+dead band (1 °C) apart — so the One Roof IR blaster carries the set temperature on the setpoint
+of the mode in force and keeps the other one a degree behind: cooling 25, heating 24 while
+cooling at 25. It reports the two in separate frames, and the gateway took whichever arrived
+for "the" set temperature: the trailing 24 overwrote the 25. The second attempt only stuck
+because it changed nothing on the device, so nothing was reported back. The gateway now takes
+only the setpoint that belongs to the mode in force (heating in heat, cooling otherwise; when
+the unit is off, the mode it was last in) and drops the partner.
+
+### Changed
+- Settings → Automatic key rotation: the hint under the switch says when a rotation is
+  actually triggered — only after a pairing session you opened without an install code; a
+  device that drops off and comes back on its own never counts.
+
 ## [2.14.0] — 2026-09-07
 
 ### Changed — automatic key rotation is your decision, and off by default

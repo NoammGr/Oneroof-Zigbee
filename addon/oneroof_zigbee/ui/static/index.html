@@ -1479,7 +1479,7 @@ views.settings={
     const render=(r)=>{
       const p=r.policy||{};clear(host);host.className='';
       const aj=el('input',{type:'checkbox',checked:p.after_plain_join?true:null,disabled:!ok||null});
-      const ajRow=el('div',{class:'chk',style:'align-items:center'},el('label',{class:'sw'},aj,el('i')),el('span',null,el('b',{text:'Rotate the key by itself after a pairing without an install code'}),help('zigbee.rotate_key_after_plain_join',null,'After a pairing without an install code'),el('div',{class:'hint',text:'A couple of minutes after the pairing session goes quiet.'})));
+      const ajRow=el('div',{class:'chk',style:'align-items:center'},el('label',{class:'sw'},aj,el('i')),el('span',null,el('b',{text:'Rotate the key by itself after a pairing without an install code'}),help('zigbee.rotate_key_after_plain_join',null,'After a pairing without an install code'),el('div',{class:'hint',text:'Only after you open the join window without an install code and a device joins through it \u2014 a couple of minutes after that session goes quiet. A device that drops off and comes back on its own never counts.'})));
       const ed=num(p.every_days??0,0,3650);ed.disabled=!ok;ed.style.width='90px';
       const edRow=el('div',{class:'bar',style:'margin-top:10px;flex-wrap:wrap'},el('span',null,el('b',{text:'Also rotate every'})),ed,el('span',null,'days ',el('span',{class:'sub',text:'(0 = never)'}),help('rotation.every_days',null,'Rotate on a schedule')));
       const on=p.after_plain_join||(p.every_days|0)>0;

@@ -781,10 +781,35 @@ def test_irblaster_private_cluster_reports_decode_by_model_not_globally():
     # standard thermostat / fan reports land on the family keys; both setpoints are one target
     st = quirks.translate_state(dev, 1, decode_attributes(0x0201, [(0x0011, 2400), (0x0012, 2400), (0x001C, 3), (0x0000, 2315)], dev.context))
     assert st == {"current_heating_setpoint": 24.0, "system_mode": "cool", "local_temperature": 23.15}
+    dev.state["system_mode"] = "cool"
     assert quirks.translate_state(dev, 1, decode_attributes(0x0202, [(0x0000, 5)])) == {"fan_mode": "auto"}
     assert quirks.translate_state(dev, 1, decode_attributes(0x0202, [(0x0000, 6)])) == {"fan_mode": "smart"}
     assert quirks.translate_state(dev, 2, decode_attributes(0x0006, [(0x0000, 1)])) == {"swing": "ON"}
     assert decode_attributes(0x0201, [(0x0000, -0x8000)]) == {}  # 0x8000 = unknown temperature
+
+
+def test_irblaster_one_set_temperature_is_the_setpoint_of_the_mode_in_force():
+    """ZCL keeps an air conditioner's two setpoints a dead band apart (cooling 25 / heating 24
+    while cooling at 25), and the IR blaster reports them in separate frames. The trailing one
+    used to overwrite the set temperature a second after it was picked: Apple Home showed 24."""
+    dev = irblaster()
+    dev.state["system_mode"] = "cool"
+    frames = [decode_attributes(0x0201, [(0x0011, 2500)], dev.context), decode_attributes(0x0201, [(0x0012, 2400)], dev.context)]
+    assert quirks.translate_state(dev, 1, frames[0]) == {"current_heating_setpoint": 25.0}
+    assert quirks.translate_state(dev, 1, frames[1]) == {}                       # the partner, not the set temperature
+    # heating: the heating setpoint leads and the cooling one (a degree above) is the partner
+    dev.state["system_mode"] = "heat"
+    assert quirks.translate_state(dev, 1, decode_attributes(0x0201, [(0x0011, 2600)], dev.context)) == {}
+    assert quirks.translate_state(dev, 1, decode_attributes(0x0201, [(0x0012, 2500)], dev.context)) == {"current_heating_setpoint": 25.0}
+    # both in one frame: the mode's own setpoint wins whichever order they come in
+    assert quirks.translate_state(dev, 1, decode_attributes(0x0201, [(0x0011, 2600), (0x0012, 2500)], dev.context)) == {"current_heating_setpoint": 25.0}
+    # a mode change in the same frame decides for that frame
+    assert quirks.translate_state(dev, 1, decode_attributes(0x0201, [(0x001C, 3), (0x0011, 2200), (0x0012, 2100)], dev.context)) == {"system_mode": "cool", "current_heating_setpoint": 22.0}
+    # switched off, the pair stays as the last mode left it - the gateway remembers which
+    dev.state["system_mode"] = "off"
+    assert quirks.translate_state(dev, 1, decode_attributes(0x0201, [(0x0012, 2100)], dev.context)) == {}
+    assert quirks.translate_state(dev, 1, decode_attributes(0x0201, [(0x0011, 2200)], dev.context)) == {"current_heating_setpoint": 22.0}
+    assert dev.context["single_setpoint_mode"] == "cool"
 
 
 def test_irblaster_private_attribute_encoding_types_and_limits():

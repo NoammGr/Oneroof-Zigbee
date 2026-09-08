@@ -991,6 +991,29 @@ def _dp_feature(dp: Dp) -> dict[str, Any]:
 _LUMI_CLICKS = {0: "hold", 1: "single", 2: "double", 3: "triple", 4: "quadruple", 16: "hold", 17: "release", 18: "shake", 255: "release"}
 
 
+def _one_setpoint(dev: Device, out: dict[str, Any]) -> None:
+    """An air conditioner has ONE set temperature, but ZCL forbids its two setpoints being equal:
+    they must sit at least MinSetpointDeadBand (1 °C) apart. So the setpoint of the mode in force
+    carries the temperature and the other trails one dead band behind — cooling = 25, heating = 24
+    while cooling at 25. The IR blaster reports the two in separate frames, and taking the trailing
+    one for the set temperature is how Apple Home and Home Assistant showed 24 a second after the
+    owner picked 25 (and kept it, since the second 25 changed nothing the device would report).
+
+    Only the setpoint that matches the mode is the set temperature; the partner is dropped."""
+    mode = out.get("system_mode") or dev.state.get("system_mode")
+    if mode not in (None, "off"):
+        dev.context["single_setpoint_mode"] = mode
+    elif mode == "off":
+        # switched off, the device keeps the pair as its last mode left them
+        mode = dev.context.get("single_setpoint_mode")
+    lead = "current_heating_setpoint" if mode == "heat" else "current_cooling_setpoint"
+    value = out.pop(lead, None)
+    out.pop("current_cooling_setpoint", None)
+    out.pop("current_heating_setpoint", None)
+    if value is not None:
+        out["current_heating_setpoint"] = value
+
+
 def translate_state(dev: Device, ep: int, changed: dict[str, Any], features: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """Rename decoded keys to the device's published keys (multi-gang suffixes, on/off as
     contact/occupancy/action, Aqara voltage in mV, linear illuminance)."""
@@ -1031,9 +1054,8 @@ def translate_state(dev: Device, ep: int, changed: dict[str, Any], features: lis
             else:
                 key = k
         out[key or k] = v
-    if q and q.single_setpoint and "current_cooling_setpoint" in out:
-        # both ZCL setpoints mean the same thing here: report them as the one set temperature
-        out["current_heating_setpoint"] = out.pop("current_cooling_setpoint")
+    if q and q.single_setpoint:
+        _one_setpoint(dev, out)
     if q and q.vendor == "Aqara":
         v = out.get("voltage")
         if isinstance(v, (int, float)) and not isinstance(v, bool) and v < 100:
