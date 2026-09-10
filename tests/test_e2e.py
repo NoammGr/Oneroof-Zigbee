@@ -552,8 +552,18 @@ async def test_15_legacy_layout_keeps_existing_broker_topics_and_ha_entities(tmp
 
     fake = FakeZnp()
     world = World(fake)
+    handed_out = False
 
     async def fake_open_serial(port, baudrate=115200, *, rtscts=False):
+        # This test's port is handed out once, to this test's gateway. The module's earlier
+        # stack is still alive and still retrying the dongle test_14 unplugged - through this
+        # same module-level hook - and on a slow runner its retry landed here: two transports
+        # reading one fake stream ("read() called while another coroutine is already waiting")
+        # and this gateway never came up. A busy port keeps it in its own backoff loop.
+        nonlocal handed_out
+        if handed_out:
+            raise OSError("port busy")
+        handed_out = True
         return fake.reader, fake.writer
 
     main_mod.open_serial = fake_open_serial
