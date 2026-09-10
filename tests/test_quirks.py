@@ -241,6 +241,12 @@ def test_native_layout_object_ids_and_to_json():
     assert j["kind"] == "Contact sensor" and j["vendor"] == "Aqara" and j["category"] == "sensor"
     back = Device.from_json(j)
     assert back.model == "lumi.sensor_magnet.aq2" and back.kind == "Contact sensor"
+    # a devices.json written by a newer (or withdrawn) version carries keys this one does not
+    # know; they are dropped, not fatal - the gateway must still start with its devices
+    j["location"] = "Kitchen"
+    j["endpoints"]["1"]["future_field"] = 1
+    back = Device.from_json(j)
+    assert back.model == "lumi.sensor_magnet.aq2" and not hasattr(back, "location")
 
 
 def test_entity_id_proposed_to_ha_follows_the_panel_name():

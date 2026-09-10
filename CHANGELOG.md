@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.17.1] — 2026-09-10
+
+### Changed — the house map is withdrawn
+Versions 2.15.0 to 2.17.0 turned the Map page into a 3D house (rooms from device names, Home
+Assistant areas, a Location field on the device page). On a real network it did not describe
+the house, so it is gone: the Map page is the network graph again, exactly as in 2.14.1, and
+the device page has no Location. Nothing else from those versions remains. A `house.json`
+left in the add-on config folder is unused and can be deleted.
+
+### Fixed — a device file written by a newer version no longer stops the gateway
+Coming back from 2.17.0, `devices.json` carries a field this version does not know. The
+registry now keeps only the fields it knows instead of refusing the file, so the gateway
+starts with all its devices.
+
 ## [2.14.1] — 2026-09-08
 
 ### Fixed — the air conditioner's temperature jumped back a degree a second after you set it

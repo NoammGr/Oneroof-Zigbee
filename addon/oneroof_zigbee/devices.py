@@ -6,7 +6,7 @@ import json
 import logging
 import os
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
@@ -110,11 +110,14 @@ class Device:
 
     @staticmethod
     def from_json(d: dict[str, Any]) -> Device:
-        d = dict(d)
-        for derived in ("kind", "vendor", "category"):
-            d.pop(derived, None)
+        # Only the fields this version knows: a devices.json written by a newer (or withdrawn)
+        # version may carry more, and an unknown key must not stop the gateway from starting.
+        known = {f.name for f in fields(Device)}
+        d = {k: v for k, v in d.items() if k in known or k == "ieee"}
         d["ieee"] = ieee_int(d["ieee"])
-        d["endpoints"] = {int(k): Endpoint(**v) for k, v in d.get("endpoints", {}).items()}
+        ep_known = {f.name for f in fields(Endpoint)}
+        d["endpoints"] = {int(k): Endpoint(**{a: b for a, b in v.items() if a in ep_known})
+                          for k, v in d.get("endpoints", {}).items()}
         return Device(**d)
 
 
