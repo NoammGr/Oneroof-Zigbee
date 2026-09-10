@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import logging
 import time
 import json
@@ -1590,9 +1591,13 @@ async def test_a_restart_pauses_a_rotation_instead_of_cancelling_it(tmp_path):
             break
         await asyncio.sleep(0.1)
 
-    # the shutdown: the task is cancelled WITHOUT anyone calling cancel()
-    gw._rotation._task.cancel()
-    await asyncio.sleep(0.2)
+    # the shutdown: the task is cancelled WITHOUT anyone calling cancel(). Wait for the task
+    # itself, not a fixed beat: saving the progress runs the keystore's key derivation in a
+    # thread, which a busy CI runner can stretch well past 200 ms.
+    task = gw._rotation._task
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await asyncio.wait_for(task, 10)
 
     assert any(e["type"] == "network_key_rotation_paused" for e in events), \
         [e["type"] for e in events if "rotation" in e["type"]]
