@@ -42,7 +42,7 @@ def test_findings_name_the_device_and_say_why():
     flap = next(f for f in r["findings"] if f["kind"] == "flapping")
     assert "4 times" in flap["detail"]
     assert r["verdict"] == "bad" and r["walked"] and r["devices"] == 5
-    assert r["counts"] == {"offline": 1, "weak_link": 1, "flapping": 1, "quiet": 2, "busy_router": 0}
+    assert r["counts"] == {"offline": 1, "weak_link": 1, "flapping": 1, "quiet": 2, "busy_router": 0, "battery": 0}
     # the worst first, then by name
     assert [f["severity"] for f in r["findings"]] == sorted((f["severity"] for f in r["findings"]), key=lambda s: s != "bad")
 
@@ -73,3 +73,40 @@ def test_the_health_line_is_the_family_shape():
     assert line["status"] == "degraded" and line["reasons"] == ["coordinator offline"]
     line = health_line(network_health(fine, [], {}, now=1e6), "2.18.0", 1, True)
     assert line["status"] == "ok" and line["reasons"] == []
+
+
+def test_battery_forecast_is_a_line_through_the_readings_and_honest_about_thin_data():
+    from oneroof_zigbee.health import battery_forecast
+    day = 86400
+    now = 1e6
+    assert battery_forecast(None, now) is None
+    assert battery_forecast([[now - day, 90]], now)["confidence"] == "none"                       # one reading
+    assert battery_forecast([[now - 2 * day, 90], [now - day, 89], [now, 88]], now)["days_left"] is None   # two days: too soon
+    # 1 % a day for three weeks: from 79 % to the 10 % floor in about 69 days
+    log = [[now - (21 - i) * day, 100 - i] for i in range(22)]
+    fc = battery_forecast(log, now)
+    assert fc["pct"] == 79 and fc["confidence"] == "ok" and abs(fc["per_day"] + 1.0) < 0.01 and 68 <= fc["days_left"] <= 70
+    # a week of history: a forecast, but marked as an early guess
+    fc = battery_forecast(log[-8:], now)
+    assert fc["confidence"] == "low" and fc["days_left"] is not None
+    # flat or charging: no forecast
+    flat = [[now - (21 - i) * day, 100] for i in range(22)]
+    assert battery_forecast(flat, now)["days_left"] is None
+
+
+def test_a_battery_about_to_run_out_is_a_finding_and_a_reason():
+    day = 86400
+    now = 1e6
+    dying = [[now - (20 - i) * day, 40 - i * 1.5] for i in range(21)]        # 1.5 %/day, now at 10 %
+    devs = [DEVS[0], dict(DEVS[4], last_seen=now - 60, battery_log=dying, battery_pct=10),
+            {"ieee": "0x00158d0000000009", "name": "Kitchen - Leak sensor", "kind": "end_device", "available": True,
+             "last_seen": now - 60, "battery": True, "battery_pct": 14},
+            {"ieee": "0x00158d000000000a", "name": "Hall - Motion", "kind": "end_device", "available": True,
+             "last_seen": now - 60, "battery": True, "battery_log": [[now - (20 - i) * day, 60 - i] for i in range(21)]}]
+    r = network_health(devs, [], {}, now=now)
+    by = {f["name"]: f for f in r["findings"] if f["kind"] == "battery"}
+    assert by["Garage - Door"]["severity"] == "bad" and "time for a new one" in by["Garage - Door"]["detail"]
+    assert by["Kitchen - Leak sensor"]["severity"] == "warn"                       # 14 %, no history: still low
+    assert "Hall - Motion" not in by                                              # 40 % and a month to go
+    assert r["counts"]["battery"] == 2
+    assert "2 batteries to replace" in health_line(r, "x", 1, True)["reasons"]

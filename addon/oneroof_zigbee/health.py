@@ -6,6 +6,7 @@ Findings, each naming a device and saying why in plain words:
 * flapping     — went offline/online four times or more in the last day
 * quiet        — not heard for far longer than its kind should be (mains 6 h, battery 26 h)
 * busy_router  — a router carrying more children than is comfortable
+* battery      — at or under 15 %, or about two weeks from empty on its own trend
 
 The same numbers feed the health line every One Roof add-on publishes to Home Assistant
 (`oneroof/zigbee/health`, discovered by itself), so one card shows the family.
@@ -20,6 +21,43 @@ FLAPS_PER_DAY = 4
 QUIET_MAINS_S = 6 * 3600
 QUIET_BATTERY_S = 26 * 3600
 BUSY_CHILDREN = 10
+
+
+BATTERY_REPLACE_PCT = 10          # what "empty" means: most devices stop reporting around here
+BATTERY_WARN_DAYS = 14
+BATTERY_LOW_PCT = 15
+
+
+def battery_forecast(log: list[list[float]] | None, now: float | None = None) -> dict[str, Any] | None:
+    """From a device's [[ts, pct], ...] history: how long until it needs a new battery.
+    A straight line through the last 120 days of readings; honest about thin data ("low"
+    confidence under two weeks of history, none under three points or five days)."""
+    now = now or time.time()
+    pts = [(float(t), float(p)) for t, p in (log or []) if now - float(t) <= 120 * 86400]
+    if not pts:
+        return None
+    pct = pts[-1][1]
+    out: dict[str, Any] = {"pct": pct, "days_left": None, "per_day": None, "confidence": "none", "points": len(pts)}
+    if len(pts) < 3:
+        return out
+    span = pts[-1][0] - pts[0][0]
+    if span < 5 * 86400:
+        return out
+    n = len(pts)
+    mx = sum(t for t, _ in pts) / n
+    my = sum(p for _, p in pts) / n
+    sxx = sum((t - mx) ** 2 for t, _ in pts)
+    if sxx == 0:
+        return out
+    slope = sum((t - mx) * (p - my) for t, p in pts) / sxx        # pct per second
+    per_day = slope * 86400
+    out["per_day"] = round(per_day, 3)
+    out["confidence"] = "ok" if span >= 14 * 86400 else "low"
+    if per_day >= -0.001:
+        out["days_left"] = None                                     # flat or charging: no forecast
+        return out
+    out["days_left"] = max(0, int((pct - BATTERY_REPLACE_PCT) / -per_day))
+    return out
 
 
 def best_parents(devices: list[dict[str, Any]], links: list[dict[str, Any]]) -> dict[str, tuple[str, int]]:
@@ -68,6 +106,16 @@ def network_health(devices: list[dict[str, Any]], links: list[dict[str, Any]],
             hours = int((now - seen) // 3600)
             add("quiet", "warn", ieee, f"not heard for {hours} h" + (" — a battery device should report within a day" if d.get("battery") else " — a mains device should speak within hours"))
 
+    for d in devices:
+        if d["kind"] == "coordinator" or not d.get("battery"):
+            continue
+        fc = battery_forecast(d.get("battery_log"), now)
+        pct = fc["pct"] if fc else d.get("battery_pct")
+        if pct is not None and pct <= BATTERY_LOW_PCT:
+            add("battery", "bad" if pct <= BATTERY_REPLACE_PCT else "warn", d["ieee"], f"battery at {int(pct)} % — time for a new one")
+        elif fc and fc.get("days_left") is not None and fc["days_left"] <= BATTERY_WARN_DAYS:
+            add("battery", "warn", d["ieee"], f"about {fc['days_left']} days of battery left ({int(pct)} % now)")
+
     parents = best_parents(devices, links) if links else {}
     children: dict[str, int] = {}
     for ieee, (relay, lqi) in parents.items():
@@ -81,7 +129,7 @@ def network_health(devices: list[dict[str, Any]], links: list[dict[str, Any]],
 
     order = {"bad": 0, "warn": 1}
     findings.sort(key=lambda f: (order[f["severity"]], f["name"].lower()))
-    counts = {k: sum(1 for f in findings if f["kind"] == k) for k in ("offline", "weak_link", "flapping", "quiet", "busy_router")}
+    counts = {k: sum(1 for f in findings if f["kind"] == k) for k in ("offline", "weak_link", "flapping", "quiet", "busy_router", "battery")}
     verdict = "bad" if any(f["severity"] == "bad" for f in findings) else "warn" if findings else "ok"
     return {"verdict": verdict, "findings": findings, "counts": counts,
             "devices": sum(1 for d in devices if d["kind"] != "coordinator"),
@@ -103,6 +151,8 @@ def health_line(report: dict[str, Any], version: str, uptime_s: int, coordinator
         reasons.append(f"{c['flapping']} flapping")
     if c["quiet"]:
         reasons.append(f"{c['quiet']} quiet")
+    if c.get("battery"):
+        reasons.append(f"{c['battery']} batter{'y' if c['battery'] == 1 else 'ies'} to replace")
     out = {"status": "degraded" if reasons else "ok", "reasons": reasons, "version": version, "uptime_s": uptime_s,
            "coordinator": "ok" if coordinator_online else "offline", "devices": report["devices"], **c}
     if extra:

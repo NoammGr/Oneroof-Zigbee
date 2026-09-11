@@ -419,6 +419,34 @@ async def test_10_config_save_backup_restore(stack):
     assert (s.tmp / "devices.json").read_text() == devices_before and (s.tmp / "network.keystore").read_bytes() == ks_before
     assert b"Garage plug" not in blob, "backup is encrypted"
 
+    # nightly backups: a password set once, kept in private storage; the schedule; a backup made
+    # now; only the newest `keep` kept; restoring one in two clicks with the stored password
+    st, r = await api(s, "GET", "/api/backups")
+    assert st == 200 and r["schedule"]["enabled"] is False and r["schedule"]["has_password"] is False and r["backups"] == []
+    st, r = await api(s, "POST", "/api/backups", {"enabled": True})
+    assert st == 400 and "password" in r.get("error", "")            # cannot enable without one
+    st, r = await api(s, "POST", "/api/backups", {"enabled": True, "keep": 2, "password": "nightly-password-e2e"})
+    assert st == 200 and r["schedule"] == {**r["schedule"], "enabled": True, "keep": 2, "has_password": True}
+    assert not (s.tmp / "backups" / "backup.pass").exists(), "the password is not in the config share"
+    names = []
+    for _ in range(3):
+        st, r = await api(s, "POST", "/api/backups/run", {})
+        assert st == 200 and r["name"].startswith("nightly-") and r["size"] > 100
+        names.append(r["name"])
+        await asyncio.sleep(0.01)
+    st, r = await api(s, "GET", "/api/backups")
+    assert len(r["backups"]) <= 2 and r["schedule"]["last_run"], "only the newest `keep` are kept"
+    latest = r["backups"][0]["name"]
+    st, r = await api(s, "GET", f"/api/backups/{latest}")
+    assert st == 200 and base64.b64decode(r["data_b64"])[:5] == blob[:5]
+    (s.tmp / "devices.json").write_text('{"devices": []}')
+    st, r = await api(s, "POST", f"/api/backups/{latest}/restore", {})
+    assert st == 200 and "devices.json" in r["restored"]
+    assert (s.tmp / "devices.json").read_text() == devices_before
+    assert (await api(s, "GET", "/api/backups/../../etc/passwd"))[0] in (400, 404)
+    st, r = await api(s, "POST", "/api/backups", {"enabled": False})
+    assert st == 200 and r["schedule"]["enabled"] is False
+
 
 # ------------------------------------------------------------------- 6. OTA --
 

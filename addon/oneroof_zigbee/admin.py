@@ -14,11 +14,12 @@ from __future__ import annotations
 
 import glob
 import hashlib
+import contextlib
 import io
 import json
-import contextlib
 import logging
 import os
+import re
 import secrets as pysecrets
 import sys
 import tarfile
@@ -347,6 +348,124 @@ class Admin:
             except ValueError:
                 pass
         return n.network_key, seq, n.pan_id, n.ext_pan_id
+
+    # ------------------------------------------------------- nightly backups --
+    # A backup you have to remember to take is the one you do not have on the bad day. Once
+    # switched on, one is made every night at BACKUP_HOUR (local), encrypted with a password
+    # you set once (kept in the add-on's private storage, never in the backup itself), into
+    # <data>/backups/, and only the newest `keep` are kept. Restoring one from the panel uses
+    # that stored password, so the bad day is two clicks.
+    BACKUP_HOUR = 3
+    BACKUP_DIR = "backups"
+
+    def _backup_dir(self) -> Path:
+        return self.cfg.data_dir / self.BACKUP_DIR
+
+    def _schedule_path(self) -> Path:
+        return self._backup_dir() / "schedule.json"
+
+    def _backup_pass_path(self) -> Path:
+        from .security import Keystore
+        return Keystore(self.cfg.data_dir / "network.keystore").pass_path.with_name("backup.pass")
+
+    def backup_schedule(self) -> dict[str, Any]:
+        try:
+            raw = json.loads(self._schedule_path().read_text())
+        except (OSError, ValueError):
+            raw = {}
+        keep = raw.get("keep", 14)
+        return {"enabled": bool(raw.get("enabled", False)), "keep": int(keep) if isinstance(keep, int) and 1 <= keep <= 60 else 14,
+                "hour": self.BACKUP_HOUR, "last_run": raw.get("last_run"), "last_error": raw.get("last_error"),
+                "has_password": self._backup_pass_path().exists()}
+
+    def _save_schedule(self, sched: dict[str, Any]) -> None:
+        self._backup_dir().mkdir(parents=True, exist_ok=True)
+        self._schedule_path().write_text(json.dumps({k: v for k, v in sched.items() if k in ("enabled", "keep", "last_run", "last_error")}))
+
+    def set_backup_schedule(self, enabled: bool, keep: int | None = None, password: str | None = None) -> dict[str, Any]:
+        sched = self.backup_schedule()
+        if password:
+            if len(password) < 12:
+                raise ValueError("backup password must be at least 12 characters")
+            p = self._backup_pass_path()
+            p.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as f:
+                f.write(password)
+        if enabled and not self._backup_pass_path().exists():
+            raise ValueError("set a backup password first - the nightly backups are encrypted with it")
+        if keep is not None:
+            if not (1 <= int(keep) <= 60):
+                raise ValueError("keep between 1 and 60 backups")
+            sched["keep"] = int(keep)
+        sched["enabled"] = bool(enabled)
+        self._save_schedule(sched)
+        return self.backup_schedule()
+
+    def _stored_backup_password(self) -> str:
+        try:
+            return self._backup_pass_path().read_text().strip()
+        except OSError as e:
+            raise ValueError("no backup password stored") from e
+
+    def list_backups(self) -> list[dict[str, Any]]:
+        out = []
+        d = self._backup_dir()
+        if d.exists():
+            for p in d.glob("nightly-*.ozbk"):
+                try:
+                    st = p.stat()
+                except OSError:
+                    continue
+                out.append({"name": p.name, "size": st.st_size, "created": st.st_mtime})
+        return sorted(out, key=lambda b: b["created"], reverse=True)
+
+    def run_nightly_backup(self, now: float | None = None) -> dict[str, Any]:
+        """Make one now (the panel's "Back up now", or the schedule): returns {name, size}."""
+        now = now or time.time()
+        blob = self.make_backup(self._stored_backup_password())
+        d = self._backup_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        name = "nightly-" + time.strftime("%Y%m%d-%H%M", time.localtime(now)) + ".ozbk"
+        p = d / name
+        fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(blob)
+        sched = self.backup_schedule()
+        for old in self.list_backups()[sched["keep"]:]:
+            with contextlib.suppress(OSError):
+                (d / old["name"]).unlink()
+        sched["last_run"], sched["last_error"] = now, None
+        self._save_schedule(sched)
+        return {"name": name, "size": len(blob)}
+
+    def nightly_backup_due(self, now: float | None = None) -> bool:
+        """Once a day, at or after BACKUP_HOUR local time, when the schedule is on."""
+        sched = self.backup_schedule()
+        if not sched["enabled"]:
+            return False
+        now = now or time.time()
+        lt = time.localtime(now)
+        if lt.tm_hour < self.BACKUP_HOUR:
+            return False
+        last = sched.get("last_run")
+        return not last or time.strftime("%Y%m%d", time.localtime(float(last))) != time.strftime("%Y%m%d", lt)
+
+    def note_backup_error(self, error: str) -> None:
+        sched = self.backup_schedule()
+        sched["last_error"] = error[:200]
+        self._save_schedule(sched)
+
+    def read_backup(self, name: str) -> bytes:
+        if not re.fullmatch(r"nightly-\d{8}-\d{4}\.ozbk", name):
+            raise ValueError("no such backup")
+        p = self._backup_dir() / name
+        if not p.exists():
+            raise ValueError("no such backup")
+        return p.read_bytes()
+
+    def restore_nightly(self, name: str) -> list[str]:
+        return self.restore_backup(self.read_backup(name), self._stored_backup_password())
 
     def restore_backup(self, blob: bytes, password: str) -> list[str]:
         if not blob.startswith(_BACKUP_MAGIC):

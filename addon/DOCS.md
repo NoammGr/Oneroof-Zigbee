@@ -34,6 +34,15 @@ walks the routers' neighbour tables — every weak hop and what would fix it. Ea
 it talks through. The same reaches Home Assistant as a **Health** sensor on the OneRoof Zigbee bridge
 device (ok or degraded, and why).
 
+## Batteries, backups, the sticker's QR
+* A battery device's page says how long its battery has left, from its own readings; the health
+  card lists batteries to replace; Telegram says so once, about two weeks ahead.
+* Settings → Backup & restore → **Nightly backups**: switch it on and set a password once. An
+  encrypted backup lands in the add-on config folder (`backups/`) every night at about 3 am; the
+  newest ones are kept; any of them restores in two clicks (or download it to keep a copy elsewhere).
+* Pair → **Scan the QR code**: photograph the sticker on the device or its box; the address and
+  install code fill in by themselves.
+
 ## Network key rotation
 * Manual: web UI → Settings → Maintenance → *Rotate key over the air*. Press **Check first** before it:
   the add-on asks every router to answer on the current key and judges each battery device by when it

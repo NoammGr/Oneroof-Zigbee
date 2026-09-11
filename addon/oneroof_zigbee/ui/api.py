@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import contextlib
 import json
 import logging
 import time
@@ -15,7 +16,7 @@ from typing import Any
 from .. import __version__
 from ..admin import ROLE_TEMPLATES, Admin
 from ..gateway import Gateway
-from ..health import best_parents
+from ..health import battery_forecast, best_parents
 from ..config import ConfigError
 from ..security import Audit
 from ..znp.transport import ZnpError
@@ -82,6 +83,10 @@ class UiApi:
         self._map_cache: dict[str, Any] = {"nodes": [], "links": [], "updated": None}
         self._map_lock = asyncio.Lock()
         gw.map_links = lambda: self._map_cache.get("links") or []   # the health line uses the walked tables too
+        try:
+            self._backup_task = asyncio.get_running_loop().create_task(self._nightly_backup_loop())
+        except RuntimeError:
+            self._backup_task = None   # built outside a running loop (tests): no schedule
         self._index = (STATIC / "index.html").read_bytes() if (STATIC / "index.html").exists() else b"<h1>UI not built</h1>"
 
         r = server.route
@@ -98,6 +103,7 @@ class UiApi:
         r("GET", "/api/logs", self.app_logs)
         r("GET", "/api/map", self.map)
         r("GET", "/api/health", self.health)
+        r("GET", "/jsqr.min.js", self.jsqr_js)
         r("POST", "/api/health", self.health_check)
         r("POST", "/api/permit_join", self.permit_join)
         r("GET", "/api/unknown", self.unknown_list)
@@ -130,6 +136,11 @@ class UiApi:
         r("GET", "/api/tls/ca", self.tls_ca)
         r("POST", "/api/backup", self.backup)
         r("POST", "/api/restore", self.restore)
+        r("GET", "/api/backups", self.backups)
+        r("POST", "/api/backups", self.backups_set)
+        r("POST", "/api/backups/run", self.backups_run)
+        r("GET", "/api/backups/<name>", self.backups_get)
+        r("POST", "/api/backups/<name>/restore", self.backups_restore)
         r("POST", "/api/restart", self.restart)
         r("GET", "/api/activity", self.activity)
         r("GET", "/api/firmware", self.fw_list)
@@ -215,6 +226,7 @@ class UiApi:
         else:
             out["parent"] = None
         out["flaps_24h"] = sum(1 for t in self.gw._flaps.get(d.ieee_str.lower(), []) if time.time() - t <= 86400)
+        out["battery_forecast"] = battery_forecast(d.context.get("battery_log")) if d.context.get("battery_log") else None
         from ..features import features_for
         from ..oui import vendor_of
         from ..zcl import cluster_name, describe_endpoint
@@ -664,6 +676,80 @@ class UiApi:
             raise HttpError(400, str(e)) from e
         self.gw.audit.security("backup_restored", by=self.who, files=restored)
         return Response.json({"ok": True, "restored": restored, "restart_required": a.restart_required})
+
+    _JSQR = (STATIC / "jsqr.min.js").read_bytes() if (STATIC / "jsqr.min.js").exists() else b""
+
+    async def jsqr_js(self, req: Request) -> Response:
+        # jsQR 1.4.0 (Apache-2.0), served from the add-on itself so the pair page can read an
+        # install-code QR from a photo without loading anything from anyone else's host
+        if not self._JSQR:
+            raise HttpError(404, "jsqr.min.js not bundled")
+        return Response(200, self._JSQR, "application/javascript; charset=utf-8", {"Cache-Control": "public, max-age=86400"})
+
+    # nightly backups (admin.py): the schedule, the files, and restoring one in two clicks
+    async def backups(self, req: Request) -> Response:
+        a = self._admin()
+        return Response.json({"schedule": a.backup_schedule(), "backups": a.list_backups()})
+
+    async def backups_set(self, req: Request) -> Response:
+        a = self._admin()
+        self._require_control()
+        body = dict(req.json or {})
+        try:
+            sched = a.set_backup_schedule(bool(body.get("enabled", False)),
+                                          int(body["keep"]) if "keep" in body else None,
+                                          str(body.get("password") or "") or None)
+        except (TypeError, ValueError) as e:
+            raise HttpError(400, str(e)) from e
+        self.gw.audit.event("backup_schedule_changed", by=self.who, enabled=sched["enabled"], keep=sched["keep"])
+        return Response.json({"ok": True, "schedule": sched, "backups": a.list_backups()})
+
+    async def backups_run(self, req: Request) -> Response:
+        a = self._admin()
+        self._require_control()
+        try:
+            made = await asyncio.to_thread(a.run_nightly_backup)
+        except ValueError as e:
+            raise HttpError(400, str(e)) from e
+        self.gw.audit.security("backup_made", by=self.who, file=made["name"], size=made["size"])
+        return Response.json({"ok": True, **made, "schedule": a.backup_schedule(), "backups": a.list_backups()})
+
+    async def backups_get(self, req: Request) -> Response:
+        a = self._admin()
+        self._require_control()
+        import base64
+        try:
+            blob = a.read_backup(req.params["name"])
+        except ValueError as e:
+            raise HttpError(404, str(e)) from e
+        return Response.json({"ok": True, "filename": req.params["name"], "data_b64": base64.b64encode(blob).decode()})
+
+    async def backups_restore(self, req: Request) -> Response:
+        a = self._admin()
+        self._require_control()
+        try:
+            restored = await asyncio.to_thread(a.restore_nightly, req.params["name"])
+        except ValueError as e:
+            raise HttpError(400, str(e)) from e
+        self.gw.audit.security("backup_restored", by=self.who, files=restored, file=req.params["name"])
+        return Response.json({"ok": True, "restored": restored, "restart_required": a.restart_required})
+
+    async def _nightly_backup_loop(self) -> None:
+        """Every few minutes: is a nightly backup due? (admin.nightly_backup_due)"""
+        while True:
+            await asyncio.sleep(300)
+            a = self.admin
+            if a is None:
+                continue
+            try:
+                if a.nightly_backup_due():
+                    made = await asyncio.to_thread(a.run_nightly_backup)
+                    self.gw.audit.security("backup_made", by="schedule", file=made["name"], size=made["size"])
+            except Exception as e:
+                log.warning("nightly backup failed: %s", e)
+                with contextlib.suppress(Exception):
+                    a.note_backup_error(str(e))
+                self.gw.audit.security("backup_failed", by="schedule", error=str(e)[:200])
 
     async def restart(self, req: Request) -> Response:
         a = self._admin()

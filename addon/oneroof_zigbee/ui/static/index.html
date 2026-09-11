@@ -454,6 +454,7 @@ const HELP={
   'ui.acts_as':'MQTT user whose permissions this web UI uses. Control actions (pair, remove, rotate key) work only if that user has control.',
   'ui.port':'Port of this web UI. It binds to loopback or the Home Assistant Ingress only and is never exposed to the network, because it has no login of its own.',
   'ui.enabled':'Turns the web UI off completely. The MQTT API keeps working.',
+  'backup.nightly':'Once switched on, a backup is made every night at about 3 am into the add-on config folder (backups/), encrypted with the password you set here \u2014 kept in the add-on\u2019s private storage, never inside the backup. Only the newest ones are kept. Restoring one from this list uses that password, so a bad day is two clicks; download one to keep a copy elsewhere.',
   'backup.password':'Encrypts the backup (network key, TLS keys, device database, config). Without this password the file is useless — store it with the file, not in it.',
   'backup.file':'An .ozbk file created by this gateway. Restoring replaces the current keys and database, so devices paired after the backup need re-pairing.',
   'maintenance.log_level':'Verbosity of the application log until the next restart. DEBUG logs every frame and can include device payloads; use it briefly.',
@@ -798,7 +799,7 @@ views.dashboard={
     const card=el('div',{class:'card',style:'margin-bottom:18px'},
       el('div',{style:'display:flex;gap:12px;align-items:center;flex-wrap:wrap'},el('h2',{style:'margin:0',text:'Network health'}),el('span',{class:'badge '+verdict[0],text:verdict[1]}),el('span',{class:'sub',text:r.devices+' devices \u00b7 '+when}),el('span',{class:'grow'}),btn));
     if(!r.coordinator_online)card.append(el('div',{class:'notice',style:'margin:12px 0 0'},el('b',{text:'The coordinator is offline.'}),' Nothing below can be reached until the radio is back.'));
-    if(r.findings.length){const list=el('div',{class:'rc-list'});for(const f of r.findings){const d=S.devMap.get(String(f.ieee).toLowerCase());list.append(el('div',{class:'rc-row'+(f.severity==='bad'?' bad':'')},el('span',{class:'badge '+(f.severity==='bad'?'danger':'warn'),text:{offline:'offline',weak_link:'weak link',flapping:'flapping',quiet:'quiet',busy_router:'busy router'}[f.kind]||f.kind}),d?el('a',{class:'devname',href:'#device/'+encodeURIComponent(f.ieee),text:f.name,title:f.ieee}):el('b',{text:f.name}),el('span',{class:'sub',text:f.detail})));}card.append(list);}
+    if(r.findings.length){const list=el('div',{class:'rc-list'});for(const f of r.findings){const d=S.devMap.get(String(f.ieee).toLowerCase());list.append(el('div',{class:'rc-row'+(f.severity==='bad'?' bad':'')},el('span',{class:'badge '+(f.severity==='bad'?'danger':'warn'),text:{offline:'offline',weak_link:'weak link',flapping:'flapping',quiet:'quiet',busy_router:'busy router',battery:'battery'}[f.kind]||f.kind}),d?el('a',{class:'devname',href:'#device/'+encodeURIComponent(f.ieee),text:f.name,title:f.ieee}):el('b',{text:f.name}),el('span',{class:'sub',text:f.detail})));}card.append(list);}
     else if(r.walked_at)card.append(el('div',{class:'sub',style:'margin-top:8px',text:'Every device reachable, every link fine, nothing flapping or quiet.'}));
     h.append(card);
     if(walk)toast(r.verdict==='ok'?'Network healthy':'Check done \u2014 '+verdict[1]);
@@ -892,6 +893,18 @@ views.device={
   leave(){clearTimeout(this.fwTimer);},
   renderTab(){const b=clear(this.body);this.upd.clear();clearTimeout(this.fwTimer);if(!this.d)return;this['tab_'+this.tab](b,this.d);},
   kv(k,v,sub,mono){return el('tr',null,el('td',{text:k}),el('td',null,el('div',{class:mono?'mono':'',text:fmtVal(v)}),sub?el('div',{class:'sub',text:sub}):null));},
+  // how long the battery has left, from its own readings - "about 3 months (replace by Dec 12)"
+  kvBattery(d){
+    const pct=d.state&&typeof d.state.battery==='number'?d.state.battery:null;const fc=d.battery_forecast;
+    if(pct==null&&!fc)return null;
+    const p=fc&&fc.pct!=null?fc.pct:pct;const low=p!=null&&p<=15;
+    let text,cls='ok';
+    if(low){text='time for a new one';cls=p<=10?'danger':'warn';}
+    else if(fc&&fc.days_left!=null){const dl=fc.days_left;const by=new Date(Date.now()+dl*86400e3).toLocaleDateString(undefined,{month:'short',day:'numeric'});text='about '+(dl>=60?Math.round(dl/30)+' months':dl>=14?Math.round(dl/7)+' weeks':dl+' days')+' left \u00b7 replace by '+by+(fc.confidence==='low'?' (early guess)':'');cls=dl<=14?'warn':'ok';}
+    else if(fc&&fc.per_day!=null&&fc.per_day>=-0.001)text='holding steady';
+    else text='not enough history yet \u2014 the forecast needs a few days of readings';
+    return el('tr',null,el('td',{text:'Battery'}),el('td',null,el('div',{style:'display:flex;gap:8px;align-items:center;flex-wrap:wrap'},el('b',{text:p!=null?Math.round(p)+' %':'\u2014'}),el('span',{class:'badge '+cls,text:text})),fc&&fc.per_day!=null?el('div',{class:'sub',text:'losing '+Math.abs(fc.per_day*7).toFixed(1)+' % a week, from '+fc.points+' readings'}):null));
+  },
   // who it talks through, from the last walk of the neighbour tables; a weak hop is the one
   // thing about this device the owner can fix with a router in between
   kvParent(d){
@@ -920,6 +933,7 @@ views.device={
       this.kv('Joined',d.joined_at?rel(d.joined_at):'—',d.joined_at?fmtTs(d.joined_at):''),
       this.kv('Last seen',rel(d.last_seen),d.last_seen?fmtTs(d.last_seen):''),
       this.kvParent(d),
+      this.kvBattery(d),
       el('tr',null,el('td',{text:'Recent activity'}),el('td',null,this.actEl)),
       el('tr',null,el('td',{text:'MQTT topics'}),el('td',null,topics)));
     b.append(el('div',{class:'twrap'},el('table',{class:'kvt'},tb)));
@@ -1095,6 +1109,27 @@ views.device={
 
 /* ============ PAIR ============ */
 views.pair={
+  // What a device's QR says, in the ways vendors print it: "Z:<16 hex>$I:<code>" (the Zigbee
+  // Alliance form), "IEEE ... CODE ..." pairs, or just the two hex strings. Returns {ieee, code}
+  // (either may be missing) or null when nothing in it looks like an install code.
+  parseQr(text){
+    const t=String(text||'');let ieee=null,code=null;
+    let m=/(?:^|[^A-Z0-9])Z:([0-9A-F]{16})/i.exec(t);if(m)ieee=m[1];
+    m=/(?:^|[^A-Z0-9])I:([0-9A-F]{16,36})/i.exec(t);if(m)code=m[1];
+    if(!ieee||!code){// hex runs of 8-18 pairs, with or without : - or spaces between the pairs, bounded by non-hex text
+      const hex=[];const re=/(?<![0-9A-Z])([0-9A-F]{2}(?:[:\s-]?[0-9A-F]{2}){7,17})(?![0-9A-Z])/gi;let mm;while((mm=re.exec(t))){const h=mm[1].replace(/[:\s-]/g,'');if([16,24,32,36].includes(h.length))hex.push(h);}
+      for(const h of hex){if(!code&&h.length>=24&&h!==ieee)code=h;else if(!ieee&&h.length===16&&h!==code)ieee=h;}
+      if(!code&&!ieee&&hex.length)code=hex[0];}
+    if(!ieee&&!code)return null;return{ieee:ieee?'0x'+ieee.toLowerCase():null,code:code?code.toUpperCase():null};
+  },
+  // decode a photo with jsQR (bundled, served by the gateway): downscaled so a phone photo decodes quickly
+  async readQr(file){
+    if(!window.jsQR){await new Promise((res,rej)=>{const sc=document.createElement('script');sc.src='jsqr.min.js';sc.onload=res;sc.onerror=()=>rej(new Error('the QR reader did not load'));document.head.append(sc);});}
+    const url=URL.createObjectURL(file);try{const img=await new Promise((res,rej)=>{const i=new Image();i.onload=()=>res(i);i.onerror=()=>rej(new Error('that file is not an image'));i.src=url;});
+      for(const max of [1000,1600,600]){const k=Math.min(1,max/Math.max(img.width,img.height));const w=Math.round(img.width*k),h=Math.round(img.height*k);const c=document.createElement('canvas');c.width=w;c.height=h;const g=c.getContext('2d');g.drawImage(img,0,0,w,h);const d=g.getImageData(0,0,w,h);const r=window.jsQR(d.data,w,h,{inversionAttempts:'attemptBoth'});if(r&&r.data)return r.data;}
+      throw new Error('No QR code found in the photo \u2014 fill the frame with it and try again');}
+    finally{URL.revokeObjectURL(url);}
+  },
   secs:60,
   enter(m){
     const b=S.bridge||{};const ok=can();const strict=!!b.strict_install_codes;
@@ -1115,11 +1150,15 @@ views.pair={
     const ieeeErr=el('div',{class:'err'}),codeErr=el('div',{class:'err'});
     const validate=()=>{const i=ieee.value.trim().toLowerCase().replace(/^0x/,'').replace(/[:\s-]/g,'');ieeeErr.textContent=!i?'':/^[0-9a-f]{16}$/.test(i)?'':'IEEE address must be 16 hex digits';const c=code.value.replace(/[:\s-]/g,'').toUpperCase();const okLen=[16,24,32,36,48].includes(c.length);codeErr.textContent=!c?'':!/^[0-9A-F]+$/.test(c)?'Install code must be hex':okLen?'':'Length '+c.length+' hex digits — expect 16, 24, 32 or 36 (incl. 4-digit CRC)';return{i:'0x'+i,c,ok:!ieeeErr.textContent&&!codeErr.textContent&&i&&c};};
     ieee.addEventListener('input',validate);code.addEventListener('input',validate);
+    // the QR on the device's sticker carries both fields: photograph it instead of typing 40 hex digits
+    const shot=el('input',{type:'file',accept:'image/*',capture:'environment',style:'display:none'});
+    const scan=el('button',{class:'btn',text:'Scan the QR code',title:'Photograph the QR on the device or its box; the address and install code fill in by themselves',onclick:()=>shot.click()});
+    shot.addEventListener('change',async()=>{const f=shot.files&&shot.files[0];if(!f)return;scan.disabled=true;scan.textContent='Reading\u2026';try{const text=await this.readQr(f);const got=this.parseQr(text);if(!got){toast('That QR does not carry a Zigbee install code ('+text.slice(0,40)+(text.length>40?'\u2026':'')+')',true);return;}if(got.ieee)ieee.value=got.ieee;if(got.code)code.value=got.code;validate();toast(got.ieee&&got.code?'Read the address and install code from the QR':got.code?'Read the install code from the QR \u2014 add the address':'Read the address from the QR \u2014 add the install code');}catch(e){toast(e.message,true);}finally{scan.disabled=false;scan.textContent='Scan the QR code';shot.value='';}});
     const icBtn=el('button',{class:'btn primary',disabled:!ok,text:'Open window for this device',onclick:async()=>{const v=validate();if(!v.ok){toast('Check the IEEE address and install code',true);return;}await this.open(this.secs,{ieee:v.i,install_code:v.c});}});
     const form=el('details',{open:strict||null},el('summary',{text:'Pair with install code (recommended)'}),
       el('p',{class:'sub',style:'margin:6px 0 0',text:'Printed on the device or its box as a QR/label. The network key is then handed over encrypted with a key only that device knows, so a sniffer present during the join learns nothing. Install codes are shown to any MQTT user subscribed to the bridge topics.'}),
       el('div',{class:'field'},lab('Device IEEE address','pair.ieee'),ieee,el('div',{class:'hint',text:'16 hex digits, 0x prefix optional'}),ieeeErr),
-      el('div',{class:'field'},lab('Install code','pair.install_code'),code,el('div',{class:'hint',text:'Hex, 16/24/32/36 digits including the trailing CRC-16; colons and spaces ignored'}),codeErr),icBtn);
+      el('div',{class:'field'},lab('Install code','pair.install_code'),code,el('div',{class:'hint',text:'Hex, 16/24/32/36 digits including the trailing CRC-16; colons and spaces ignored'}),codeErr),el('div',{class:'bar',style:'margin:0'},icBtn,scan,shot));
     this.feedEl=el('div',{class:'feed'});
     const right=el('div',null,el('div',{class:'card'},form),el('h2',{text:'Live join activity'}),this.feedEl);
     m.append(el('div',{class:'pair'},left,right));this.renderFeed();this.tick();
@@ -1633,9 +1672,23 @@ views.settings={
     const rs=el('button',{class:'btn danger',text:'Restore…',disabled:!ok,onclick:async()=>{const fl=file.files&&file.files[0];if(!fl){toast('Choose a backup file',true);return;}if(!rp.value){toast('Enter the backup password',true);return;}
       if(!(await confirmDlg('Restore '+fl.name+'?',[el('p',{text:'The current network key, TLS keys, device database and configuration are replaced by the backup. The gateway must restart afterwards; devices paired after the backup was taken need re-pairing.'})],'Restore backup',true)))return;
       rs.disabled=true;try{const b64=await readFile(fl,true);const r=await api('api/restore',{password:rp.value,data_b64:b64});clear(out).append(el('b',{text:'Restored: '}),el('span',{class:'mono',text:(r.restored||[]).join(', ')||'nothing'}));toast('Backup restored');this.afterSave(r,'restore');}catch(e){toast(e.message,true);}rs.disabled=!ok;}});
+    // nightly backups: the one you do not have to remember
+    const nightly=el('div',{class:'sub',text:'Loading\u2026'});const nightlyHost=el('div',{style:'margin-top:18px;padding-top:16px;border-top:1px solid var(--line2)'},el('h3',null,'Nightly backups',help('backup.nightly',null,'Nightly backups')),nightly);
+    const drawNightly=(d)=>{const h=clear(nightly);const sc=d.schedule||{};const [sw,swRow]=chk('Back up every night',!!sc.enabled,'About 3 am, into the add-on config folder; the newest '+(sc.keep||14)+' are kept.','backup.nightly');
+      const keep=num(sc.keep||14,1,60);keep.style.width='90px';const pw=pwd(sc.has_password?'change the backup password (optional)':'backup password, min 12 characters');const pwh=el('div',{class:'hint'});pw.addEventListener('input',()=>{pwh.textContent=strength(pw.value);});
+      const save=el('button',{class:'btn primary',text:'Save',disabled:!ok,onclick:async()=>{if(pw.value&&pw.value.length<12){toast('The backup password needs at least 12 characters',true);return;}if(sw.checked&&!sc.has_password&&!pw.value){toast('Set a backup password first',true);return;}save.disabled=true;try{const body={enabled:sw.checked,keep:+keep.value};if(pw.value)body.password=pw.value;const r=await api('api/backups',body);toast(r.schedule.enabled?'Nightly backups on':'Nightly backups off');drawNightly(r);}catch(e){toast(e.message,true);save.disabled=!ok;}}});
+      const now=el('button',{class:'btn',text:'Back up now',disabled:!ok||!sc.has_password,title:sc.has_password?'':'Set a backup password first',onclick:async()=>{now.disabled=true;try{const r=await api('api/backups/run',{});toast('Backup made: '+r.name);drawNightly(r);}catch(e){toast(e.message,true);now.disabled=!ok;}}});
+      h.append(swRow,el('div',{class:'grid2',style:'margin-top:10px'},fld('Keep',keep,'newest backups to keep (1\u201360)'),fld('Password',pw,pwh.textContent||null)),pwh,el('div',{class:'bar',style:'margin:12px 0 0'},save,now,sc.last_run?el('span',{class:'sub',text:'last backup '+rel(sc.last_run)}):null,sc.last_error?el('span',{class:'badge danger',text:'last attempt failed: '+sc.last_error}):null));
+      const list=d.backups||[];if(!list.length){h.append(el('div',{class:'sub',style:'margin-top:10px',text:sc.enabled?'No nightly backup yet \u2014 the first one comes tonight.':'No nightly backups yet.'}));return;}
+      const rows=el('div',{class:'rc-list',style:'margin-top:12px'});for(const b of list){
+        const dl=el('button',{class:'btn sm',text:'Download',onclick:async()=>{try{const r=await api('api/backups/'+encodeURIComponent(b.name));const bin=atob(r.data_b64||'');const buf=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)buf[i]=bin.charCodeAt(i);const url=URL.createObjectURL(new Blob([buf],{type:'application/octet-stream'}));const a=el('a',{href:url,download:b.name});document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),10000);}catch(e){toast(e.message,true);}}});
+        const rs=el('button',{class:'btn sm danger',text:'Restore',disabled:!ok,onclick:async()=>{if(!(await confirmDlg('Restore '+b.name+'?',[el('p',{text:'The current network key, TLS keys, device database and configuration are replaced by this backup. The gateway must restart afterwards; devices paired after it was taken need re-pairing.'})],'Restore backup',true)))return;try{const r=await api('api/backups/'+encodeURIComponent(b.name)+'/restore',{});toast('Backup restored');this.afterSave(r,'restore');}catch(e){toast(e.message,true);}}});
+        rows.append(el('div',{class:'rc-row'},el('b',{text:fmtTs(b.created)}),el('span',{class:'sub',text:(b.size/1024).toFixed(0)+' kB \u00b7 '+b.name}),el('span',{class:'grow'}),dl,rs));}
+      h.append(rows);};
+    api('api/backups').then(drawNightly).catch(e=>{nightly.textContent=e.message;});
     return el('div',{class:'card'},el('div',{class:'grid2'},
       el('div',null,el('h3',{text:'Create backup'}),el('p',{class:'sub',text:'The backup contains the Zigbee network key, the TLS keys and certificates, the device database and the configuration. It is encrypted with the password you enter here; without that password the backup is useless, so store the password with the file but not in it.'}),fld('Password',p1,null,'backup.password'),el('div',{class:'field'},lab('Confirm password','backup.password'),p2,sh),mk),
-      el('div',null,el('h3',{text:'Restore'}),el('p',{class:'sub',text:'Upload a .ozbk file and its password. Restoring replaces the current keys and database and requires a restart.'}),fld('Backup file',file,null,'backup.file'),fld('Password',rp,null,'backup.password'),rs,out)));
+      el('div',null,el('h3',{text:'Restore'}),el('p',{class:'sub',text:'Upload a .ozbk file and its password. Restoring replaces the current keys and database and requires a restart.'}),fld('Backup file',file,null,'backup.file'),fld('Password',rp,null,'backup.password'),rs,out)),nightlyHost);
   },
   cardFirmware(ok){
     const tip=ok?'':NOCTL;const host=el('div',{class:'sub',text:'Loading…'});

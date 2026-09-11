@@ -25,7 +25,7 @@ from .config import Config
 from .definitions import Definitions
 from .devices import Device, Registry
 from .ha import Topics, bridge_discovery, discovery_messages, removal_messages
-from .health import health_line, network_health
+from .health import BATTERY_LOW_PCT, BATTERY_WARN_DAYS, battery_forecast, health_line, network_health
 from .mqtt import Broker
 from .security import Audit, InstallCodeError, JoinPolicyError, parse_install_code
 from .zcl import global_commands as gc
@@ -1326,6 +1326,8 @@ class Gateway:
         events = dev.record_changes(changed, now)
         if events:
             self._dirty = True
+            if any(ev["key"] == "battery" for ev in events):
+                self._note_battery(dev, changed.get("battery"), now)
         if dev.lqi is not None:
             dev.record_changes({"linkquality": dev.lqi}, now)
         for ev in events:
@@ -1495,12 +1497,34 @@ class Gateway:
         await self.broker.publish(self.topics.availability(dev), self.topics.availability_payload(online), retain=True)
 
     # -- network health ------------------------------------------------------
+    def _note_battery(self, dev: Device, pct: Any, now: float) -> None:
+        """Every battery reading, remembered (a reading a day is plenty): the device page and
+        the health card forecast from it when the battery needs replacing (health.py)."""
+        if not isinstance(pct, (int, float)) or isinstance(pct, bool):
+            return
+        log_ = dev.context.setdefault("battery_log", [])
+        if log_ and now - float(log_[-1][0]) < 6 * 3600 and float(log_[-1][1]) == float(pct):
+            return
+        log_.append([round(now), float(pct)])
+        del log_[:-120]
+        fc = battery_forecast(log_, now)
+        soon = (pct <= BATTERY_LOW_PCT) or (fc is not None and fc.get("days_left") is not None and fc["days_left"] <= BATTERY_WARN_DAYS)
+        if soon and not dev.context.get("battery_warned"):
+            dev.context["battery_warned"] = True
+            self.audit.event("battery_replace_soon", ieee=dev.ieee_str, pct=pct,
+                             days_left=fc.get("days_left") if fc else None)
+        elif not soon and dev.context.get("battery_warned") and pct >= 50:
+            dev.context.pop("battery_warned", None)          # a fresh battery: warn again next time
+
     def health_devices(self) -> list[dict[str, Any]]:
         out = [{"ieee": ieee_str(self.coord.ieee), "name": "Coordinator", "kind": "coordinator", "available": True, "last_seen": time.time()}]
         for d in self.registry.all():
+            pct = d.state.get("battery")
             out.append({"ieee": d.ieee_str, "name": d.friendly_name, "kind": "router" if d.is_router else "end_device",
                         "available": d.available, "last_seen": d.last_seen,
-                        "battery": (not d.is_router) and not d.rx_on_when_idle})
+                        "battery": (not d.is_router) and not d.rx_on_when_idle,
+                        "battery_pct": pct if isinstance(pct, (int, float)) and not isinstance(pct, bool) else None,
+                        "battery_log": d.context.get("battery_log")})
         return out
 
     def health_report(self, links: list[dict[str, Any]] | None = None) -> dict[str, Any]:

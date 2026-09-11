@@ -132,6 +132,19 @@ many children. Each device page says who it talks through and how strong that li
 same judgement reaches Home Assistant as a **Health** sensor (`oneroof/zigbee/health`, ok or
 degraded, the reasons) — the shape every One Roof add-on publishes, so one card shows the family.
 
+### Batteries, backups, the sticker's QR
+
+- **Battery forecast**: every battery reading is remembered; the device page says "40 % · about
+  2 weeks left · replace by Sep 25", the health card lists batteries to replace, and Telegram
+  says so once, in time.
+- **Nightly backups** (Settings → Backup & restore): switch it on, set a password once (kept in
+  the add-on's private storage, never inside the backup), and an encrypted backup lands in the
+  add-on config folder every night; the newest ones are kept, any of them restores in two clicks.
+- **Scan the QR code** on the pair page: photograph the sticker on the device or its box and the
+  address and install code fill in by themselves — the secure pairing path becomes the easy one.
+  The reader (jsQR, Apache-2.0) is bundled; nothing is loaded from anyone else's host.
+- The family on one Home Assistant card: `docs/homeassistant-family-card.yaml`.
+
 ## Network key rotation
 
 The network key can be rotated over the air (Settings → Maintenance): every device

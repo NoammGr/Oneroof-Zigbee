@@ -23,7 +23,7 @@ Security:
 | `/` | the single-page UI |
 | `api/bridge` | `{version, coordinator_ieee, channel, pan_id, strict_install_codes, device_count, permit_join: {open, seconds_left, requested_by}, uptime_s, ui_user, ui_can_control}` |
 | `api/devices` | `[{ieee, friendly_name, manufacturer, model, sw_build, power_source, is_router, interviewed, available, lqi, last_seen, endpoints: {"1": {category, in_clusters:[int], out_clusters:[int]}}, state: {...}}]` |
-| `api/devices/<ieee>` | one device (same shape, plus `parent: {ieee, name, lqi, grade: ok\|warn\|bad, walked_at}` — the relay it reaches best from the last walk, or null — and `flaps_24h`) |
+| `api/devices/<ieee>` | one device (same shape, plus `parent: {ieee, name, lqi, grade: ok\|warn\|bad, walked_at}` — the relay it reaches best from the last walk, or null — `flaps_24h`, and `battery_forecast: {pct, days_left, per_day, confidence: ok\|low\|none, points}` for a battery device with history) |
 | `api/audit?n=200&level=all\|security` | `[{ts, level, type, ...fields}]` newest last (reads tail of audit.log) |
 | `api/audit/verify` | `{ok: bool, first_bad_line: int}` |
 | `api/logs?n=500` | `[{ts, level, logger, msg}]` in-memory ring buffer of the application log |
@@ -43,6 +43,12 @@ Security:
 | `api/devices/<ieee>/interview` | `{}` | |
 | `api/devices/<ieee>/identify` | `{}` | identify 10 s |
 | `api/map/refresh` | `{}` | walks neighbour tables of coordinator + routers (takes seconds) |
+| `GET api/backups` | — | `{schedule: {enabled, keep, hour, last_run, last_error, has_password}, backups: [{name, size, created}]}` — nightly backups |
+| `api/backups` | `{enabled, keep?, password?}` | control-only; the password (≥ 12 chars) is kept in private storage, required before enabling; audited `backup_schedule_changed` |
+| `api/backups/run` | `{}` → `{name, size, …}` | control-only; makes one now with the stored password; audited `backup_made` |
+| `GET api/backups/<name>` | — | `{filename, data_b64}` download; control-only |
+| `api/backups/<name>/restore` | `{}` → `{restored[], restart_required}` | control-only; audited `backup_restored` |
+| `GET jsqr.min.js` | — | jsQR 1.4.0 (Apache-2.0), bundled for the pair page's QR reader |
 | `api/health` | `{}` → `{ok, verdict: ok\|warn\|bad, findings: [{kind: offline\|weak_link\|flapping\|quiet\|busy_router, severity, ieee, name, detail}], counts, devices, walked, walked_at, coordinator_online}` | walks the neighbour tables first, then judges; audited `network_health_checked`; `GET api/health` gives the same from the last walk without walking |
 | `api/rotate_network_key` | `{mode: "over_the_air", window_s: 300}` (default) → `{rotation: {phase, delivered[], failed{}, switch_at, seconds_left}}`; or `{mode: "repair", confirm: "I understand all devices must be re-paired"}` → `{restart_required: true}` | control-only |
 | `GET api/rotate_network_key` | — | rotation status `{phase: idle\|delivering\|waiting\|switching\|done\|failed, …}` |

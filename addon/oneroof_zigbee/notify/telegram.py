@@ -299,6 +299,10 @@ def describe(rec: dict[str, Any], resolve: Resolver | None = None, include_addre
         return "security", f"Previous setup imported{by}: {rec.get('devices', '?')} devices."
 
     # health
+    if t == "battery_replace_soon":
+        left = rec.get("days_left")
+        when = f"about {left} days left" if isinstance(left, int) else "running low"
+        return "health", f"🔋 {nm(unknown='a device')} needs a new battery soon: {rec.get('pct', '?')} %, {when}."
     if t == "coordinator_started":
         return "health", f"Coordinator started (channel {rec.get('channel', '?')}, PAN {rec.get('pan_id', '?')})."
     if t == "restart_requested":

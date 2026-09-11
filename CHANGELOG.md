@@ -1,5 +1,34 @@
 # Changelog
 
+## [2.19.0] — 2026-09-11
+
+### Added — battery forecast
+Every battery reading is remembered (`battery_log` on the device). The device page says
+"40 % · about 2 weeks left · replace by Sep 25" from a line through the last four months of
+readings — honest about thin data (an early guess under two weeks of history, nothing under
+five days), and "holding steady" when it is not falling. The Network health card lists
+batteries at 15 % or under and any about two weeks from empty; the health line for Home
+Assistant counts them ("2 batteries to replace"); Telegram says so once
+(`battery_replace_soon`), and again after a fresh battery.
+
+### Added — nightly backups
+Settings → Backup & restore → **Nightly backups**: switch it on and set a password once
+(kept in the add-on's private storage, never inside the backup). An encrypted backup lands in
+the add-on config folder (`backups/nightly-….ozbk`) every night at about 3 am, and only the
+newest ones are kept (default 14). **Back up now** makes one on the spot; each one in the list
+downloads or restores in two clicks with the stored password. Audited as
+`backup_schedule_changed`, `backup_made`, `backup_failed`, `backup_restored`.
+
+### Added — scan the QR code
+Pair → install-code form → **Scan the QR code**: photograph the sticker on the device or its
+box and the address and install code fill in by themselves — in the Zigbee Alliance form
+(`Z:…$I:…`), as labelled pairs, or as the two bare hex strings. The reader (jsQR 1.4.0,
+Apache-2.0) is bundled and served by the gateway; nothing is loaded from anyone else's host.
+
+### Added — the family on one Home Assistant card
+`docs/homeassistant-family-card.yaml`: the four Health sensors and their reasons on one
+Lovelace card.
+
 ## [2.18.0] — 2026-09-11
 
 ### Added — "Is my network healthy?"

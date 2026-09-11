@@ -1,0 +1,38 @@
+# One Roof — the family on one card.
+# Every One Roof add-on publishes a Health sensor by MQTT discovery (ok / degraded, with the
+# reasons, version and uptime as attributes). Paste this into a Lovelace dashboard
+# (Edit dashboard → Raw configuration editor, or a Manual card) and rename nothing:
+# the entity ids below are the ones discovery creates.
+type: vertical-stack
+title: One Roof
+cards:
+  - type: entities
+    state_color: true
+    entities:
+      - entity: sensor.oneroof_zigbee_bridge_health
+        name: Zigbee
+        secondary_info: last-updated
+      - entity: sensor.one_roof_bridge_health
+        name: Bridge (Apple Home)
+        secondary_info: last-updated
+      - entity: sensor.one_roof_nvr_health
+        name: NVR
+        secondary_info: last-updated
+      - entity: sensor.one_roof_statistics_health
+        name: Statistics
+        secondary_info: last-updated
+  - type: markdown
+    title: Why
+    content: >-
+      {% for e in ['sensor.oneroof_zigbee_bridge_health', 'sensor.one_roof_bridge_health',
+                   'sensor.one_roof_nvr_health', 'sensor.one_roof_statistics_health'] %}
+      {% set st = states(e) %}
+      {% if st == 'unavailable' or st == 'unknown' %}
+      **{{ state_attr(e, 'friendly_name') or e }}** — not heard for 3 minutes
+      {% elif st == 'degraded' %}
+      **{{ state_attr(e, 'friendly_name') or e }}** — {{ state_attr(e, 'reasons') | join(', ') }}
+      {% else %}
+      **{{ state_attr(e, 'friendly_name') or e }}** — ok · v{{ state_attr(e, 'version') }}
+      {% endif %}
+
+      {% endfor %}

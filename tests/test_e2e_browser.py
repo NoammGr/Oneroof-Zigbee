@@ -22,7 +22,7 @@ import urllib.request
 import pytest
 import pytest_asyncio
 
-from tests.sim import plug
+from tests.sim import contact_sensor, plug
 from tests.test_e2e import BASE, PLUG_IEEE, PLUG_NWK, Stack, api, stack, wait_for  # noqa: F401
 
 CHROME = next((p for p in ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", shutil.which("google-chrome") or "",
@@ -543,4 +543,47 @@ async def test_b13_the_dashboard_answers_is_my_network_healthy(stack, browser): 
     await wait_for(lambda: any(t == "oneroof/zigbee/health" for t, _ in s.history), 5)
     line = json.loads(next(p for t, p in reversed(s.history) if t == "oneroof/zigbee/health"))
     assert line["status"] in ("ok", "degraded") and "version" in line and "reasons" in line and line["devices"] >= 2
+    assert b.errors == [], f"console errors: {b.errors}"
+
+
+async def test_b14_the_pair_form_reads_a_qr_and_settings_schedules_backups(stack, browser):  # noqa: F811
+    """The install-code form fills itself from a photographed QR (parser + bundled reader), the
+    device page forecasts a battery, and Settings carries the nightly backups."""
+    s, b = stack, browser
+    base = f"http://127.0.0.1:{s.ui.port}/"
+    await b.go(base, "pair", 2.0)
+    assert await b.js("!!document.querySelector('input[type=file][accept=\"image/*\"][capture=environment]')"), "a camera-capable file input"
+    filled = await b.js("""(()=>{const got=views.pair.parseQr('Z:00124B00AABB0042$I:83FED3407A939723A5C639B26916D505C3B5$');
+      const inputs=[...document.querySelectorAll('details input[type=text]')];inputs[0].value=got.ieee;inputs[1].value=got.code;inputs[1].dispatchEvent(new Event('input'));
+      return [got.ieee, got.code, document.querySelector('details .err').textContent];})()""")
+    assert filled == ["0x00124b00aabb0042", "83FED3407A939723A5C639B26916D505C3B5", ""], filled
+    st, _ = await api(s, "GET", "/jsqr.min.js")
+    assert st == 200
+    assert await b.js("(async()=>{await new Promise((r,j)=>{const sc=document.createElement('script');sc.src='jsqr.min.js';sc.onload=r;sc.onerror=j;document.head.append(sc);});return typeof window.jsQR;})()") == "function"
+
+    # a battery device with a month of readings: the page says how long it has left
+    door_ieee, door_nwk = 0x00158D00000000D4, 0xD0D4
+    if _gw(s).registry.get(door_ieee) is None:
+        await api(s, "POST", "/api/permit_join", {"seconds": 30})
+        s.world.announce(s.world.add(contact_sensor(door_ieee, door_nwk)))
+        await wait_for(lambda: (lambda x: x and x.interviewed)(_gw(s).registry.get(door_ieee)), 8)
+    dev = _gw(s).registry.get(door_ieee)
+    import time as _t
+    now = _t.time()
+    dev.context["battery_log"] = [[now - (30 - i) * 86400, 100 - i * 2] for i in range(31)]     # 2 %/day, now 40 %
+    dev.state["battery"] = 40
+    st, d = await api(s, "GET", f"/api/devices/0x{door_ieee:016x}")
+    assert d["battery_forecast"]["confidence"] == "ok" and 14 <= d["battery_forecast"]["days_left"] <= 16
+    await b.go(base, f"device/0x{door_ieee:016x}", 2.0)
+    row = await b.js("(()=>{const tr=[...document.querySelectorAll('tr')].find(t=>t.textContent.startsWith('Battery'));return tr?tr.textContent:'';})()")
+    assert "40 %" in row and "replace by" in row and "weeks left" in row, row
+
+    # the nightly backups card
+    await b.go(base, "settings", 2.0)
+    for _ in range(20):
+        card = await b.js("(()=>{const h=[...document.querySelectorAll('h3')].find(h=>h.textContent.startsWith('Nightly backups'));return h?h.parentElement.textContent:'';})()")
+        if "Back up every night" in card:
+            break
+        await asyncio.sleep(0.25)
+    assert "Back up every night" in card and "Back up now" in card, card
     assert b.errors == [], f"console errors: {b.errors}"
