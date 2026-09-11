@@ -122,6 +122,16 @@ you press *Update* for that one device. The gateway never downloads firmware.
 * Only **control users** (and the UI acting as one) can open the window. Home
   Assistant's user cannot, on purpose.
 
+## Is my network healthy?
+
+The Dashboard opens with a **Network health** card: devices the gateway cannot reach, devices
+flapping offline and back, devices quiet for longer than their kind should be, and — after
+**Check now** walks the routers' neighbour tables — every weak hop ("reaches Hall - Lamp at
+LQI 58 — a router in between would give it a parent next door") and any router carrying too
+many children. Each device page says who it talks through and how strong that link is. The
+same judgement reaches Home Assistant as a **Health** sensor (`oneroof/zigbee/health`, ok or
+degraded, the reasons) — the shape every One Roof add-on publishes, so one card shows the family.
+
 ## Network key rotation
 
 The network key can be rotated over the air (Settings → Maintenance): every device

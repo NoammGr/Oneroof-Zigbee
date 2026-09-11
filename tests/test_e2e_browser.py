@@ -483,3 +483,64 @@ async def test_b12_automatic_rotation_is_the_owners_switch_and_the_check_names_d
                      "return r?{text:r.textContent,links:[...r.querySelectorAll('a.devname')].map(a=>a.title)}:null;})()")
     assert row and row["links"] == [gone] and "Hall lamp" in row["text"] and gone not in row["text"], row
     assert b.errors == [], f"console errors: {b.errors}"
+
+
+async def test_b13_the_dashboard_answers_is_my_network_healthy(stack, browser):  # noqa: F811
+    """A Network health card on the Dashboard names what is wrong and why; Check now walks the
+    neighbour tables so a weak hop is judged; the device page says who it talks through; and
+    the family health line reaches Home Assistant with discovery."""
+    s, b = stack, browser
+    base = f"http://127.0.0.1:{s.ui.port}/"
+    if _gw(s).registry.get(PLUG_IEEE) is None:
+        await api(s, "POST", "/api/permit_join", {"seconds": 30})
+        s.world.announce(s.world.add(plug(PLUG_IEEE, PLUG_NWK)))
+        await wait_for(lambda: (lambda x: x and x.interviewed)(_gw(s).registry.get(PLUG_IEEE)), 8)
+    weak_ieee, weak_nwk = 0xA4C1380000000077, 0x7777
+    if _gw(s).registry.get(weak_ieee) is None:
+        await api(s, "POST", "/api/permit_join", {"seconds": 30})
+        s.world.announce(s.world.add(plug(weak_ieee, weak_nwk)))
+        await wait_for(lambda: (lambda x: x and x.interviewed)(_gw(s).registry.get(weak_ieee)), 8)
+    kettle, weak = f"0x{PLUG_IEEE:016x}", f"0x{weak_ieee:016x}"
+    await api(s, "POST", f"/api/devices/{kettle}/rename", {"friendly_name": "Kitchen - Kettle plug"})
+    await api(s, "POST", f"/api/devices/{weak}/rename", {"friendly_name": "Stairs - Bulb"})
+    s.fake.neighbours = {0x0000: [(PLUG_IEEE, PLUG_NWK, 210, 1, 1), (weak_ieee, weak_nwk, 55, 1, 1)]}
+
+    # the API: a check walks the tables and judges the weak hop
+    st, r = await api(s, "POST", "/api/health", {})
+    assert st == 200 and r["walked"] and r["walked_at"], r
+    weak_findings = [f for f in r["findings"] if f["kind"] == "weak_link"]
+    assert weak_findings and weak_findings[0]["name"] == "Stairs - Bulb" and "LQI 55" in weak_findings[0]["detail"]
+    st, d = await api(s, "GET", f"/api/devices/{weak}")
+    assert d["parent"]["name"] == "Coordinator" and d["parent"]["lqi"] == 55 and d["parent"]["grade"] == "bad"
+    st, d = await api(s, "GET", f"/api/devices/{kettle}")
+    assert d["parent"]["grade"] == "ok"
+
+    # the Dashboard card
+    await b.go(base, "dashboard", 2.0)
+    for _ in range(40):
+        card = await b.js("(()=>{const h=[...document.querySelectorAll('h2')].find(h=>h.textContent==='Network health');return h?h.closest('.card').textContent:'';})()")
+        if "Stairs - Bulb" in card:
+            break
+        await asyncio.sleep(0.25)
+    assert "weak link" in card and "Stairs - Bulb" in card and "LQI 55" in card, card
+    await b.click_text("Check now")
+    for _ in range(40):
+        await asyncio.sleep(0.25)
+        if await b.js("!!document.querySelector('.card .btn') && [...document.querySelectorAll('.card .btn')].some(x=>x.textContent==='Check now' && !x.disabled)"):
+            break
+    assert b.errors == [], f"console errors: {b.errors}"
+
+    # the device page
+    await b.go(base, f"device/{weak}", 2.0)
+    row = await b.js("(()=>{const tr=[...document.querySelectorAll('tr')].find(t=>t.textContent.startsWith('Talks through'));return tr?tr.textContent:'';})()")
+    assert "Coordinator" in row and "weak" in row and "LQI 55" in row and "router in between" in row, row
+
+    # the family health line, discovered by itself
+    await wait_for(lambda: any(t == "homeassistant/sensor/oneroof_zigbee_health/config" for t, _ in s.history), 5)
+    cfg = json.loads(next(p for t, p in s.history if t == "homeassistant/sensor/oneroof_zigbee_health/config"))
+    assert cfg["state_topic"] == "oneroof/zigbee/health" and cfg["unique_id"] == "oneroof_zigbee_health" and cfg["expire_after"] == 180
+    await _gw(s).publish_health(_gw(s).map_links())
+    await wait_for(lambda: any(t == "oneroof/zigbee/health" for t, _ in s.history), 5)
+    line = json.loads(next(p for t, p in reversed(s.history) if t == "oneroof/zigbee/health"))
+    assert line["status"] in ("ok", "degraded") and "version" in line and "reasons" in line and line["devices"] >= 2
+    assert b.errors == [], f"console errors: {b.errors}"

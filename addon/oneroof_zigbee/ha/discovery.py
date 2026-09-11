@@ -331,5 +331,12 @@ def bridge_discovery(base: str, prefix: str, *, legacy: bool = False) -> list[tu
             "state_topic": f"{base}/bridge/info", "value_template": "{{ value_json.device_count }}",
             "json_attributes_topic": f"{base}/bridge/info", "entity_category": "diagnostic",
         }).encode()),
+        # the family's health line: ok / degraded and why (health.py); the same shape every One
+        # Roof add-on publishes, on its own topic so one card in Home Assistant shows them all
+        (f"{prefix}/sensor/oneroof_zigbee_health/config", json.dumps({
+            "device": device, "name": "Health", "unique_id": "oneroof_zigbee_health", "icon": "mdi:home-roof",
+            "state_topic": "oneroof/zigbee/health", "value_template": "{{ value_json.status }}",
+            "json_attributes_topic": "oneroof/zigbee/health", "expire_after": 180,
+        }).encode()),
     ]
     return msgs

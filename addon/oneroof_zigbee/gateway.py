@@ -25,6 +25,7 @@ from .config import Config
 from .definitions import Definitions
 from .devices import Device, Registry
 from .ha import Topics, bridge_discovery, discovery_messages, removal_messages
+from .health import health_line, network_health
 from .mqtt import Broker
 from .security import Audit, InstallCodeError, JoinPolicyError, parse_install_code
 from .zcl import global_commands as gc
@@ -122,6 +123,9 @@ class Gateway:
         # Serial link health, driven by the connection supervisor in __main__:
         # False while the dongle is disconnected/reconnecting. Surfaced in the UI.
         self.coordinator_online = True
+        self._started_at = time.time()
+        self._flaps: dict[str, list[float]] = {}          # ieee -> when it went offline/online (health.py)
+        self.map_links: Callable[[], list[dict[str, Any]]] | None = None   # the UI lends its walked neighbour tables
         # optional observers (the UI attaches here); called synchronously, must not raise
         self.on_state_change: Callable[[int, dict[str, Any]], None] | None = None
         self.on_device_event: Callable[[str, Device], None] | None = None
@@ -310,6 +314,7 @@ class Gateway:
                 if tick % 5 == 0:
                     await self.coord.refresh_frame_counter()
                     self._maybe_scheduled_rotation()
+                await self.publish_health(self.map_links() if self.map_links else None)
             except Exception:
                 log.debug("monitor sweep failed", exc_info=True)
 
@@ -1482,7 +1487,28 @@ class Gateway:
                 log.exception("on_device_event observer failed")
 
     async def _publish_availability(self, dev: Device, online: bool) -> None:
+        # every online/offline flip, remembered for a day: the health check calls four of them
+        # "flapping" and names the device
+        stamps = self._flaps.setdefault(dev.ieee_str.lower(), [])
+        stamps.append(time.time())
+        del stamps[:-50]
         await self.broker.publish(self.topics.availability(dev), self.topics.availability_payload(online), retain=True)
+
+    # -- network health ------------------------------------------------------
+    def health_devices(self) -> list[dict[str, Any]]:
+        out = [{"ieee": ieee_str(self.coord.ieee), "name": "Coordinator", "kind": "coordinator", "available": True, "last_seen": time.time()}]
+        for d in self.registry.all():
+            out.append({"ieee": d.ieee_str, "name": d.friendly_name, "kind": "router" if d.is_router else "end_device",
+                        "available": d.available, "last_seen": d.last_seen,
+                        "battery": (not d.is_router) and not d.rx_on_when_idle})
+        return out
+
+    def health_report(self, links: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        return network_health(self.health_devices(), links or [], self._flaps)
+
+    async def publish_health(self, links: list[dict[str, Any]] | None = None) -> None:
+        line = health_line(self.health_report(links), __import__("oneroof_zigbee").__version__, int(time.time() - self._started_at), self.coordinator_online)
+        await self.broker.publish("oneroof/zigbee/health", json.dumps(line).encode(), retain=False)
 
     async def _publish_permit_join(self) -> None:
         w = self.coord.guard.window

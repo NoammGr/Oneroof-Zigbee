@@ -1,5 +1,34 @@
 # Changelog
 
+## [2.18.0] — 2026-09-11
+
+### Added — "Is my network healthy?"
+A **Network health** card at the top of the Dashboard, from what the gateway already knows:
+devices it cannot reach, devices that went offline and back four times or more in a day
+(flapping), devices quiet for far longer than their kind should be (mains 6 h, battery 26 h),
+and — after **Check now** walks the routers' neighbour tables — every device whose best hop
+to a relay is weak (LQI under 80, "a router in between would give it a parent next door") and
+any router carrying more than ten children. Every finding names the device and says why, in
+one line, and links to its page.
+
+### Added — who a device talks through, on its page
+Under Last seen: **Talks through** — the relay it reaches best and the link's strength
+(strong / fair / weak, with the LQI), judged from the last walk of the neighbour tables; a
+weak hop says so and what would fix it; a device that flapped today says how many times.
+
+### Added — one line of health for Home Assistant
+The gateway publishes `oneroof/zigbee/health` every minute (ok / degraded, the reasons, version,
+uptime, coordinator state, the counts) with MQTT discovery, so a **Health** sensor appears on
+the OneRoof Zigbee bridge device by itself; every One Roof add-on publishes the same shape, so
+one card shows the family. The sensor goes unavailable three minutes after the gateway stops.
+
+### Added — release hygiene, tested
+A test now fails when the two changelog copies differ, the three version strings disagree, or
+the changelog does not lead with the version being shipped.
+
+API: `GET api/health`, `POST api/health` (walks the tables first; audited as
+`network_health_checked`); device JSON gains `parent` and `flaps_24h`.
+
 ## [2.17.1] — 2026-09-10
 
 ### Changed — the house map is withdrawn

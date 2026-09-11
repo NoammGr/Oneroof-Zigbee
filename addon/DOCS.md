@@ -27,6 +27,13 @@ Zigbee gateway **and** MQTT broker in one add-on, designed around security.
 * Everything else — users, TLS, join policy, backups, firmware, log level — is in the web UI → Settings,
   with help on every setting.
 
+## Is my network healthy?
+The Dashboard opens with a Network health card: devices the gateway cannot reach, devices flapping
+offline and back, devices quiet for longer than their kind should be, and — after **Check now**
+walks the routers' neighbour tables — every weak hop and what would fix it. Each device page says who
+it talks through. The same reaches Home Assistant as a **Health** sensor on the OneRoof Zigbee bridge
+device (ok or degraded, and why).
+
 ## Network key rotation
 * Manual: web UI → Settings → Maintenance → *Rotate key over the air*. Press **Check first** before it:
   the add-on asks every router to answer on the current key and judges each battery device by when it

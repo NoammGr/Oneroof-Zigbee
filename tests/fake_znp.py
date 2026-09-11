@@ -70,6 +70,9 @@ class FakeZnp:
         self.refuse_scan = False
         self.on_data_request = None  # optional hook: Frame -> list[Frame] of AREQs to emit
         self.bind_status = 0x00  # ZDO status the "device" answers a bind request with (0x8C: table full)
+        # neighbour tables per asked address: {nwk: [(ieee, nwk, lqi, relationship, depth)]}; an
+        # address not listed answers the one stock neighbour below
+        self.neighbours: dict[int, list[tuple]] = {}
 
     # --- emit AREQ from "the radio" ---
     # MT ids of ZDO responses that the real firmware delivers only through the message callback
@@ -317,9 +320,12 @@ class FakeZnp:
             elif cmd == c.ZdoCmd.MGMT_LQI_REQ:
                 nwk = int.from_bytes(f.data[0:2], "little")
                 self._srsp(f, b"\x00")
-                # one neighbour: a router 0x5678 with lqi 180, relationship child(1), depth 1
-                entry = Writer().u64(0).ieee(0x00124B00DEADBEEF).u16(0x5678).u8(0x01 | (0x01 << 2) | (0x01 << 4)).u8(0x02).u8(1).u8(180).bytes()
-                self.emit(Frame(FrameType.AREQ, Subsystem.ZDO, c.ZdoCmd.MGMT_LQI_RSP, Writer().u16(nwk).u8(0).u8(1).u8(0).u8(1).raw(entry).bytes()))
+                # by default one neighbour: a router 0x5678 with lqi 180, relationship child(1), depth 1
+                rows = self.neighbours.get(nwk, [(0x00124B00DEADBEEF, 0x5678, 180, 1, 1)])
+                w = Writer().u16(nwk).u8(0).u8(len(rows)).u8(0).u8(len(rows))
+                for ieee, n_nwk, lqi, rel, depth in rows:
+                    w.raw(Writer().u64(0).ieee(ieee).u16(n_nwk).u8(0x01 | (0x01 << 2) | (rel << 4)).u8(0x02).u8(depth).u8(lqi).bytes())
+                self.emit(Frame(FrameType.AREQ, Subsystem.ZDO, c.ZdoCmd.MGMT_LQI_RSP, w.bytes()))
             else:
                 self._srsp(f, b"\x00")
         elif ss is Subsystem.UTIL:

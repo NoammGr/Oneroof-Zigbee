@@ -15,6 +15,7 @@ from typing import Any
 from .. import __version__
 from ..admin import ROLE_TEMPLATES, Admin
 from ..gateway import Gateway
+from ..health import best_parents
 from ..config import ConfigError
 from ..security import Audit
 from ..znp.transport import ZnpError
@@ -80,6 +81,7 @@ class UiApi:
         self.started = time.time()
         self._map_cache: dict[str, Any] = {"nodes": [], "links": [], "updated": None}
         self._map_lock = asyncio.Lock()
+        gw.map_links = lambda: self._map_cache.get("links") or []   # the health line uses the walked tables too
         self._index = (STATIC / "index.html").read_bytes() if (STATIC / "index.html").exists() else b"<h1>UI not built</h1>"
 
         r = server.route
@@ -95,6 +97,8 @@ class UiApi:
         r("GET", "/api/audit/verify", self.audit_verify)
         r("GET", "/api/logs", self.app_logs)
         r("GET", "/api/map", self.map)
+        r("GET", "/api/health", self.health)
+        r("POST", "/api/health", self.health_check)
         r("POST", "/api/permit_join", self.permit_join)
         r("GET", "/api/unknown", self.unknown_list)
         r("POST", "/api/unknown/<ieee>/adopt", self.unknown_adopt)
@@ -199,6 +203,18 @@ class UiApi:
         }
         if not detail:
             return out
+        # who it talks through, from the last walk of the neighbour tables (health.py): the
+        # device page says when that hop is the weak spot
+        links = self._map_cache.get("links") or []
+        parent = best_parents(self.gw.health_devices(), links).get(d.ieee_str.lower()) if links else None
+        if parent:
+            relay = self.gw.registry.get(ieee_int(parent[0])) if parent[0] != ieee_str(self.gw.coord.ieee).lower() else None
+            out["parent"] = {"ieee": parent[0], "name": relay.friendly_name if relay else "Coordinator", "lqi": parent[1],
+                             "grade": "ok" if parent[1] >= 150 else "warn" if parent[1] >= 80 else "bad",
+                             "walked_at": self._map_cache.get("updated")}
+        else:
+            out["parent"] = None
+        out["flaps_24h"] = sum(1 for t in self.gw._flaps.get(d.ieee_str.lower(), []) if time.time() - t <= 86400)
         from ..features import features_for
         from ..oui import vendor_of
         from ..zcl import cluster_name, describe_endpoint
@@ -313,6 +329,25 @@ class UiApi:
 
     async def map(self, req: Request) -> Response:
         return Response.json(self._map_cache)
+
+    # "Is my network healthy?" — from what the gateway knows now (GET), or after walking the
+    # neighbour tables first (POST), which takes a few seconds per router
+    def _health_json(self) -> dict[str, Any]:
+        out = self.gw.health_report(self._map_cache.get("links") or [])
+        out["walked_at"] = self._map_cache.get("updated")
+        out["coordinator_online"] = self.gw.coordinator_online
+        return out
+
+    async def health(self, req: Request) -> Response:
+        return Response.json(self._health_json())
+
+    async def health_check(self, req: Request) -> Response:
+        if self._map_lock.locked():
+            return Response.json({"ok": False, "error": "a check is already running"}, 409)
+        async with self._map_lock:
+            self._map_cache = await self._build_map()
+        self.gw.audit.event("network_health_checked", by=self.who, **self._health_json()["counts"])
+        return Response.json({"ok": True, **self._health_json()})
 
     # -- POST --------------------------------------------------------------
 

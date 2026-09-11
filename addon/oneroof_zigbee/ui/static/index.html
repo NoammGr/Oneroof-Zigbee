@@ -783,7 +783,25 @@ views.dashboard={
       el('label',{class:'sub',for:'dashdef',style:'display:inline-flex;align-items:center;gap:5px;cursor:pointer'},
         this.defBox,'Default'),this.count));
     this.syncDef();
+    this.healthHost=el('div');m.append(this.healthHost);this.health();
     this.host=el('div',{class:'dgrid'});m.append(this.host);this.render();views.devices.refresh();
+  },
+  // "Is my network healthy?" - what the gateway knows now; Check now walks the routers'
+  // neighbour tables first (a few seconds per router) so weak links are judged too
+  async health(walk){
+    const host=this.healthHost;if(!host)return;
+    let r;try{r=walk?await api('api/health',{}):await api('api/health');}catch(e){toast(e.message,true);return;}
+    if(S.page!=='dashboard')return;const h=clear(host);
+    const verdict=r.verdict==='ok'?['ok','All good']:r.verdict==='warn'?['warn',r.findings.length+' thing'+(r.findings.length===1?'':'s')+' worth a look']:['danger',r.findings.length+' problem'+(r.findings.length===1?'':'s')];
+    const btn=el('button',{class:'btn',text:walk?'Checking…':'Check now',disabled:!!walk,title:'Walk the routers\u2019 neighbour tables and judge every link',onclick:()=>{this.health(true);}});
+    const when=r.walked_at?'links judged from the tables walked '+rel(r.walked_at):'links not judged yet \u2014 Check now walks the tables';
+    const card=el('div',{class:'card',style:'margin-bottom:18px'},
+      el('div',{style:'display:flex;gap:12px;align-items:center;flex-wrap:wrap'},el('h2',{style:'margin:0',text:'Network health'}),el('span',{class:'badge '+verdict[0],text:verdict[1]}),el('span',{class:'sub',text:r.devices+' devices \u00b7 '+when}),el('span',{class:'grow'}),btn));
+    if(!r.coordinator_online)card.append(el('div',{class:'notice',style:'margin:12px 0 0'},el('b',{text:'The coordinator is offline.'}),' Nothing below can be reached until the radio is back.'));
+    if(r.findings.length){const list=el('div',{class:'rc-list'});for(const f of r.findings){const d=S.devMap.get(String(f.ieee).toLowerCase());list.append(el('div',{class:'rc-row'+(f.severity==='bad'?' bad':'')},el('span',{class:'badge '+(f.severity==='bad'?'danger':'warn'),text:{offline:'offline',weak_link:'weak link',flapping:'flapping',quiet:'quiet',busy_router:'busy router'}[f.kind]||f.kind}),d?el('a',{class:'devname',href:'#device/'+encodeURIComponent(f.ieee),text:f.name,title:f.ieee}):el('b',{text:f.name}),el('span',{class:'sub',text:f.detail})));}card.append(list);}
+    else if(r.walked_at)card.append(el('div',{class:'sub',style:'margin-top:8px',text:'Every device reachable, every link fine, nothing flapping or quiet.'}));
+    h.append(card);
+    if(walk)toast(r.verdict==='ok'?'Network healthy':'Check done \u2014 '+verdict[1]);
   },
   filtered(){const q=this.q;return S.devices.filter(d=>(this.cat==='all'||devCat(d)===this.cat)&&(!q||[d.friendly_name,d.model,d.manufacturer,d.ieee,d.description].join(' ').toLowerCase().includes(q))).sort(DSORTERS[this.sort]||DSORTERS.name);},
   render(){
@@ -874,6 +892,16 @@ views.device={
   leave(){clearTimeout(this.fwTimer);},
   renderTab(){const b=clear(this.body);this.upd.clear();clearTimeout(this.fwTimer);if(!this.d)return;this['tab_'+this.tab](b,this.d);},
   kv(k,v,sub,mono){return el('tr',null,el('td',{text:k}),el('td',null,el('div',{class:mono?'mono':'',text:fmtVal(v)}),sub?el('div',{class:'sub',text:sub}):null));},
+  // who it talks through, from the last walk of the neighbour tables; a weak hop is the one
+  // thing about this device the owner can fix with a router in between
+  kvParent(d){
+    const p=d.parent;const flaps=d.flaps_24h||0;
+    if(!p)return el('tr',null,el('td',{text:'Talks through'}),el('td',null,el('div',{class:'sub',text:'not judged yet \u2014 Check now on the Dashboard walks the neighbour tables'})));
+    const g=p.grade;const badge=el('span',{class:'badge '+(g==='ok'?'ok':g==='warn'?'warn':'danger'),text:(g==='ok'?'strong':g==='warn'?'fair':'weak')+' \u00b7 LQI '+p.lqi});
+    const who=p.name==='Coordinator'?el('b',{text:'Coordinator'}):el('a',{class:'devname',href:'#device/'+encodeURIComponent(p.ieee),text:p.name,title:p.ieee});
+    const note=g==='bad'?'A router in between would give it a parent next door \u2014 this hop is why it drops.':g==='warn'?'Usable; a closer router would make it solid.':'';
+    return el('tr',null,el('td',{text:'Talks through'}),el('td',null,el('div',{style:'display:flex;gap:8px;align-items:center;flex-wrap:wrap'},who,badge,flaps>=4?el('span',{class:'badge warn',text:'flapped '+flaps+'\u00d7 today'}):null),el('div',{class:'sub',text:(note?note+' ':'')+'Judged from the tables walked '+rel(p.walked_at)+'.'})));
+  },
   actRows(d){const a=(d.activity||[]).slice(-5).reverse();if(!a.length)return [el('span',{class:'sub',text:'No changes recorded yet.'})];return a.map(x=>el('div',{class:'act'},el('span',{class:'t',text:fmtTs(x.ts).slice(5)}),el('span',null,el('b',{text:x.key}),': '+fmtVal(x.old)+' → '+fmtVal(x.new))));},
   tab_about(b,d){
     const fw=[d.sw_build].filter(Boolean).join(' ')||'—';const fwSub=[d.hw_version!=null?'hw '+d.hw_version:null,d.date_code?'date '+d.date_code:null].filter(Boolean).join(' · ');
@@ -891,6 +919,7 @@ views.device={
       this.kv('Versions',vers),
       this.kv('Joined',d.joined_at?rel(d.joined_at):'—',d.joined_at?fmtTs(d.joined_at):''),
       this.kv('Last seen',rel(d.last_seen),d.last_seen?fmtTs(d.last_seen):''),
+      this.kvParent(d),
       el('tr',null,el('td',{text:'Recent activity'}),el('td',null,this.actEl)),
       el('tr',null,el('td',{text:'MQTT topics'}),el('td',null,topics)));
     b.append(el('div',{class:'twrap'},el('table',{class:'kvt'},tb)));
