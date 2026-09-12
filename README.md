@@ -133,8 +133,7 @@ same judgement reaches Home Assistant as a **Health** sensor (`oneroof/zigbee/he
 degraded, the reasons) — the shape every One Roof add-on publishes, so one card shows the family.
 
 ### Rooms
-Every device has a **Room** (device page → Room): pick one in use or type a new one; the
-gateway suggests the room the device's name carries or the area Home Assistant already has.
+Every device has a **Room** (device page → Room): pick one in use or type a new one.
 Tick several devices on the Devices list to room them at once; rename a room in one place.
 It is the family's one answer to "where is it?": the device list every One Roof add-on reads
 carries it, Home Assistant gets it as the suggested area, Statistics and the Bridge group by it.

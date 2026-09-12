@@ -35,8 +35,7 @@ it talks through. The same reaches Home Assistant as a **Health** sensor on the 
 device (ok or degraded, and why).
 
 ## Rooms
-Device page → **Room**: pick a room in use or type a new one; the gateway suggests the room the
-device's name carries or the area Home Assistant already has, accepted with one click. Tick several
+Device page → **Room**: pick a room in use or type a new one. Tick several
 devices on the Devices list to room them at once; rename a room in one place. Home Assistant
 receives it as the suggested area; the other One Roof add-ons read it from the device list.
 

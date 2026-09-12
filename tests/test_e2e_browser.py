@@ -603,16 +603,16 @@ async def test_b15_rooms_are_the_owners_word_and_the_family_reads_them(stack, br
     await api(s, "POST", f"/api/devices/{kettle}/rename", {"friendly_name": "Kitchen - Kettle plug"})
     await api(s, "POST", f"/api/devices/{kettle}/room", {"room": ""})
     st, d = await api(s, "GET", f"/api/devices/{kettle}")
-    assert d["room"] is None and d["room_suggestion"] == {"room": "Kitchen", "from": "its name"}
+    assert d["room"] is None
 
-    # the device page: the suggestion, accepted with one click
+    # the device page: type a room, save
     await b.go(base, f"device/{kettle}", 2.0)
-    card = await b.js("(()=>{const h=[...document.querySelectorAll('h2')].find(h=>h.textContent.startsWith('Room'));return h?h.nextElementSibling.textContent:'';})()")
-    assert "Kitchen" in card and "says its name" in card, card
-    await b.click_text("Use it")
-    await asyncio.sleep(1.0)
+    saved = await b.js("""(async()=>{const h=[...document.querySelectorAll('h2')].find(h=>h.textContent.startsWith('Room'));
+      const card=h.nextElementSibling;const i=card.querySelector('input');i.value='Kitchen';
+      [...card.querySelectorAll('button')].find(x=>x.textContent.trim()==='Save').click();await new Promise(r=>setTimeout(r,800));return 'ok';})()""")
+    assert saved == "ok"
     st, d = await api(s, "GET", f"/api/devices/{kettle}")
-    assert d["room"] == "Kitchen" and d["room_suggestion"] is None
+    assert d["room"] == "Kitchen"
     # ...and it is what the family reads
     await wait_for(lambda: any(e.get("ieee") == kettle and e.get("room") == "Kitchen" for e in json.loads(s.got[f"{BASE}/bridge/devices"])), 5)
     await wait_for(lambda: any(t.startswith("homeassistant/") and kettle in t and t.endswith("/config")

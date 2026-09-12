@@ -1,10 +1,9 @@
 """Rooms: the owner's word on where a device is, suggested from its name or Home Assistant."""
-import json
 import types
 
 import pytest
 
-from oneroof_zigbee.rooms import RoomBook, clean_room, ha_areas, room_of_name, summarize
+from oneroof_zigbee.rooms import RoomBook, clean_room, summarize
 
 
 def test_room_names_are_cleaned_and_bounded():
@@ -13,28 +12,6 @@ def test_room_names_are_cleaned_and_bounded():
         clean_room("a/b")
     with pytest.raises(ValueError):
         clean_room("x" * 61)
-
-
-def test_the_room_a_name_carries():
-    assert room_of_name("Garage - Smart Plug") == "Garage"
-    assert room_of_name("Kitchen: kettle") == "Kitchen"
-    assert room_of_name("Hall – Lamp") == "Hall"
-    assert room_of_name("Back door") == "" and room_of_name("A-B") == "" and room_of_name("") == ""
-
-
-def test_home_assistant_areas_by_device_identifier(tmp_path):
-    st = tmp_path / "ha" / ".storage"
-    st.mkdir(parents=True)
-    (st / "core.device_registry").write_text(json.dumps({"data": {"devices": [
-        {"identifiers": [["mqtt", "oneroof_zigbee_0x00158D0000000001"]], "area_id": "k"},
-        {"identifiers": [["mqtt", "zigbee2mqtt_0x00158D0000000002"]], "area_id": "g"},
-        {"identifiers": [["hue", "abc"]], "area_id": "k"},
-        {"identifiers": [["mqtt", "oneroof_zigbee_0x00158D0000000003"]], "area_id": None}]}}))
-    (st / "core.area_registry").write_text(json.dumps({"data": {"areas": [{"id": "k", "name": "Kitchen"}, {"id": "g", "name": "Garage"}]}}))
-    assert ha_areas([tmp_path / "nope", tmp_path / "ha"]) == {"0x00158d0000000001": "Kitchen", "0x00158d0000000002": "Garage"}
-    assert ha_areas([tmp_path / "nope"]) == {}
-    (st / "core.device_registry").write_text("{broken")
-    assert ha_areas([tmp_path / "ha"]) == {}
 
 
 def test_rooms_are_summarised_from_the_devices_with_their_floor(tmp_path):

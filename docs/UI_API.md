@@ -23,7 +23,7 @@ Security:
 | `/` | the single-page UI |
 | `api/bridge` | `{version, coordinator_ieee, channel, pan_id, strict_install_codes, device_count, permit_join: {open, seconds_left, requested_by}, uptime_s, ui_user, ui_can_control}` |
 | `api/devices` | `[{ieee, friendly_name, manufacturer, model, sw_build, power_source, is_router, interviewed, available, lqi, last_seen, endpoints: {"1": {category, in_clusters:[int], out_clusters:[int]}}, state: {...}}]` |
-| `api/devices/<ieee>` | one device (same shape — every device carries `room`, `room_suggestion: {room, from} | null`, `wall_switched`, `wall_off`, `wall_pattern` — plus `parent: {ieee, name, lqi, grade: ok\|warn\|bad, walked_at}` — the relay it reaches best from the last walk, or null — `flaps_24h`, and `battery_forecast: {pct, days_left, per_day, confidence: ok\|low\|none, points}` for a battery device with history) |
+| `api/devices/<ieee>` | one device (same shape — every device carries `room`, `wall_switched`, `wall_off`, `wall_pattern` — plus `parent: {ieee, name, lqi, grade: ok\|warn\|bad, walked_at}` — the relay it reaches best from the last walk, or null — `flaps_24h`, and `battery_forecast: {pct, days_left, per_day, confidence: ok\|low\|none, points}` for a battery device with history) |
 | `api/audit?n=200&level=all\|security` | `[{ts, level, type, ...fields}]` newest last (reads tail of audit.log) |
 | `api/audit/verify` | `{ok: bool, first_bad_line: int}` |
 | `api/logs?n=500` | `[{ts, level, logger, msg}]` in-memory ring buffer of the application log |
@@ -40,7 +40,7 @@ Security:
 | `api/devices/<ieee>/set` | any device command, e.g. `{state:"ON", brightness: 200}` | same as MQTT `set` |
 | `api/devices/<ieee>/rename` | `{friendly_name}` | |
 | `api/devices/<ieee>/room` | `{room}` (≤ 60 chars, no `/ + #`; empty clears) → `{ok, room}` | control-only; the room rides in `bridge/devices` (`room`, `floor`) and in discovery as `suggested_area`; audited `device_roomed` |
-| `GET api/rooms` | — | `{rooms: [{name, floor, devices, offline, wall_off}], unplaced: [{ieee, friendly_name, suggestion}]}` |
+| `GET api/rooms` | — | `{rooms: [{name, floor, devices, offline, wall_off}], unplaced: [{ieee, friendly_name}]}` |
 | `api/rooms/assign` | `{ieees[], room}` → `{ok, devices, rooms}` | control-only |
 | `api/rooms/rename` | `{from, to}` → `{ok, devices, rooms}` | control-only; every device in the room follows; audited `room_renamed` |
 | `api/rooms/floor` | `{room, floor: int\|null}` → `{ok, rooms}` | control-only; `rooms.json`; audited `room_floor_set` |

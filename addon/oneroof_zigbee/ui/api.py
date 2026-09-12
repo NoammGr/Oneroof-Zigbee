@@ -17,7 +17,7 @@ from .. import __version__
 from ..admin import ROLE_TEMPLATES, Admin
 from ..gateway import Gateway
 from ..health import battery_forecast, best_parents
-from ..rooms import ha_areas, room_of_name, summarize
+from ..rooms import summarize
 from ..config import ConfigError
 from ..security import Audit
 from ..znp.transport import ZnpError
@@ -212,7 +212,7 @@ class UiApi:
         out = {
             "ieee": d.ieee_str, "friendly_name": d.friendly_name, "description": d.description,
             "wall_switched": d.wall_switched, "wall_off": bool(d.context.get("wall_off")), "wall_pattern": int(d.context.get("wall_pattern", 0)),
-            "room": d.room, "room_suggestion": self._room_suggestion(d),
+            "room": d.room,
             "manufacturer": d.manufacturer, "model": d.model, "vendor": d.vendor, "kind": d.kind, "category": d.category,
             "sw_build": d.sw_build, "power_source": d.power_source, "is_router": d.is_router, "interviewed": d.interviewed,
             "interview_error": d.interview_error, "available": d.available, "lqi": d.lqi, "last_seen": d.last_seen,
@@ -430,24 +430,6 @@ class UiApi:
         return Response.json({"ok": True})
 
     # -- rooms (rooms.py) --------------------------------------------------------
-    def _room_suggestion(self, d: Any) -> dict[str, str] | None:
-        """Before the owner types anything: the room its name carries, or Home Assistant's area."""
-        if d.room:
-            return None
-        area = self._ha_areas().get(d.ieee_str.lower())
-        if area:
-            return {"room": area, "from": "Home Assistant"}
-        named = room_of_name(d.friendly_name)
-        return {"room": named, "from": "its name"} if named else None
-
-    _ha_cache: tuple[float, dict[str, str]] = (0.0, {})
-
-    def _ha_areas(self) -> dict[str, str]:
-        ts, cached = self._ha_cache
-        if time.time() - ts > 60:
-            self._ha_cache = (time.time(), ha_areas(list(self.gw.cfg.import_roots)))
-        return self._ha_cache[1]
-
     async def dev_room(self, req: Request) -> Response:
         self._require_control()
         dev = self._find(req)
@@ -460,8 +442,7 @@ class UiApi:
     async def rooms(self, req: Request) -> Response:
         devs = self.gw.registry.all()
         return Response.json({"rooms": summarize(devs, self.gw.rooms),
-                              "unplaced": [{"ieee": d.ieee_str, "friendly_name": d.friendly_name, "suggestion": self._room_suggestion(d)}
-                                           for d in devs if not d.room]})
+                              "unplaced": [{"ieee": d.ieee_str, "friendly_name": d.friendly_name} for d in devs if not d.room]})
 
     async def rooms_assign(self, req: Request) -> Response:
         """Several devices at once: {ieees: [...], room}."""

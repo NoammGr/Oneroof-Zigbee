@@ -1,12 +1,16 @@
 # Changelog
 
+## [2.21.1] — 2026-09-12
+
+### Removed
+- The room suggestion box on the device page (the room a name carried, Home Assistant's area).
+  You pick the room; nothing guesses.
+
 ## [2.21.0] — 2026-09-12
 
 ### Added — rooms, the family's one answer to "where is it?"
 Every device page has a **Room** card under Type & category: pick a room already in use or type
-a new one — a room exists because a device is in it, there is no list to keep. Before you type,
-the gateway suggests the room the device's own name carries ("Garage - Smart Plug") or the
-area Home Assistant already has for it, accepted with one click. On the Devices list, tick
+a new one — a room exists because a device is in it, there is no list to keep. On the Devices list, tick
 several devices and put them in a room at once. A room can be renamed in one place (every
 device follows) and can carry an optional floor.
 
