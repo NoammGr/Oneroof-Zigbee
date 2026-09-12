@@ -1117,6 +1117,24 @@ async def test_devices_silent_since_formation_are_offline_on_every_start(tmp_pat
     gw3 = Gateway(gw.cfg, coord, broker, coord.audit, gw.registry, control_users={"admin"})
     await gw3.start()
     assert gw.registry.get(IEEE + 12).available is True
+    # ...and a bulb behind a wall switch that is silent over the restart starts "off at the wall",
+    # available with its state OFF - never offline. Seen live: three marked bulbs came up offline
+    # after an update and sorted to the top of "Offline first".
+    d3 = gw.registry.add_or_update(IEEE + 13, NWK + 13, is_router=True)
+    d3.wall_switched = True
+    d3.available = True
+    d3.state["state"] = "ON"
+    d3.last_seen = coord.secrets.formed_ts - 100
+    d4 = gw.registry.add_or_update(IEEE + 14, NWK + 14, is_router=True)   # marked, but a file that says offline
+    d4.wall_switched = True
+    d4.available = False
+    gw.registry.save()
+    gw4 = Gateway(gw.cfg, coord, broker, coord.audit, gw.registry, control_users={"admin"})
+    await gw4.start()
+    for dd in (gw.registry.get(IEEE + 13), gw.registry.get(IEEE + 14)):
+        assert dd.available is True and dd.context.get("wall_off") is True, dd.friendly_name
+    assert gw.registry.get(IEEE + 13).state["state"] == "OFF"
+    assert broker.last(f"oneroof/zigbee/{gw.registry.get(IEEE + 13).ieee_str}/availability") != b"offline"
     await t.close()
 
 

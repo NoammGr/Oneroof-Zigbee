@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.21.3] — 2026-09-12
+
+### Fixed — after a restart a marked bulb came up offline
+Silence over a restart was marked offline for every device, wall switch or not — so the three
+marked bulbs came up *offline* after the update and sorted to the top of "Offline first". A
+device marked as switched off at the wall now starts *off at the wall* (available, state OFF),
+and a device file that still says offline for one is corrected at start.
+
 ## [2.21.2] — 2026-09-12
 
 ### Changed — nothing about a bulb off at the wall reads as "offline" any more

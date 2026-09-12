@@ -192,6 +192,12 @@ class Gateway:
         now = time.time()
         stale = []
         for d in self.registry.all():
+            if d.wall_switched and not d.available:
+                # a file written before the wall-switch rule, or by an older start: silence behind
+                # a wall switch is "off at the wall", and that means available
+                d.available = True
+                d.context["wall_off"] = True
+                self._dirty = True
             if not d.available:
                 continue
             heard = d.last_seen or 0
@@ -199,11 +205,20 @@ class Gateway:
             if formed_now or heard < born or now - heard > grace:
                 stale.append(d)
         for d in stale:
+            if d.wall_switched:
+                # behind a wall switch, silence over a restart is the switch, not a lost device:
+                # it starts "off at the wall" (available, state OFF), never offline
+                d.context["wall_off"] = True
+                off = self._on_keys(d)
+                if off:
+                    d.record_changes(off, now)
+                continue
             d.available = False
             await self._publish_availability(d, False)
         if stale:
             self.registry.save()
-            self.audit.event("devices_marked_offline_at_start", count=len(stale))
+            self.audit.event("devices_marked_offline_at_start", count=sum(1 for d in stale if not d.wall_switched),
+                             off_at_wall=sum(1 for d in stale if d.wall_switched))
         await self._publish_bridge_info()
         if self.cfg.homeassistant.discovery:
             for topic, payload in bridge_discovery(b, self.cfg.homeassistant.discovery_prefix, legacy=self.legacy):
