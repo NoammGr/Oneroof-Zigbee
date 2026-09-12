@@ -34,6 +34,13 @@ walks the routers' neighbour tables — every weak hop and what would fix it. Ea
 it talks through. The same reaches Home Assistant as a **Health** sensor on the OneRoof Zigbee bridge
 device (ok or degraded, and why).
 
+## A bulb behind a wall switch
+A bulb whose wall switch cuts its power falls silent — that is off, not offline. On its page →
+Power → **Switched off at the wall**: silence then shows as *off at the wall*, Home Assistant and
+Apple Home see the light as Off, and the health check leaves it alone. A router that keeps going
+silent while ON gets the hint by itself. While such a router is dark, devices relaying through it
+lose their parent — a Zigbee wall switch that keeps power to the bulb keeps the mesh steady.
+
 ## Batteries, backups, the sticker's QR
 * A battery device's page says how long its battery has left, from its own readings; the health
   card lists batteries to replace; Telegram says so once, about two weeks ahead.

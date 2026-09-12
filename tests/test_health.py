@@ -42,7 +42,7 @@ def test_findings_name_the_device_and_say_why():
     flap = next(f for f in r["findings"] if f["kind"] == "flapping")
     assert "4 times" in flap["detail"]
     assert r["verdict"] == "bad" and r["walked"] and r["devices"] == 5
-    assert r["counts"] == {"offline": 1, "weak_link": 1, "flapping": 1, "quiet": 2, "busy_router": 0, "battery": 0}
+    assert r["counts"] == {"offline": 1, "weak_link": 1, "flapping": 1, "quiet": 2, "busy_router": 0, "battery": 0, "wall_off": 0, "wall_hint": 0}
     # the worst first, then by name
     assert [f["severity"] for f in r["findings"]] == sorted((f["severity"] for f in r["findings"]), key=lambda s: s != "bad")
 
@@ -110,3 +110,25 @@ def test_a_battery_about_to_run_out_is_a_finding_and_a_reason():
     assert "Hall - Motion" not in by                                              # 40 % and a month to go
     assert r["counts"]["battery"] == 2
     assert "2 batteries to replace" in health_line(r, "x", 1, True)["reasons"]
+
+
+def test_a_device_behind_a_wall_switch_is_off_not_a_problem():
+    now = 1e6
+    bulb = {"ieee": "0x00158d0000000011", "name": "Stairs - Bulb", "kind": "router", "available": True, "last_seen": now - 9 * 3600,
+            "wall_switched": True, "wall_off": True}
+    sensor = {"ieee": "0x00158d0000000012", "name": "Landing - Motion", "kind": "end_device", "available": True, "last_seen": now - 60, "battery": True}
+    suspect = {"ieee": "0x00158d0000000013", "name": "Hall - Lamp", "kind": "router", "available": False, "last_seen": now - 7200, "wall_pattern": 3}
+    devs = [DEVS[0], bulb, sensor, suspect]
+    links = [{"source": "0x00158d0000000011", "target": "0x00158d0000000012", "lqi": 40}]   # its child, on a weak hop
+    flaps = {"0x00158d0000000011": [now - t for t in (100, 200, 300, 400, 500)]}
+    r = network_health(devs, links, flaps, now=now)
+    kinds = {(f["kind"], f["name"]): f for f in r["findings"]}
+    # no offline / quiet / flapping / weak-link for the bulb - it is off at the wall, and says how many it strands
+    assert ("wall_off", "Stairs - Bulb") in kinds and "1 device lose" in kinds[("wall_off", "Stairs - Bulb")]["detail"]
+    assert not any(k[1] == "Stairs - Bulb" and k[0] != "wall_off" for k in kinds)
+    # the lamp that went silent while ON three times gets the hint, and is still offline for real
+    assert ("wall_hint", "Hall - Lamp") in kinds and ("offline", "Hall - Lamp") in kinds
+    # info lines do not colour the verdict; the real offline does
+    assert r["verdict"] == "bad" and r["counts"]["wall_off"] == 1 and r["counts"]["wall_hint"] == 1
+    only_wall = network_health([DEVS[0], bulb], links, {}, now=now)
+    assert only_wall["verdict"] == "ok" and health_line(only_wall, "x", 1, True)["status"] == "ok"

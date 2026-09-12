@@ -1742,6 +1742,69 @@ async def test_a_router_that_stops_answering_goes_offline(tmp_path):
     await t.close()
 
 
+async def test_a_bulb_behind_a_wall_switch_is_off_not_offline(tmp_path):
+    """Three bulbs on a real network were 'offline' every evening: their wall switches cut the
+    power. Marked as wall-switched, silence means OFF - the state goes OFF for Home Assistant
+    and Apple Home, availability stays online, the badge says 'off at the wall' - and it is all
+    undone the moment the bulb is heard. An unmarked bulb that keeps going silent while ON earns
+    the hint."""
+    fake, coord, broker, gw, t = await make(tmp_path)
+    dev = _bulb(gw, IEEE + 68, NWK + 68)
+    dev.available = True
+    dev.last_seen = time.time()
+    dev.state["state"] = "ON"
+    gw._state_evidence[dev.ieee] = 0.0
+    events = []
+    coord.audit.subscribe(lambda r: events.append(r["type"]))
+
+    async def nobody_home(d, ep, cluster, attrs):
+        raise asyncio.TimeoutError
+
+    gw.read_attributes = nobody_home
+    # not marked yet: it goes offline as before, and the pattern is counted
+    await gw._poll_silent_routers()
+    await gw._poll_silent_routers()
+    assert not dev.available and dev.context["wall_pattern"] == 1
+    fake.emit_incoming(NWK + 68, 0x0006, bytes([0x18, 0x33, 0x0A, 0x00, 0x00, 0x10, 0x01]))
+    await asyncio.sleep(0.05)
+    assert dev.available and dev.state["state"] == "ON"
+
+    # the owner marks it: from now on silence is "off at the wall"
+    await gw.set_wall_switched(dev, True, "ui:admin")
+    assert dev.wall_switched and "wall_pattern" not in dev.context
+    for book in (gw._poll_failures, gw._poll_first_miss, gw._poll_not_before):
+        book.clear()
+    gw._state_evidence[dev.ieee] = 0.0            # its last word is old again: the wall switch went off
+    task = gw._refresh_tasks.pop(dev.ieee, None)
+    if task:
+        task.cancel()
+    await asyncio.sleep(0.01)
+    await gw._poll_silent_routers()
+    await gw._poll_silent_routers()
+    assert dev.available, "still available: the radio is not the problem"
+    assert dev.context.get("wall_off") is True
+    assert broker.last(f"oneroof/zigbee/{dev.ieee_str}/availability") == b"online"
+    assert json.loads(broker.last(f"oneroof/zigbee/{dev.ieee_str}/state"))["state"] == "OFF", "Home Assistant and Apple Home see it Off"
+    assert "device_off_at_wall" in events and "device_unanswering" not in events[events.index("device_wall_switched"):]
+    # the switch is flipped back on: the bulb powers up and says so
+    fake.emit_incoming(NWK + 68, 0x0006, bytes([0x18, 0x34, 0x0A, 0x00, 0x00, 0x10, 0x01]))
+    await asyncio.sleep(0.05)
+    assert not dev.context.get("wall_off") and dev.state["state"] == "ON" and "device_on_at_wall" in events
+    assert dev.ieee in gw._refresh_tasks, "asked what it woke up as"
+
+    # marking a bulb that is offline right now turns that into 'off at the wall' on the spot
+    other = _bulb(gw, IEEE + 69, NWK + 69)
+    other.available = False
+    other.state["state"] = "ON"
+    await gw.set_wall_switched(other, True, "ui:admin")
+    assert other.available and other.context["wall_off"] and other.state["state"] == "OFF"
+    assert broker.last(f"oneroof/zigbee/{other.ieee_str}/availability") == b"online"
+    await gw.set_wall_switched(other, False, "ui:admin")
+    assert not other.available and "wall_off" not in other.context
+    assert broker.last(f"oneroof/zigbee/{other.ieee_str}/availability") == b"offline"
+    await t.close()
+
+
 async def test_a_plug_that_reports_but_never_answers_does_not_flap(tmp_path):
     """Seen on a real network: a plug in the garage whose power reports arrive all night while
     every read we send it times out (its route back is broken, ours is not). 2.13.0 called it

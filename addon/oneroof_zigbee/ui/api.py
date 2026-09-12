@@ -115,6 +115,7 @@ class UiApi:
         r("POST", "/api/devices/<ieee>/interview", self.dev_interview)
         r("POST", "/api/devices/<ieee>/identify", self.dev_identify)
         r("POST", "/api/devices/<ieee>/describe", self.dev_describe)
+        r("POST", "/api/devices/<ieee>/wall_switch", self.dev_wall_switch)
         r("POST", "/api/devices/<ieee>/read", self.dev_read)
         r("POST", "/api/devices/<ieee>/reporting", self.dev_reporting)
         r("POST", "/api/devices/<ieee>/bind", self.dev_bind)
@@ -204,6 +205,7 @@ class UiApi:
     def _dev_json(self, d: Any, *, detail: bool = False) -> dict[str, Any]:
         out = {
             "ieee": d.ieee_str, "friendly_name": d.friendly_name, "description": d.description,
+            "wall_switched": d.wall_switched, "wall_off": bool(d.context.get("wall_off")), "wall_pattern": int(d.context.get("wall_pattern", 0)),
             "manufacturer": d.manufacturer, "model": d.model, "vendor": d.vendor, "kind": d.kind, "category": d.category,
             "sw_build": d.sw_build, "power_source": d.power_source, "is_router": d.is_router, "interviewed": d.interviewed,
             "interview_error": d.interview_error, "available": d.available, "lqi": d.lqi, "last_seen": d.last_seen,
@@ -419,6 +421,12 @@ class UiApi:
         except Exception as e:
             raise HttpError(400, str(e)) from e
         return Response.json({"ok": True})
+
+    async def dev_wall_switch(self, req: Request) -> Response:
+        self._require_control()
+        dev = self._find(req)
+        await self.gw.set_wall_switched(dev, bool(req.json.get("on", False)), self.who)
+        return Response.json({"ok": True, "wall_switched": dev.wall_switched, "wall_off": bool(dev.context.get("wall_off"))})
 
     async def dev_describe(self, req: Request) -> Response:
         dev = self._find(req)

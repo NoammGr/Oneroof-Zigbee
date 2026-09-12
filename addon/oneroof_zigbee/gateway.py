@@ -303,10 +303,9 @@ class Gateway:
                     dev = self.registry.get(ieee)
                     if dev and dev.available:
                         # The green badge must tell the truth: silent past its own typical
-                        # rhythm means offline until it is heard again.
-                        dev.available = False
-                        self._dirty = True
-                        await self._publish_availability(dev, False)
+                        # rhythm means offline until it is heard again - or, for a device
+                        # behind a wall switch, off at the wall.
+                        await self._went_silent(dev)
                 self._save_profiles()
                 self._save_if_dirty()
                 await self._poll_silent_routers()  # cheap: it only acts on devices past their own interval
@@ -476,11 +475,9 @@ class Gateway:
                                      "check its link quality and route", dev.friendly_name, n, backoff // 60)
                             self.audit.event("device_not_answering_reads", ieee=dev.ieee_str, polls=n, next_poll_s=backoff)
                     elif dev.available:
-                        dev.available = False
-                        self._dirty = True
-                        await self._publish_availability(dev, False)
-                        self._emit_device_event("offline", dev)
-                        self.audit.event("device_unanswering", ieee=dev.ieee_str, polls=n)
+                        if not dev.wall_switched:
+                            self.audit.event("device_unanswering", ieee=dev.ieee_str, polls=n)
+                        await self._went_silent(dev)
             await asyncio.sleep(0.5)
 
     def _load_activity(self) -> None:
@@ -1059,6 +1056,16 @@ class Gateway:
         dev.lqi = m.lqi
         if self._rotation is not None and self._rotation.running:
             self._rotation.device_heard(dev)  # a sleeping device is awake: hand it the new key now
+        if dev.context.get("wall_off"):
+            # power is back at the wall: it says so itself; ask what it woke up as
+            dev.context.pop("wall_off", None)
+            self._dirty = True
+            self._poll_failures.pop(dev.ieee, None)
+            self._poll_first_miss.pop(dev.ieee, None)
+            self._poll_not_before.pop(dev.ieee, None)
+            self.audit.event("device_on_at_wall", ieee=dev.ieee_str)
+            self._emit_device_event("online", dev)
+            self._schedule_refresh(dev)
         if not dev.available:
             # Heard from it: it is online, whatever its import/registry state said. Its poll
             # bookkeeping starts over and it is asked what it IS now - a device that was cut from
@@ -1488,6 +1495,61 @@ class Gateway:
             except Exception:
                 log.exception("on_device_event observer failed")
 
+    # -- silence: offline, or off at the wall -----------------------------------
+    @staticmethod
+    def _on_keys(dev: Device) -> dict[str, str]:
+        """The on/off keys that currently read ON - what goes OFF when the wall switch does."""
+        return {k: "OFF" for k, v in dev.state.items() if (k == "state" or k.startswith("state_")) and v == "ON"}
+
+    async def _went_silent(self, dev: Device) -> None:
+        """A device silent past its own rhythm. Behind a wall switch that means off, not gone:
+        the state goes OFF (Home Assistant and Apple Home show *Off*), the device stays
+        available, and the badge says "off at the wall". Anything else is offline. Either way
+        a mains device that falls silent while ON is counted - three of those and the device
+        page suggests the wall-switch setting (health.py)."""
+        was_on = bool(self._on_keys(dev))
+        if was_on and (dev.is_router or dev.rx_on_when_idle) and not dev.wall_switched:
+            dev.context["wall_pattern"] = int(dev.context.get("wall_pattern", 0)) + 1
+            self._dirty = True
+        if dev.wall_switched:
+            if dev.context.get("wall_off"):
+                return
+            dev.context["wall_off"] = True
+            self._dirty = True
+            off = self._on_keys(dev)
+            if off:
+                self._apply_changes(dev, off)
+            await self._publish_state(dev)
+            self.audit.event("device_off_at_wall", ieee=dev.ieee_str)
+            self._emit_device_event("offline", dev)
+            return
+        dev.available = False
+        self._dirty = True
+        await self._publish_availability(dev, False)
+        self._emit_device_event("offline", dev)
+
+    async def set_wall_switched(self, dev: Device, on: bool, who: str) -> None:
+        """The owner's word that a device lives behind a switch that cuts its power."""
+        if dev.wall_switched == on:
+            return
+        dev.wall_switched = on
+        dev.context.pop("wall_pattern", None)
+        if on and not dev.available:
+            # it is silent right now: that is "off at the wall" from here on
+            dev.available = True
+            dev.context["wall_off"] = True
+            off = self._on_keys(dev)
+            if off:
+                self._apply_changes(dev, off)
+            await self._publish_availability(dev, True)
+            await self._publish_state(dev)
+        elif not on and dev.context.pop("wall_off", None):
+            dev.available = False
+            await self._publish_availability(dev, False)
+        self.registry.save()
+        self.audit.event("device_wall_switched", ieee=dev.ieee_str, by=who, on=on)
+        self._emit_device_event("renamed", dev)
+
     async def _publish_availability(self, dev: Device, online: bool) -> None:
         # every online/offline flip, remembered for a day: the health check calls four of them
         # "flapping" and names the device
@@ -1524,7 +1586,9 @@ class Gateway:
                         "available": d.available, "last_seen": d.last_seen,
                         "battery": (not d.is_router) and not d.rx_on_when_idle,
                         "battery_pct": pct if isinstance(pct, (int, float)) and not isinstance(pct, bool) else None,
-                        "battery_log": d.context.get("battery_log")})
+                        "battery_log": d.context.get("battery_log"),
+                        "wall_switched": d.wall_switched, "wall_off": bool(d.context.get("wall_off")),
+                        "wall_pattern": int(d.context.get("wall_pattern", 0))})
         return out
 
     def health_report(self, links: list[dict[str, Any]] | None = None) -> dict[str, Any]:

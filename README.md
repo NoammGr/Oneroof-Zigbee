@@ -132,6 +132,13 @@ many children. Each device page says who it talks through and how strong that li
 same judgement reaches Home Assistant as a **Health** sensor (`oneroof/zigbee/health`, ok or
 degraded, the reasons) — the shape every One Roof add-on publishes, so one card shows the family.
 
+### A bulb behind a wall switch
+A bulb whose wall switch cuts its power falls silent — that is not offline, it is off. Mark it
+**Switched off at the wall** on its page and silence shows as *off at the wall*, Home Assistant
+and Apple Home see the light as Off, and the health check leaves it alone — while still saying
+how many devices lose their parent while a powered-off router is dark. A router that keeps
+going silent while ON gets the hint by itself.
+
 ### Batteries, backups, the sticker's QR
 
 - **Battery forecast**: every battery reading is remembered; the device page says "40 % · about

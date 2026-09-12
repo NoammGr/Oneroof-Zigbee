@@ -1,5 +1,22 @@
 # Changelog
 
+## [2.20.0] — 2026-09-12
+
+### Added — "switched off at the wall"
+Three bulbs on a real network read *offline* every evening: their wall switches cut the power.
+That is not what an owner means by offline — the light is off. A bulb or plug can now be
+marked **Switched off at the wall** (device page → Power). From then on silence means off:
+the badge says *off at the wall* (grey, not red), Home Assistant and Apple Home see the light
+as **Off** instead of unavailable / No Response, the device stays available, and the health
+check stops counting it as offline, flapping or quiet. It all undoes itself the moment the
+bulb is heard again. What the health card still tells you — because it is the part worth
+fixing — is how many devices lose their parent while a powered-off router is dark.
+
+A router that goes silent while ON three times gets a hint on its page and on the health
+card ("looks switched off at the wall — mark it so"); nothing is flagged by itself. Audited
+as `device_wall_switched`, `device_off_at_wall`, `device_on_at_wall`; device JSON gains
+`wall_switched`, `wall_off`, `wall_pattern`; `POST api/devices/<ieee>/wall_switch {on}`.
+
 ## [2.19.0] — 2026-09-11
 
 ### Added — battery forecast

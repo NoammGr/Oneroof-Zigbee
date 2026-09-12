@@ -48,7 +48,7 @@ header{display:flex;align-items:center;gap:18px;padding:0 24px;height:60px;borde
 .rail{display:flex;align-items:center;gap:14px;margin-left:auto;font-size:12.5px;color:var(--mute);white-space:nowrap}
 .rail .item{display:flex;align-items:center;gap:6px}
 .dot{width:8px;height:8px;border-radius:50%;background:var(--off);display:inline-block;flex:none}
-.dot.on{background:var(--ok)}.dot.warn{background:var(--warn)}.dot.pulse{animation:pulse 1.4s ease-in-out infinite}
+.dot.on{background:var(--ok)}.dot.warn{background:var(--warn)}.dot.wall{background:var(--faint)}.dot.pulse{animation:pulse 1.4s ease-in-out infinite}
 @keyframes pulse{0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--ok) 50%,transparent)}60%{box-shadow:0 0 0 6px transparent}}
 .badge{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:99px;border:1px solid var(--line);font-size:12px;color:var(--mute);background:var(--card)}
 .badge.open,.badge.ok{border-color:transparent;background:var(--ok-soft);color:var(--ok)}
@@ -490,6 +490,7 @@ const HELP={
   'datapoints.device_class':'Home Assistant device class for the entity (temperature, humidity, battery, door, motion, moisture, smoke, gas, occupancy, distance, illuminance, power, energy …). Leave empty to derive it from the key.',
   'datapoints.category':'Where the feature appears: sensor (read-only value), control (main control), config (a setting) or diagnostic (hidden by default in Home Assistant).',
   'datapoints.save':'Writes a definition for this manufacturer and model into definitions.yaml. It applies immediately to every device of the model, takes precedence over the built-in table and is re-announced to Home Assistant; stale entities are removed. No restart.',
+  'device.wall_switch':'For a bulb or plug that lives behind a physical wall switch. Cutting the power makes the device fall silent; without this setting the gateway can only call that offline. With it, silence is shown as \u201coff at the wall\u201d, Home Assistant and Apple Home see the light as Off, and the health check leaves it alone \u2014 while still telling you how many devices lose their parent when a router is powered off.',
   'definitions.kind':'What the device is shown as (type) and which coarse category it belongs to. The category decides how the dashboard card and the generic controls treat it: a sensor never gets switch controls, a remote only actions. Saved as a definition for this model, so every device of the model follows.',
   'definitions.on_off_as':'For devices that report a sensor through the On/Off cluster (some contact or motion sensors): publish the On/Off attribute under this key (contact, occupancy, water_leak …) instead of as a switch.',
   'definitions.card':'Definitions you saved from the device pages: what a model is and what its Tuya datapoints mean. They take precedence over the built-in table, apply to every device of the model and live in definitions.yaml in the data directory (included in backups). Export to share or keep a copy; import merges a file into the current list.',
@@ -658,7 +659,7 @@ views.devices={
     const ok=can();const cl=clusters(d);
     const name=el('span',{class:'name',text:d.friendly_name||d.ieee,title:'Rename'});
     name.addEventListener('click',e=>{e.stopPropagation();const inp=el('input',{type:'text',value:d.friendly_name||'',onclick:x=>x.stopPropagation()});const fin=async(save)=>{if(!inp.parentNode)return;const v=inp.value.trim();inp.replaceWith(name);if(save&&v&&v!==d.friendly_name){try{await api(dpath(d,'/rename'),{friendly_name:v});d.friendly_name=v;name.textContent=v;toast('Renamed to '+v);}catch(e){toast(e.message,true);}}};inp.addEventListener('keydown',e=>{if(e.key==='Enter')fin(true);if(e.key==='Escape')fin(false);});inp.addEventListener('blur',()=>fin(true));name.replaceWith(inp);inp.focus();inp.select();});
-    const avail=el('i',{class:'dot'+(d.available?' on':''),title:d.available?'Available':'Unavailable'});
+    const avail=el('i',{class:'dot'+(d.wall_off?' wall':d.available?' on':''),title:d.wall_off?'Off at the wall':d.available?'Available':'Unavailable'});
     const lqi=el('td');const stateTd=el('td',{class:'sub'});const seenTd=el('td',{class:'sub'});
     const stop=e=>e.stopPropagation();
     const ctl=el('td',{onclick:stop},this.controls(d,cl));
@@ -793,13 +794,13 @@ views.dashboard={
     const host=this.healthHost;if(!host)return;
     let r;try{r=walk?await api('api/health',{}):await api('api/health');}catch(e){toast(e.message,true);return;}
     if(S.page!=='dashboard')return;const h=clear(host);
-    const verdict=r.verdict==='ok'?['ok','All good']:r.verdict==='warn'?['warn',r.findings.length+' thing'+(r.findings.length===1?'':'s')+' worth a look']:['danger',r.findings.length+' problem'+(r.findings.length===1?'':'s')];
+    const infos=r.findings.filter(f=>f.severity==='info').length;const verdict=r.verdict==='ok'?['ok',infos?'All good \u00b7 '+infos+' note'+(infos===1?'':'s'):'All good']:r.verdict==='warn'?['warn',r.findings.length+' thing'+(r.findings.length===1?'':'s')+' worth a look']:['danger',r.findings.length+' problem'+(r.findings.length===1?'':'s')];
     const btn=el('button',{class:'btn',text:walk?'Checking…':'Check now',disabled:!!walk,title:'Walk the routers\u2019 neighbour tables and judge every link',onclick:()=>{this.health(true);}});
     const when=r.walked_at?'links judged from the tables walked '+rel(r.walked_at):'links not judged yet \u2014 Check now walks the tables';
     const card=el('div',{class:'card',style:'margin-bottom:18px'},
       el('div',{style:'display:flex;gap:12px;align-items:center;flex-wrap:wrap'},el('h2',{style:'margin:0',text:'Network health'}),el('span',{class:'badge '+verdict[0],text:verdict[1]}),el('span',{class:'sub',text:r.devices+' devices \u00b7 '+when}),el('span',{class:'grow'}),btn));
     if(!r.coordinator_online)card.append(el('div',{class:'notice',style:'margin:12px 0 0'},el('b',{text:'The coordinator is offline.'}),' Nothing below can be reached until the radio is back.'));
-    if(r.findings.length){const list=el('div',{class:'rc-list'});for(const f of r.findings){const d=S.devMap.get(String(f.ieee).toLowerCase());list.append(el('div',{class:'rc-row'+(f.severity==='bad'?' bad':'')},el('span',{class:'badge '+(f.severity==='bad'?'danger':'warn'),text:{offline:'offline',weak_link:'weak link',flapping:'flapping',quiet:'quiet',busy_router:'busy router',battery:'battery'}[f.kind]||f.kind}),d?el('a',{class:'devname',href:'#device/'+encodeURIComponent(f.ieee),text:f.name,title:f.ieee}):el('b',{text:f.name}),el('span',{class:'sub',text:f.detail})));}card.append(list);}
+    if(r.findings.length){const list=el('div',{class:'rc-list'});for(const f of r.findings){const d=S.devMap.get(String(f.ieee).toLowerCase());list.append(el('div',{class:'rc-row'+(f.severity==='bad'?' bad':'')},el('span',{class:'badge '+(f.severity==='bad'?'danger':f.severity==='info'?'':'warn'),text:{offline:'offline',weak_link:'weak link',flapping:'flapping',quiet:'quiet',busy_router:'busy router',battery:'battery',wall_off:'off at the wall',wall_hint:'wall switch?'}[f.kind]||f.kind}),d?el('a',{class:'devname',href:'#device/'+encodeURIComponent(f.ieee),text:f.name,title:f.ieee}):el('b',{text:f.name}),el('span',{class:'sub',text:f.detail})));}card.append(list);}
     else if(r.walked_at)card.append(el('div',{class:'sub',style:'margin-top:8px',text:'Every device reachable, every link fine, nothing flapping or quiet.'}));
     h.append(card);
     if(walk)toast(r.verdict==='ok'?'Network healthy':'Check done \u2014 '+verdict[1]);
@@ -830,7 +831,7 @@ views.dashboard={
     const more=el('span',{class:'dmore'});
     const card=el('div',{class:'card dcard','data-ieee':d.ieee},el('div',{class:'dh'},el('div',{class:'thumb'},svg(catGlyph(d))),el('a',{href:dlink(d),text:d.friendly_name||d.ieee,title:(d.friendly_name||d.ieee)+(d.model?' · '+d.model:'')+' · open device'}),avail),body,
       el('div',{class:'dfoot'},lqi,bat,more,el('span',{class:'grow'}),el('a',{class:'back',href:dlink(d)},'Open ',svg('open'))));
-    const c={d,card,body,more,ups:[],foot(){const st=d.state||{};clear(lqi).append(svg('signal'),String(d.lqi??'—'));avail.className='dot'+(d.available?' on':'');avail.title=d.available?'online':'offline';if(typeof st.battery==='number'){bat.classList.remove('hidden');clear(bat).append(svg('battery'),st.battery+'%');}}};
+    const c={d,card,body,more,ups:[],foot(){const st=d.state||{};clear(lqi).append(svg('signal'),String(d.lqi??'—'));avail.className='dot'+(d.wall_off?' wall':d.available?' on':'');avail.title=d.wall_off?'off at the wall':d.available?'online':'offline';if(typeof st.battery==='number'){bat.classList.remove('hidden');clear(bat).append(svg('battery'),st.battery+'%');}}};
     c.foot();this.cards.set(d.ieee,c);this.fill(c);return card;
   },
   exposes(d){return S.exposes[d.ieee]||(S.exposes[d.ieee]=api(dpath(d,'')).then(full=>{const m=S.devMap.get(d.ieee);if(m)Object.assign(m,full);return full.exposes||[];}).catch(e=>{delete S.exposes[d.ieee];throw e;}));},
@@ -881,7 +882,7 @@ views.device={
       el('span',{class:'badge',text:d.is_router?'Router':'End device'}),
       el('span',{class:'badge'},svg(/batt/i.test(d.power_source||'')?'battery':'bolt'),powerLabel(d.power_source)),
       d.interviewed?el('span',{class:'badge ok',text:'✓ interviewed'}):el('span',{class:(d.model&&d.interview_error)?'badge':'badge danger',title:d.interview_error||'',text:d.interview_error?((d.model?'descriptors not read yet':'interview failed')+' · retried when the device is awake'):'not interviewed'}),
-      el('span',{class:'badge'+(d.available?' ok':'')},el('i',{class:'dot'+(d.available?' on':'')}),d.available?'online':'offline'),
+      d.wall_off?el('span',{class:'badge',title:'Silent because its wall switch is off; it shows as Off in Home Assistant and Apple Home'},el('i',{class:'dot wall'}),'off at the wall'):el('span',{class:'badge'+(d.available?' ok':'')},el('i',{class:'dot'+(d.available?' on':'')}),d.available?'online':'offline'),
       d.awaiting_name?el('span',{class:'badge warn',title:'Home Assistant keeps the first name it sees as the entity id for good. Click the name above to give this device its real name and it appears in Home Assistant right away; unnamed, it goes there under its address after 10 minutes.',text:'name it to add to Home Assistant'}):null);
     const acts=el('div',{class:'acts'},
       el('button',{class:'btn',onclick:async()=>{try{await api(dpath(d,'/identify'),{});toast('Identify sent');}catch(e){toast(e.message,true);}}},svg('sun'),'Identify'),
@@ -938,6 +939,7 @@ views.device={
       el('tr',null,el('td',{text:'MQTT topics'}),el('td',null,topics)));
     b.append(el('div',{class:'twrap'},el('table',{class:'kvt'},tb)));
     b.append(el('h2',null,'Type & category',help('definitions.kind',null,'Type & category')),this.kindCard(d));
+    if(d.is_router||/mains|dc/i.test(d.power_source||''))b.append(el('h2',null,'Power',help('device.wall_switch',null,'Power')),this.wallCard(d));
     b.append(el('h2',{text:'Endpoints'}));
     const eps=Object.entries(d.endpoints||{});if(!eps.length)b.append(el('div',{class:'empty',text:'No endpoints known — interview the device.'}));
     for(const[id,ep]of eps){
@@ -946,6 +948,15 @@ views.device={
     }
   },
   defPath(d){return 'api/definitions/'+encodeURIComponent(d.manufacturer)+'/'+encodeURIComponent(d.model);},
+  // a bulb behind a wall switch: silence means off, not gone
+  wallCard(d){
+    const [sw,row]=chk('Switched off at the wall',!!d.wall_switched,'A physical switch cuts its power. When it falls silent it shows as off at the wall here and as Off in Home Assistant and Apple Home \u2014 not offline \u2014 and the health check does not count it as a problem.','device.wall_switch');
+    sw.disabled=!can();
+    sw.addEventListener('change',async()=>{sw.disabled=true;try{const r=await api(dpath(d,'/wall_switch'),{on:sw.checked});d.wall_switched=r.wall_switched;d.wall_off=r.wall_off;toast(r.wall_switched?'Marked as switched off at the wall':'No longer treated as wall-switched');await this.load();}catch(e){toast(e.message,true);sw.checked=!sw.checked;}finally{sw.disabled=!can();}});
+    const hint=(!d.wall_switched&&(d.wall_pattern||0)>=3)?el('div',{class:'notice',style:'margin:12px 0 0'},el('b',{text:'Looks like a wall switch.'}),' It went silent while ON '+d.wall_pattern+' times \u2014 the pattern of a bulb whose switch cuts the power. Tick the box and it shows as off, not offline.'):null;
+    const mesh=d.is_router?el('p',{class:'sub',style:'margin:10px 0 0',text:'It is a router: while its power is off, devices that relay through it lose their parent and look for another. A Zigbee wall switch that keeps power to it, or leaving the switch on, keeps the mesh steady.'}):null;
+    return el('div',{class:'card'},row,hint,mesh);
+  },
   kindCard(d){
     const ok=can()&&!!d.manufacturer&&!!d.model;const tip=can()?(d.manufacturer&&d.model?'':'Manufacturer and model are unknown — interview the device first'):NOCTL;
     const kind=txt(d.kind||'',{placeholder:'e.g. Soil sensor',maxlength:64}),cat=sel(DEF_CATS,d.category||'unknown'),ooa=txt('',{placeholder:'contact, occupancy, water_leak …',maxlength:48});

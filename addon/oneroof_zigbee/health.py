@@ -7,6 +7,8 @@ Findings, each naming a device and saying why in plain words:
 * quiet        — not heard for far longer than its kind should be (mains 6 h, battery 26 h)
 * busy_router  — a router carrying more children than is comfortable
 * battery      — at or under 15 %, or about two weeks from empty on its own trend
+* wall_off     — (info) a device the owner marked "switched off at the wall" is off right now
+* wall_hint    — (info) a router that went silent while ON several times: probably a wall switch
 
 The same numbers feed the health line every One Roof add-on publishes to Home Assistant
 (`oneroof/zigbee/health`, discovered by itself), so one card shows the family.
@@ -21,6 +23,7 @@ FLAPS_PER_DAY = 4
 QUIET_MAINS_S = 6 * 3600
 QUIET_BATTERY_S = 26 * 3600
 BUSY_CHILDREN = 10
+WALL_PATTERN_HINT = 3             # went silent while ON this many times: probably a wall switch
 
 
 BATTERY_REPLACE_PCT = 10          # what "empty" means: most devices stop reporting around here
@@ -91,10 +94,18 @@ def network_health(devices: list[dict[str, Any]], links: list[dict[str, Any]],
     def add(kind: str, severity: str, ieee: str, detail: str) -> None:
         findings.append({"kind": kind, "severity": severity, "ieee": ieee, "name": names.get(ieee.lower(), ieee), "detail": detail})
 
+    wall_off: list[dict[str, Any]] = []
     for d in devices:
         if d["kind"] == "coordinator":
             continue
         ieee = d["ieee"]
+        if d.get("wall_switched"):
+            # silence is the wall switch, not the radio: no offline / flapping / quiet for it
+            if d.get("wall_off"):
+                wall_off.append(d)
+            continue
+        if d.get("wall_pattern", 0) >= WALL_PATTERN_HINT and d["kind"] == "router":
+            add("wall_hint", "info", ieee, f"went silent while ON {d['wall_pattern']} times — looks switched off at the wall; mark it so on its page and it shows as off, not offline")
         if not d.get("available", True):
             add("offline", "bad", ieee, "the gateway cannot reach it right now")
         changes = [t for t in flaps.get(ieee.lower(), []) if now - t <= 86400]
@@ -118,19 +129,24 @@ def network_health(devices: list[dict[str, Any]], links: list[dict[str, Any]],
 
     parents = best_parents(devices, links) if links else {}
     children: dict[str, int] = {}
+    wall_ieees = {d["ieee"].lower() for d in devices if d.get("wall_switched")}
     for ieee, (relay, lqi) in parents.items():
         children[relay] = children.get(relay, 0) + 1
-        if lqi < WEAK_LQI:
+        if lqi < WEAK_LQI and ieee not in wall_ieees:
             add("weak_link", "bad" if lqi < 50 else "warn", ieee,
                 f"reaches {names.get(relay, relay)} at LQI {lqi} — a router in between would give it a parent next door")
     for relay, n in children.items():
         if n > BUSY_CHILDREN:
             add("busy_router", "warn", relay, f"carries {n} devices — another router nearby would share the load")
+    for d in wall_off:
+        kids = children.get(d["ieee"].lower(), 0)
+        add("wall_off", "info", d["ieee"], "off at the wall" + (f" — while it is off, {kids} device{'s' if kids != 1 else ''} lose their parent and look for another" if kids else ""))
 
-    order = {"bad": 0, "warn": 1}
+    order = {"bad": 0, "warn": 1, "info": 2}
     findings.sort(key=lambda f: (order[f["severity"]], f["name"].lower()))
-    counts = {k: sum(1 for f in findings if f["kind"] == k) for k in ("offline", "weak_link", "flapping", "quiet", "busy_router", "battery")}
-    verdict = "bad" if any(f["severity"] == "bad" for f in findings) else "warn" if findings else "ok"
+    counts = {k: sum(1 for f in findings if f["kind"] == k) for k in ("offline", "weak_link", "flapping", "quiet", "busy_router", "battery", "wall_off", "wall_hint")}
+    real = [f for f in findings if f["severity"] != "info"]
+    verdict = "bad" if any(f["severity"] == "bad" for f in real) else "warn" if real else "ok"
     return {"verdict": verdict, "findings": findings, "counts": counts,
             "devices": sum(1 for d in devices if d["kind"] != "coordinator"),
             "walked": bool(links), "checked_at": now}

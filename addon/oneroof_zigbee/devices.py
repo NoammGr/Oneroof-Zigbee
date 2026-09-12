@@ -45,6 +45,7 @@ class Device:
     context: dict[str, Any] = field(default_factory=dict)  # per-device converter context (zone_type, divisors…)
     available: bool = True
     description: str | None = None
+    wall_switched: bool = False     # lives behind a physical switch that cuts its power: silence means "off", not "gone"
     hw_version: int | None = None
     date_code: str | None = None
     zcl_version: int | None = None
