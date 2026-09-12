@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.21.2] — 2026-09-12
+
+### Changed — nothing about a bulb off at the wall reads as "offline" any more
+- On the Devices list and the dashboard cards it wore the same grey dot an offline device
+  wears. It now wears a small **off at the wall** pill instead; the grey dot means offline only.
+- It no longer appears as a row in the Network health list, where it read like a problem.
+  Notes are one calm line under the card: "Switched off at the wall right now: Landing -
+  Bulb, Stairs - Bulb — while they are off, 1 device relays through another router." The
+  verdict counts real problems only and says "All good" when notes are all there is.
+
 ## [2.21.1] — 2026-09-12
 
 ### Removed

@@ -48,7 +48,8 @@ header{display:flex;align-items:center;gap:18px;padding:0 24px;height:60px;borde
 .rail{display:flex;align-items:center;gap:14px;margin-left:auto;font-size:12.5px;color:var(--mute);white-space:nowrap}
 .rail .item{display:flex;align-items:center;gap:6px}
 .dot{width:8px;height:8px;border-radius:50%;background:var(--off);display:inline-block;flex:none}
-.dot.on{background:var(--ok)}.dot.warn{background:var(--warn)}.dot.wall{background:var(--faint)}.dot.pulse{animation:pulse 1.4s ease-in-out infinite}
+.dot.on{background:var(--ok)}.dot.warn{background:var(--warn)}.dot.wall{background:var(--faint)}
+.badge.wall{border-color:transparent;background:var(--card-2);color:var(--mute);font-size:11px;padding:2px 8px}.dot.pulse{animation:pulse 1.4s ease-in-out infinite}
 @keyframes pulse{0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--ok) 50%,transparent)}60%{box-shadow:0 0 0 6px transparent}}
 .badge{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:99px;border:1px solid var(--line);font-size:12px;color:var(--mute);background:var(--card)}
 .badge.open,.badge.ok{border-color:transparent;background:var(--ok-soft);color:var(--ok)}
@@ -671,7 +672,7 @@ views.devices={
     const ok=can();const cl=clusters(d);
     const name=el('span',{class:'name',text:d.friendly_name||d.ieee,title:'Rename'});
     name.addEventListener('click',e=>{e.stopPropagation();const inp=el('input',{type:'text',value:d.friendly_name||'',onclick:x=>x.stopPropagation()});const fin=async(save)=>{if(!inp.parentNode)return;const v=inp.value.trim();inp.replaceWith(name);if(save&&v&&v!==d.friendly_name){try{await api(dpath(d,'/rename'),{friendly_name:v});d.friendly_name=v;name.textContent=v;toast('Renamed to '+v);}catch(e){toast(e.message,true);}}};inp.addEventListener('keydown',e=>{if(e.key==='Enter')fin(true);if(e.key==='Escape')fin(false);});inp.addEventListener('blur',()=>fin(true));name.replaceWith(inp);inp.focus();inp.select();});
-    const avail=el('i',{class:'dot'+(d.wall_off?' wall':d.available?' on':''),title:d.wall_off?'Off at the wall':d.available?'Available':'Unavailable'});
+    const avail=el('span',{class:'dot'});
     const lqi=el('td');const stateTd=el('td',{class:'sub'});const seenTd=el('td',{class:'sub'});
     const stop=e=>e.stopPropagation();
     const ctl=el('td',{onclick:stop},this.controls(d,cl));
@@ -684,7 +685,7 @@ views.devices={
       el('td',{class:'sub'},el('div',{text:d.kind||'—'}),el('div',{class:'mute',text:(d.vendor?d.vendor+' · ':'')+(d.is_router?'Router':'End device')})),lqi,seenTd,stateTd,ctl,
       el('td',{onclick:stop},this.menu(d,ok)));
     tr.addEventListener('click',()=>{location.hash='#device/'+encodeURIComponent(d.ieee);});
-    const upd=()=>{clear(lqi).append(el('span',{class:'lqi'},el('i',{style:'width:'+Math.min(100,(d.lqi||0)/255*100)+'%'})),String(d.lqi??'—'));seenTd.textContent=rel(d.last_seen);stateTd.textContent=d.interviewed===false?(d.interview_error?((d.model&&stateSummary(d.state))?stateSummary(d.state):'not interviewed · '+(stateSummary(d.state)||'no state yet')):'interviewing…'):stateSummary(d.state);avail.className='dot'+(d.available?' on':'');};
+    const upd=()=>{clear(lqi).append(el('span',{class:'lqi'},el('i',{style:'width:'+Math.min(100,(d.lqi||0)/255*100)+'%'})),String(d.lqi??'—'));seenTd.textContent=rel(d.last_seen);stateTd.textContent=d.interviewed===false?(d.interview_error?((d.model&&stateSummary(d.state))?stateSummary(d.state):'not interviewed · '+(stateSummary(d.state)||'no state yet')):'interviewing…'):stateSummary(d.state);if(d.wall_off){avail.className='badge wall';avail.textContent='off at the wall';avail.title='Its wall switch is off: powered down, not lost';}else{avail.className='dot'+(d.available?' on':'');avail.textContent='';avail.title=d.available?'Available':'Unavailable';}};
     upd();this.rows.set(d.ieee,{tr,upd,ctl,d});return tr;
   },
   controls(d,cl){
@@ -808,14 +809,21 @@ views.dashboard={
     const host=this.healthHost;if(!host)return;
     let r;try{r=walk?await api('api/health',{}):await api('api/health');}catch(e){toast(e.message,true);return;}
     if(S.page!=='dashboard')return;const h=clear(host);
-    const infos=r.findings.filter(f=>f.severity==='info').length;const verdict=r.verdict==='ok'?['ok',infos?'All good \u00b7 '+infos+' note'+(infos===1?'':'s'):'All good']:r.verdict==='warn'?['warn',r.findings.length+' thing'+(r.findings.length===1?'':'s')+' worth a look']:['danger',r.findings.length+' problem'+(r.findings.length===1?'':'s')];
+    const nProblems=r.findings.filter(f=>f.severity!=='info').length;const verdict=r.verdict==='ok'?['ok','All good']:r.verdict==='warn'?['warn',nProblems+' thing'+(nProblems===1?'':'s')+' worth a look']:['danger',nProblems+' problem'+(nProblems===1?'':'s')];
     const btn=el('button',{class:'btn',text:walk?'Checking…':'Check now',disabled:!!walk,title:'Walk the routers\u2019 neighbour tables and judge every link',onclick:()=>{this.health(true);}});
     const when=r.walked_at?'links judged from the tables walked '+rel(r.walked_at):'links not judged yet \u2014 Check now walks the tables';
     const card=el('div',{class:'card',style:'margin-bottom:18px'},
       el('div',{style:'display:flex;gap:12px;align-items:center;flex-wrap:wrap'},el('h2',{style:'margin:0',text:'Network health'}),el('span',{class:'badge '+verdict[0],text:verdict[1]}),el('span',{class:'sub',text:r.devices+' devices \u00b7 '+when}),el('span',{class:'grow'}),btn));
     if(!r.coordinator_online)card.append(el('div',{class:'notice',style:'margin:12px 0 0'},el('b',{text:'The coordinator is offline.'}),' Nothing below can be reached until the radio is back.'));
-    if(r.findings.length){const list=el('div',{class:'rc-list'});for(const f of r.findings){const d=S.devMap.get(String(f.ieee).toLowerCase());list.append(el('div',{class:'rc-row'+(f.severity==='bad'?' bad':'')},el('span',{class:'badge '+(f.severity==='bad'?'danger':f.severity==='info'?'':'warn'),text:{offline:'offline',weak_link:'weak link',flapping:'flapping',quiet:'quiet',busy_router:'busy router',battery:'battery',wall_off:'off at the wall',wall_hint:'wall switch?'}[f.kind]||f.kind}),d?el('a',{class:'devname',href:'#device/'+encodeURIComponent(f.ieee),text:f.name,title:f.ieee}):el('b',{text:f.name}),d&&d.room?el('span',{class:'sub',text:'\u00b7 '+d.room}):null,el('span',{class:'sub',text:f.detail})));}card.append(list);}
+    // problems as rows; notes (a bulb off at the wall, a wall-switch hint) as one calm line each,
+    // so a note never reads like something is broken
+    const problems=r.findings.filter(f=>f.severity!=='info'),notes=r.findings.filter(f=>f.severity==='info');
+    if(problems.length){const list=el('div',{class:'rc-list'});for(const f of problems){const d=S.devMap.get(String(f.ieee).toLowerCase());list.append(el('div',{class:'rc-row'+(f.severity==='bad'?' bad':'')},el('span',{class:'badge '+(f.severity==='bad'?'danger':'warn'),text:{offline:'offline',weak_link:'weak link',flapping:'flapping',quiet:'quiet',busy_router:'busy router',battery:'battery'}[f.kind]||f.kind}),d?el('a',{class:'devname',href:'#device/'+encodeURIComponent(f.ieee),text:f.name,title:f.ieee}):el('b',{text:f.name}),d&&d.room?el('span',{class:'sub',text:'\u00b7 '+d.room}):null,el('span',{class:'sub',text:f.detail})));}card.append(list);}
     else if(r.walked_at)card.append(el('div',{class:'sub',style:'margin-top:8px',text:'Every device reachable, every link fine, nothing flapping or quiet.'}));
+    const wallOff=notes.filter(f=>f.kind==='wall_off'),hints=notes.filter(f=>f.kind==='wall_hint');
+    if(wallOff.length){const strand=wallOff.map(f=>{const m=/while it is off, (\d+) device/.exec(f.detail||'');return m?+m[1]:0;}).reduce((a,b)=>a+b,0);
+      card.append(el('div',{class:'sub',style:'margin-top:10px;display:flex;gap:6px;flex-wrap:wrap;align-items:baseline'},el('i',{class:'dot wall',style:'align-self:center'}),'Switched off at the wall right now: ',...wallOff.flatMap((f,i)=>[i?', ':'',el('a',{class:'devname',style:'color:var(--mute)',href:'#device/'+encodeURIComponent(f.ieee),text:f.name})]),strand?' \u2014 while they are off, '+strand+(strand===1?' device relays':' devices relay')+' through another router.':'.'));}
+    for(const f of hints){card.append(el('div',{class:'sub',style:'margin-top:8px'},el('a',{class:'devname',href:'#device/'+encodeURIComponent(f.ieee),text:f.name}),' '+f.detail));}
     h.append(card);
     if(walk)toast(r.verdict==='ok'?'Network healthy':'Check done \u2014 '+verdict[1]);
   },
@@ -841,11 +849,11 @@ views.dashboard={
     return {rows:pick.slice(0,this.DASH_ROWS),hidden:Math.max(0,usable.length-Math.min(pick.length,this.DASH_ROWS))};
   },
   card(d){
-    const body=el('div',{class:'dbody'});const lqi=el('span',{class:'badge',title:'Link quality'}),bat=el('span',{class:'badge hidden',title:'Battery'}),avail=el('i',{class:'dot'});
+    const body=el('div',{class:'dbody'});const lqi=el('span',{class:'badge',title:'Link quality'}),bat=el('span',{class:'badge hidden',title:'Battery'}),avail=el('span',{class:'dot'});
     const more=el('span',{class:'dmore'});
     const card=el('div',{class:'card dcard','data-ieee':d.ieee},el('div',{class:'dh'},el('div',{class:'thumb'},svg(catGlyph(d))),el('a',{href:dlink(d),text:d.friendly_name||d.ieee,title:(d.friendly_name||d.ieee)+(d.model?' · '+d.model:'')+' · open device'}),avail),body,
       el('div',{class:'dfoot'},lqi,bat,more,el('span',{class:'grow'}),el('a',{class:'back',href:dlink(d)},'Open ',svg('open'))));
-    const c={d,card,body,more,ups:[],foot(){const st=d.state||{};clear(lqi).append(svg('signal'),String(d.lqi??'—'));avail.className='dot'+(d.wall_off?' wall':d.available?' on':'');avail.title=d.wall_off?'off at the wall':d.available?'online':'offline';if(typeof st.battery==='number'){bat.classList.remove('hidden');clear(bat).append(svg('battery'),st.battery+'%');}}};
+    const c={d,card,body,more,ups:[],foot(){const st=d.state||{};clear(lqi).append(svg('signal'),String(d.lqi??'—'));if(d.wall_off){avail.className='badge wall';avail.textContent='off at the wall';avail.title='Its wall switch is off: powered down, not lost';}else{avail.className='dot'+(d.available?' on':'');avail.textContent='';avail.title=d.available?'online':'offline';}if(typeof st.battery==='number'){bat.classList.remove('hidden');clear(bat).append(svg('battery'),st.battery+'%');}}};
     c.foot();this.cards.set(d.ieee,c);this.fill(c);return card;
   },
   exposes(d){return S.exposes[d.ieee]||(S.exposes[d.ieee]=api(dpath(d,'')).then(full=>{const m=S.devMap.get(d.ieee);if(m)Object.assign(m,full);return full.exposes||[];}).catch(e=>{delete S.exposes[d.ieee];throw e;}));},
