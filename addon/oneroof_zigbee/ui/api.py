@@ -17,6 +17,7 @@ from .. import __version__
 from ..admin import ROLE_TEMPLATES, Admin
 from ..gateway import Gateway
 from ..health import battery_forecast, best_parents
+from ..rooms import ha_areas, room_of_name, summarize
 from ..config import ConfigError
 from ..security import Audit
 from ..znp.transport import ZnpError
@@ -116,6 +117,11 @@ class UiApi:
         r("POST", "/api/devices/<ieee>/identify", self.dev_identify)
         r("POST", "/api/devices/<ieee>/describe", self.dev_describe)
         r("POST", "/api/devices/<ieee>/wall_switch", self.dev_wall_switch)
+        r("POST", "/api/devices/<ieee>/room", self.dev_room)
+        r("GET", "/api/rooms", self.rooms)
+        r("POST", "/api/rooms/assign", self.rooms_assign)
+        r("POST", "/api/rooms/rename", self.rooms_rename)
+        r("POST", "/api/rooms/floor", self.rooms_floor)
         r("POST", "/api/devices/<ieee>/read", self.dev_read)
         r("POST", "/api/devices/<ieee>/reporting", self.dev_reporting)
         r("POST", "/api/devices/<ieee>/bind", self.dev_bind)
@@ -206,6 +212,7 @@ class UiApi:
         out = {
             "ieee": d.ieee_str, "friendly_name": d.friendly_name, "description": d.description,
             "wall_switched": d.wall_switched, "wall_off": bool(d.context.get("wall_off")), "wall_pattern": int(d.context.get("wall_pattern", 0)),
+            "room": d.room, "room_suggestion": self._room_suggestion(d),
             "manufacturer": d.manufacturer, "model": d.model, "vendor": d.vendor, "kind": d.kind, "category": d.category,
             "sw_build": d.sw_build, "power_source": d.power_source, "is_router": d.is_router, "interviewed": d.interviewed,
             "interview_error": d.interview_error, "available": d.available, "lqi": d.lqi, "last_seen": d.last_seen,
@@ -421,6 +428,78 @@ class UiApi:
         except Exception as e:
             raise HttpError(400, str(e)) from e
         return Response.json({"ok": True})
+
+    # -- rooms (rooms.py) --------------------------------------------------------
+    def _room_suggestion(self, d: Any) -> dict[str, str] | None:
+        """Before the owner types anything: the room its name carries, or Home Assistant's area."""
+        if d.room:
+            return None
+        area = self._ha_areas().get(d.ieee_str.lower())
+        if area:
+            return {"room": area, "from": "Home Assistant"}
+        named = room_of_name(d.friendly_name)
+        return {"room": named, "from": "its name"} if named else None
+
+    _ha_cache: tuple[float, dict[str, str]] = (0.0, {})
+
+    def _ha_areas(self) -> dict[str, str]:
+        ts, cached = self._ha_cache
+        if time.time() - ts > 60:
+            self._ha_cache = (time.time(), ha_areas(list(self.gw.cfg.import_roots)))
+        return self._ha_cache[1]
+
+    async def dev_room(self, req: Request) -> Response:
+        self._require_control()
+        dev = self._find(req)
+        try:
+            await self.gw.set_room(dev, str(req.json.get("room", "")), self.who)
+        except ValueError as e:
+            raise HttpError(400, str(e)) from e
+        return Response.json({"ok": True, "room": dev.room})
+
+    async def rooms(self, req: Request) -> Response:
+        devs = self.gw.registry.all()
+        return Response.json({"rooms": summarize(devs, self.gw.rooms),
+                              "unplaced": [{"ieee": d.ieee_str, "friendly_name": d.friendly_name, "suggestion": self._room_suggestion(d)}
+                                           for d in devs if not d.room]})
+
+    async def rooms_assign(self, req: Request) -> Response:
+        """Several devices at once: {ieees: [...], room}."""
+        self._require_control()
+        body = dict(req.json or {})
+        room = str(body.get("room", ""))
+        done = 0
+        for raw in body.get("ieees") or []:
+            dev = self.gw.registry.get(ieee_int(str(raw)))
+            if dev is None:
+                continue
+            try:
+                await self.gw.set_room(dev, room, self.who)
+            except ValueError as e:
+                raise HttpError(400, str(e)) from e
+            done += 1
+        return Response.json({"ok": True, "devices": done, "rooms": summarize(self.gw.registry.all(), self.gw.rooms)})
+
+    async def rooms_rename(self, req: Request) -> Response:
+        self._require_control()
+        body = dict(req.json or {})
+        try:
+            moved = await self.gw.rename_room(str(body.get("from", "")), str(body.get("to", "")), self.who)
+        except ValueError as e:
+            raise HttpError(400, str(e)) from e
+        return Response.json({"ok": True, "devices": moved, "rooms": summarize(self.gw.registry.all(), self.gw.rooms)})
+
+    async def rooms_floor(self, req: Request) -> Response:
+        self._require_control()
+        body = dict(req.json or {})
+        room = str(body.get("room", "")).strip()
+        if not room:
+            raise HttpError(400, "room is required")
+        floor = body.get("floor")
+        self.gw.rooms.set_floor(room, int(floor) if isinstance(floor, int) and not isinstance(floor, bool) else None)
+        await self.gw._publish_bridge_info()
+        self.gw.audit.event("room_floor_set", by=self.who, room=room, floor=floor)
+        return Response.json({"ok": True, "rooms": summarize(self.gw.registry.all(), self.gw.rooms)})
 
     async def dev_wall_switch(self, req: Request) -> Response:
         self._require_control()

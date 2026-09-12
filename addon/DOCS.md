@@ -34,6 +34,12 @@ walks the routers' neighbour tables — every weak hop and what would fix it. Ea
 it talks through. The same reaches Home Assistant as a **Health** sensor on the OneRoof Zigbee bridge
 device (ok or degraded, and why).
 
+## Rooms
+Device page → **Room**: pick a room in use or type a new one; the gateway suggests the room the
+device's name carries or the area Home Assistant already has, accepted with one click. Tick several
+devices on the Devices list to room them at once; rename a room in one place. Home Assistant
+receives it as the suggested area; the other One Roof add-ons read it from the device list.
+
 ## A bulb behind a wall switch
 A bulb whose wall switch cuts its power falls silent — that is off, not offline. On its page →
 Power → **Switched off at the wall**: silence then shows as *off at the wall*, Home Assistant and

@@ -26,6 +26,7 @@ from .definitions import Definitions
 from .devices import Device, Registry
 from .ha import Topics, bridge_discovery, discovery_messages, removal_messages
 from .health import BATTERY_LOW_PCT, BATTERY_WARN_DAYS, battery_forecast, health_line, network_health
+from .rooms import RoomBook, clean_room
 from .mqtt import Broker
 from .security import Audit, InstallCodeError, JoinPolicyError, parse_install_code
 from .zcl import global_commands as gc
@@ -125,6 +126,7 @@ class Gateway:
         self.coordinator_online = True
         self._started_at = time.time()
         self._flaps: dict[str, list[float]] = {}          # ieee -> when it went offline/online (health.py)
+        self.rooms = RoomBook((cfg.data_dir / "rooms.json") if cfg.data_dir else None)
         self.map_links: Callable[[], list[dict[str, Any]]] | None = None   # the UI lends its walked neighbour tables
         # optional observers (the UI attaches here); called synchronously, must not raise
         self.on_state_change: Callable[[int, dict[str, Any]], None] | None = None
@@ -1528,6 +1530,36 @@ class Gateway:
         await self._publish_availability(dev, False)
         self._emit_device_event("offline", dev)
 
+    # -- rooms (rooms.py): the family's one answer to "where is it?" -------------
+    async def set_room(self, dev: Device, room: str, who: str) -> None:
+        room = clean_room(room) or None
+        if dev.room == room:
+            return
+        dev.room = room
+        self.registry.save()
+        self.audit.event("device_roomed", ieee=dev.ieee_str, by=who, room=room)
+        await self._announce(dev)              # Home Assistant: the suggested area
+        await self._publish_bridge_info()      # the family: the device list carries the room
+        self._emit_device_event("renamed", dev)
+
+    async def rename_room(self, old: str, new: str, who: str) -> int:
+        new = clean_room(new)
+        if not new:
+            raise ValueError("a room needs a name")
+        moved = 0
+        for d in self.registry.all():
+            if d.room == old:
+                d.room = new
+                moved += 1
+                await self._announce(d)
+        if moved:
+            self.registry.save()
+            self.rooms.rename(old, new)
+            await self._publish_bridge_info()
+            self.audit.event("room_renamed", by=who, room=old, to=new, devices=moved)
+            self._emit_device_event("renamed", next(d for d in self.registry.all() if d.room == new))
+        return moved
+
     async def set_wall_switched(self, dev: Device, on: bool, who: str) -> None:
         """The owner's word that a device lives behind a switch that cuts its power."""
         if dev.wall_switched == on:
@@ -1616,7 +1648,8 @@ class Gateway:
         devices = []
         for d in devs:
             entry = {"ieee": d.ieee_str, "friendly_name": d.friendly_name, "manufacturer": d.manufacturer, "model": d.model,
-                     "vendor": d.vendor, "kind": d.kind, "category": d.category,
+                     "vendor": d.vendor, "kind": d.kind, "category": d.category, "room": d.room,
+                     "floor": self.rooms.floors.get(d.room) if d.room else None,
                      "interviewed": d.interviewed, "router": d.is_router,
                      "endpoints": {str(e.id): e.category for e in d.endpoints.values()}}
             try:

@@ -587,3 +587,63 @@ async def test_b14_the_pair_form_reads_a_qr_and_settings_schedules_backups(stack
         await asyncio.sleep(0.25)
     assert "Back up every night" in card and "Back up now" in card, card
     assert b.errors == [], f"console errors: {b.errors}"
+
+
+async def test_b15_rooms_are_the_owners_word_and_the_family_reads_them(stack, browser):  # noqa: F811
+    """A device gets a room on its page (suggested from its name), several at once from the
+    Devices list; the room rides in the device list every add-on reads and in Home Assistant's
+    discovery as the suggested area; renaming a room moves every device in it."""
+    s, b = stack, browser
+    base = f"http://127.0.0.1:{s.ui.port}/"
+    if _gw(s).registry.get(PLUG_IEEE) is None:
+        await api(s, "POST", "/api/permit_join", {"seconds": 30})
+        s.world.announce(s.world.add(plug(PLUG_IEEE, PLUG_NWK)))
+        await wait_for(lambda: (lambda x: x and x.interviewed)(_gw(s).registry.get(PLUG_IEEE)), 8)
+    kettle = f"0x{PLUG_IEEE:016x}"
+    await api(s, "POST", f"/api/devices/{kettle}/rename", {"friendly_name": "Kitchen - Kettle plug"})
+    await api(s, "POST", f"/api/devices/{kettle}/room", {"room": ""})
+    st, d = await api(s, "GET", f"/api/devices/{kettle}")
+    assert d["room"] is None and d["room_suggestion"] == {"room": "Kitchen", "from": "its name"}
+
+    # the device page: the suggestion, accepted with one click
+    await b.go(base, f"device/{kettle}", 2.0)
+    card = await b.js("(()=>{const h=[...document.querySelectorAll('h2')].find(h=>h.textContent.startsWith('Room'));return h?h.nextElementSibling.textContent:'';})()")
+    assert "Kitchen" in card and "says its name" in card, card
+    await b.click_text("Use it")
+    await asyncio.sleep(1.0)
+    st, d = await api(s, "GET", f"/api/devices/{kettle}")
+    assert d["room"] == "Kitchen" and d["room_suggestion"] is None
+    # ...and it is what the family reads
+    await wait_for(lambda: any(e.get("ieee") == kettle and e.get("room") == "Kitchen" for e in json.loads(s.got[f"{BASE}/bridge/devices"])), 5)
+    await wait_for(lambda: any(t.startswith("homeassistant/") and kettle in t and t.endswith("/config")
+                               and json.loads(p).get("device", {}).get("suggested_area") == "Kitchen"
+                               for t, p in s.history if p), 5)
+    st, r = await api(s, "GET", "/api/rooms")
+    assert {x["name"]: x["devices"] for x in r["rooms"]}["Kitchen"] >= 1
+
+    # several at once, from the Devices list
+    hall_ieee, hall_nwk = 0xA4C1380000000077, 0x7777
+    if _gw(s).registry.get(hall_ieee) is None:
+        await api(s, "POST", "/api/permit_join", {"seconds": 30})
+        s.world.announce(s.world.add(plug(hall_ieee, hall_nwk)))
+        await wait_for(lambda: (lambda x: x and x.interviewed)(_gw(s).registry.get(hall_ieee)), 8)
+    hall = f"0x{hall_ieee:016x}"
+    await api(s, "POST", f"/api/devices/{hall}/room", {"room": ""})
+    await b.go(base, "devices", 2.0)
+    ticked = await b.js(f"""(()=>{{const rows=[...document.querySelectorAll('tr.click')];let n=0;for(const tr of rows){{if(tr.textContent.includes({json.dumps(kettle)})||tr.textContent.includes({json.dumps(hall)})){{const c=tr.querySelector('input[type=checkbox]');c.checked=true;c.dispatchEvent(new Event('change'));n++;}}}}return n;}})()""")
+    assert ticked == 2, ticked
+    await b.js("(()=>{const i=document.querySelector('input[list=\"room-list-bulk\"]');i.value='Lounge';i.dispatchEvent(new Event('input'));})()")
+    await b.click_text("Put in room")
+    await asyncio.sleep(1.0)
+    st, r = await api(s, "GET", "/api/rooms")
+    assert {x["name"]: x["devices"] for x in r["rooms"]}["Lounge"] == 2
+
+    # renaming the room moves everyone; a floor is remembered
+    st, r = await api(s, "POST", "/api/rooms/rename", {"from": "Lounge", "to": "Living room"})
+    assert st == 200 and r["devices"] == 2 and {x["name"] for x in r["rooms"]} >= {"Living room"}
+    st, r = await api(s, "POST", "/api/rooms/floor", {"room": "Living room", "floor": 1})
+    assert st == 200 and {x["name"]: x["floor"] for x in r["rooms"]}["Living room"] == 1
+    await wait_for(lambda: any(e.get("ieee") == hall and e.get("room") == "Living room" and e.get("floor") == 1
+                               for e in json.loads(s.got[f"{BASE}/bridge/devices"])), 5)
+    assert (await api(s, "POST", f"/api/devices/{hall}/room", {"room": "a/b"}))[0] == 400
+    assert b.errors == [], f"console errors: {b.errors}"

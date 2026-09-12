@@ -68,6 +68,8 @@ def _device_block(dev: Device, t: Topics) -> dict[str, Any]:
     }
     if dev.sw_build:
         block["sw_version"] = str(dev.sw_build)  # Home Assistant rejects the whole message on a null here
+    if dev.room:
+        block["suggested_area"] = dev.room        # applied by Home Assistant when the device is new to it
     return block
 
 

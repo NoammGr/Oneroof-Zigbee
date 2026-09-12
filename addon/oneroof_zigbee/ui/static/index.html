@@ -490,6 +490,7 @@ const HELP={
   'datapoints.device_class':'Home Assistant device class for the entity (temperature, humidity, battery, door, motion, moisture, smoke, gas, occupancy, distance, illuminance, power, energy …). Leave empty to derive it from the key.',
   'datapoints.category':'Where the feature appears: sensor (read-only value), control (main control), config (a setting) or diagnostic (hidden by default in Home Assistant).',
   'datapoints.save':'Writes a definition for this manufacturer and model into definitions.yaml. It applies immediately to every device of the model, takes precedence over the built-in table and is re-announced to Home Assistant; stale entities are removed. No restart.',
+  'device.room':'Where the device is, in your words. Pick a room already in use or type a new one \u2014 a room exists because a device is in it. The whole family reads it from here: the device list every One Roof add-on follows carries it, Home Assistant receives it as the device\u2019s suggested area (applied when the device is new there), and the health card and Statistics group by it. Before you type, the gateway suggests the room the device\u2019s own name carries, or the area Home Assistant already has for it.',
   'device.wall_switch':'For a bulb or plug that lives behind a physical wall switch. Cutting the power makes the device fall silent; without this setting the gateway can only call that offline. With it, silence is shown as \u201coff at the wall\u201d, Home Assistant and Apple Home see the light as Off, and the health check leaves it alone \u2014 while still telling you how many devices lose their parent when a router is powered off.',
   'definitions.kind':'What the device is shown as (type) and which coarse category it belongs to. The category decides how the dashboard card and the generic controls treat it: a sensor never gets switch controls, a remote only actions. Saved as a definition for this model, so every device of the model follows.',
   'definitions.on_off_as':'For devices that report a sensor through the On/Off cluster (some contact or motion sensors): publish the On/Off attribute under this key (contact, occupancy, water_leak …) instead of as a switch.',
@@ -598,6 +599,7 @@ function catGlyph(d){const cat=Object.values(d.endpoints||{}).map(e=>e.category|
   if(/light|lamp|bulb/.test(cat)||cl.has(0x300)||cl.has(8))return 'bulb';if(/cover|blind|shade|curtain/.test(cat)||cl.has(0x102))return 'cover';if(/lock/.test(cat)||cl.has(0x101))return 'lock';if(/thermostat|climate|hvac/.test(cat)||cl.has(0x201))return 'thermometer';if(/plug|outlet|socket/.test(cat)||cl.has(0x702)||cl.has(0xb04))return 'plug';if(/switch/.test(cat)||cl.has(6))return 'power';if(/remote|button/.test(cat))return 'remote';if(cl.has(0x402))return 'thermometer';if(cl.has(0x405))return 'drop';if(cl.has(0x406)||cl.has(0x500))return 'hand';if(cl.has(0x400))return 'sun';return 'chip';}
 function powerLabel(p){if(!p)return '—';const s=String(p).toLowerCase();if(/mains|dc/.test(s))return 'Mains';if(/batt/.test(s))return 'Battery';return s[0].toUpperCase()+s.slice(1);}
 const dpath=(d,p)=>'api/devices/'+encodeURIComponent(d.ieee||d)+p;
+const roomsInUse=()=>[...new Set(S.devices.map(x=>x.room).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
 function fnm(pat,s){const re=new RegExp('^'+String(pat).toLowerCase().replace(/[.+^${}()|[\]\\]/g,'\\$&').replace(/\*/g,'.*').replace(/\?/g,'.')+'$');return re.test(String(s).toLowerCase());}
 
 /* ============ state ============ */
@@ -638,22 +640,32 @@ function route(){const h=(location.hash||'#dashboard').slice(1);const[p,...rest]
 
 /* ============ DEVICES ============ */
 views.devices={
-  q:'',rows:new Map(),
+  q:'',rows:new Map(),picked:new Set(),
   enter(m){
-    m.append(el('h1',{text:'Devices'}),el('p',{class:'lead',text:'Everything paired to this coordinator. Open a device for its details, controls, clusters and bindings; click a name to rename it in place.'}));
-    const search=el('input',{type:'search',placeholder:'Search name, model, IEEE…',value:this.q,oninput:debounce(e=>{this.q=e.target.value.trim().toLowerCase();this.render();},120)});
+    m.append(el('h1',{text:'Devices'}),el('p',{class:'lead',text:'Everything paired to this coordinator. Open a device for its details, controls, clusters and bindings; click a name to rename it in place. Tick devices to put several in a room at once.'}));
+    const search=el('input',{type:'search',placeholder:'Search name, model, IEEE, room…',value:this.q,oninput:debounce(e=>{this.q=e.target.value.trim().toLowerCase();this.render();},120)});
     this.count=el('span',{class:'mute'});
     m.append(el('div',{class:'bar'},search,el('span',{class:'grow'}),this.count));
+    // several devices, one room: the bar appears when something is ticked
+    this.picked.clear();this.bulk=el('div',{class:'bar hidden',style:'margin:-6px 0 14px'});m.append(this.bulk);
     this.host=el('div');m.append(this.host);this.render();this.refresh();
   },
+  drawBulk(){
+    const b=this.bulk;if(!b)return;const n=this.picked.size;b.classList.toggle('hidden',!n);if(!n){clear(b);return;}
+    const known=roomsInUse();const list=el('datalist',{id:'room-list-bulk'},...known.map(r=>el('option',{value:r})));
+    const inp=txt(this.bulkRoom||'',{placeholder:'Room for the '+n+' ticked device'+(n===1?'':'s'),list:'room-list-bulk',maxlength:60,style:'min-width:240px',oninput:e=>{this.bulkRoom=e.target.value;}});
+    const go=el('button',{class:'btn primary',text:'Put in room',disabled:!can(),title:can()?'':NOCTL,onclick:async()=>{go.disabled=true;try{const r=await api('api/rooms/assign',{ieees:[...this.picked],room:inp.value});toast(r.devices+' device'+(r.devices===1?'':'s')+(inp.value.trim()?' now in '+inp.value.trim():' taken out of their room'));this.picked.clear();this.bulkRoom='';await this.refresh();}catch(e){toast(e.message,true);go.disabled=!can();}}});
+    clear(b).append(el('span',{class:'badge acc',text:n+' ticked'}),inp,list,go,el('button',{class:'btn',text:'Clear',onclick:()=>{this.picked.clear();this.render();}}));
+  },
   async refresh(){try{const list=await api('api/devices');for(const d of list)S.devMap.set(d.ieee,Object.assign(S.devMap.get(d.ieee)||{},d));for(const k of[...S.devMap.keys()])if(!list.some(d=>d.ieee===k))S.devMap.delete(k);S.devices=[...S.devMap.values()];this.render();views.dashboard.render();renderHeader();}catch(e){if(S.page==='devices'||S.page==='dashboard')toast(e.message,true);}},
-  filtered(){const q=this.q;return S.devices.filter(d=>!q||[d.friendly_name,d.model,d.manufacturer,d.ieee,d.description].join(' ').toLowerCase().includes(q)).sort((a,b)=>String(a.friendly_name).localeCompare(String(b.friendly_name)));},
+  filtered(){const q=this.q;return S.devices.filter(d=>!q||[d.friendly_name,d.model,d.manufacturer,d.ieee,d.description,d.room].join(' ').toLowerCase().includes(q)).sort((a,b)=>String(a.friendly_name).localeCompare(String(b.friendly_name)));},
   render(){
     if(S.page!=='devices')return;const list=this.filtered();this.count.textContent=list.length+' of '+S.devices.length;
     const h=clear(this.host);this.rows.clear();
     if(!list.length){h.append(el('div',{class:'empty',text:S.devices.length?'No device matches that search.':'No devices yet. Open Pair to add one.'}));return;}
     const tb=el('tbody');for(const d of list)tb.append(this.row(d));
-    h.append(el('div',{class:'twrap'},el('table',{class:'devtab'},el('thead',null,el('tr',null,...['Device','Model','Type','LQI','Last seen','State','',''].map(t=>el('th',{text:t})))),tb)));
+    h.append(el('div',{class:'twrap'},el('table',{class:'devtab'},el('thead',null,el('tr',null,...['','Device','Model','Type','LQI','Last seen','State','',''].map(t=>el('th',{text:t})))),tb)));
+    this.drawBulk();
   },
   row(d){
     const ok=can();const cl=clusters(d);
@@ -664,8 +676,10 @@ views.devices={
     const stop=e=>e.stopPropagation();
     const ctl=el('td',{onclick:stop},this.controls(d,cl));
     const thumb=el('div',{class:'thumb'},svg(catGlyph(d)));
+    const tick=el('input',{type:'checkbox',checked:this.picked.has(d.ieee)?true:null,title:'Tick to put several devices in a room at once',onclick:stop,onchange:e=>{if(e.target.checked)this.picked.add(d.ieee);else this.picked.delete(d.ieee);this.drawBulk();}});
     const tr=el('tr',{class:'click',title:'Open device'},
-      el('td',null,el('div',{style:'display:flex;gap:12px;align-items:center'},thumb,el('div',null,el('div',{style:'display:flex;gap:8px;align-items:center'},avail,name),el('div',{class:'sub mono',text:d.ieee})))),
+      el('td',{onclick:stop,style:'width:28px;padding-right:0'},tick),
+      el('td',null,el('div',{style:'display:flex;gap:12px;align-items:center'},thumb,el('div',null,el('div',{style:'display:flex;gap:8px;align-items:center'},avail,name),el('div',{class:'sub',text:d.room||''}),el('div',{class:'sub mono',text:d.ieee})))),
       el('td',{class:'sub'},el('div',{text:d.model||'—'}),el('div',{text:d.manufacturer||''}),d.description?el('div',{class:'mute',style:'font-style:italic',text:d.description}):null),
       el('td',{class:'sub'},el('div',{text:d.kind||'—'}),el('div',{class:'mute',text:(d.vendor?d.vendor+' · ':'')+(d.is_router?'Router':'End device')})),lqi,seenTd,stateTd,ctl,
       el('td',{onclick:stop},this.menu(d,ok)));
@@ -800,7 +814,7 @@ views.dashboard={
     const card=el('div',{class:'card',style:'margin-bottom:18px'},
       el('div',{style:'display:flex;gap:12px;align-items:center;flex-wrap:wrap'},el('h2',{style:'margin:0',text:'Network health'}),el('span',{class:'badge '+verdict[0],text:verdict[1]}),el('span',{class:'sub',text:r.devices+' devices \u00b7 '+when}),el('span',{class:'grow'}),btn));
     if(!r.coordinator_online)card.append(el('div',{class:'notice',style:'margin:12px 0 0'},el('b',{text:'The coordinator is offline.'}),' Nothing below can be reached until the radio is back.'));
-    if(r.findings.length){const list=el('div',{class:'rc-list'});for(const f of r.findings){const d=S.devMap.get(String(f.ieee).toLowerCase());list.append(el('div',{class:'rc-row'+(f.severity==='bad'?' bad':'')},el('span',{class:'badge '+(f.severity==='bad'?'danger':f.severity==='info'?'':'warn'),text:{offline:'offline',weak_link:'weak link',flapping:'flapping',quiet:'quiet',busy_router:'busy router',battery:'battery',wall_off:'off at the wall',wall_hint:'wall switch?'}[f.kind]||f.kind}),d?el('a',{class:'devname',href:'#device/'+encodeURIComponent(f.ieee),text:f.name,title:f.ieee}):el('b',{text:f.name}),el('span',{class:'sub',text:f.detail})));}card.append(list);}
+    if(r.findings.length){const list=el('div',{class:'rc-list'});for(const f of r.findings){const d=S.devMap.get(String(f.ieee).toLowerCase());list.append(el('div',{class:'rc-row'+(f.severity==='bad'?' bad':'')},el('span',{class:'badge '+(f.severity==='bad'?'danger':f.severity==='info'?'':'warn'),text:{offline:'offline',weak_link:'weak link',flapping:'flapping',quiet:'quiet',busy_router:'busy router',battery:'battery',wall_off:'off at the wall',wall_hint:'wall switch?'}[f.kind]||f.kind}),d?el('a',{class:'devname',href:'#device/'+encodeURIComponent(f.ieee),text:f.name,title:f.ieee}):el('b',{text:f.name}),d&&d.room?el('span',{class:'sub',text:'\u00b7 '+d.room}):null,el('span',{class:'sub',text:f.detail})));}card.append(list);}
     else if(r.walked_at)card.append(el('div',{class:'sub',style:'margin-top:8px',text:'Every device reachable, every link fine, nothing flapping or quiet.'}));
     h.append(card);
     if(walk)toast(r.verdict==='ok'?'Network healthy':'Check done \u2014 '+verdict[1]);
@@ -880,6 +894,7 @@ views.device={
     const badges=el('div',{class:'badges'},
       el('span',{class:'badge',text:d.kind||(d.is_router?'Router':'End device')}),
       el('span',{class:'badge',text:d.is_router?'Router':'End device'}),
+      d.room?el('span',{class:'badge acc',text:d.room,title:'Room'}):null,
       el('span',{class:'badge'},svg(/batt/i.test(d.power_source||'')?'battery':'bolt'),powerLabel(d.power_source)),
       d.interviewed?el('span',{class:'badge ok',text:'✓ interviewed'}):el('span',{class:(d.model&&d.interview_error)?'badge':'badge danger',title:d.interview_error||'',text:d.interview_error?((d.model?'descriptors not read yet':'interview failed')+' · retried when the device is awake'):'not interviewed'}),
       d.wall_off?el('span',{class:'badge',title:'Silent because its wall switch is off; it shows as Off in Home Assistant and Apple Home'},el('i',{class:'dot wall'}),'off at the wall'):el('span',{class:'badge'+(d.available?' ok':'')},el('i',{class:'dot'+(d.available?' on':'')}),d.available?'online':'offline'),
@@ -939,6 +954,7 @@ views.device={
       el('tr',null,el('td',{text:'MQTT topics'}),el('td',null,topics)));
     b.append(el('div',{class:'twrap'},el('table',{class:'kvt'},tb)));
     b.append(el('h2',null,'Type & category',help('definitions.kind',null,'Type & category')),this.kindCard(d));
+    b.append(el('h2',null,'Room',help('device.room',null,'Room')),this.roomCard(d));
     if(d.is_router||/mains|dc/i.test(d.power_source||''))b.append(el('h2',null,'Power',help('device.wall_switch',null,'Power')),this.wallCard(d));
     b.append(el('h2',{text:'Endpoints'}));
     const eps=Object.entries(d.endpoints||{});if(!eps.length)b.append(el('div',{class:'empty',text:'No endpoints known — interview the device.'}));
@@ -948,6 +964,17 @@ views.device={
     }
   },
   defPath(d){return 'api/definitions/'+encodeURIComponent(d.manufacturer)+'/'+encodeURIComponent(d.model);},
+  // where it is, in the owner's words: picked from the rooms in use, or typed new
+  roomCard(d){
+    const known=roomsInUse();
+    const list=el('datalist',{id:'room-list'},...known.map(r=>el('option',{value:r})));
+    const inp=txt(d.room||'',{placeholder:known.length?'Pick a room or type a new one':'e.g. Kitchen',maxlength:60,list:'room-list',disabled:!can(),title:can()?'':NOCTL,style:'flex:1;min-width:240px;max-width:420px'});
+    const save=el('button',{class:'btn primary',text:'Save',disabled:!can(),title:can()?'':NOCTL,onclick:async()=>{save.disabled=true;try{const r=await api(dpath(d,'/room'),{room:inp.value});d.room=r.room;const dv=S.devMap.get(d.ieee);if(dv)dv.room=r.room;toast(r.room?'Room saved \u2014 '+r.room:'Room cleared');await this.load();}catch(e){toast(e.message,true);}save.disabled=!can();}});
+    inp.addEventListener('keydown',e=>{if(e.key==='Enter')save.click();});
+    const sug=d.room_suggestion&&!d.room?el('div',{class:'notice',style:'margin:12px 0 0;display:flex;gap:10px;align-items:center;flex-wrap:wrap'},el('span',null,el('b',{text:d.room_suggestion.room}),' \u2014 says '+d.room_suggestion.from+'.'),el('button',{class:'btn sm',disabled:!can(),text:'Use it',onclick:()=>{inp.value=d.room_suggestion.room;save.click();}})):null;
+    const rooms=known.length?el('div',{class:'sub',style:'margin-top:8px'},'Rooms in use: ',...known.flatMap((r,i)=>[i?', ':'',el('a',{href:'#',class:'devname',text:r,onclick:e=>{e.preventDefault();inp.value=r;}})])):el('div',{class:'sub',style:'margin-top:8px',text:'No rooms yet \u2014 the first one you type starts the list.'});
+    return el('div',{class:'card'},el('div',{class:'fgrid'},fld('Room',el('div',{style:'display:flex;gap:8px;align-items:center'},inp,save,list),'The one place the whole family reads it from. Same names as in Apple Home keep everything tidy.','device.room')),sug,rooms);
+  },
   // a bulb behind a wall switch: silence means off, not gone
   wallCard(d){
     const [sw,row]=chk('Switched off at the wall',!!d.wall_switched,'A physical switch cuts its power. When it falls silent it shows as off at the wall here and as Off in Home Assistant and Apple Home \u2014 not offline \u2014 and the health check does not count it as a problem.','device.wall_switch');

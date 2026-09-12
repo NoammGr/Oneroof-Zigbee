@@ -1,5 +1,26 @@
 # Changelog
 
+## [2.21.0] — 2026-09-12
+
+### Added — rooms, the family's one answer to "where is it?"
+Every device page has a **Room** card under Type & category: pick a room already in use or type
+a new one — a room exists because a device is in it, there is no list to keep. Before you type,
+the gateway suggests the room the device's own name carries ("Garage - Smart Plug") or the
+area Home Assistant already has for it, accepted with one click. On the Devices list, tick
+several devices and put them in a room at once. A room can be renamed in one place (every
+device follows) and can carry an optional floor.
+
+The whole family reads it from here: the device list every One Roof add-on follows
+(`bridge/devices`) carries `room` and `floor`; Home Assistant receives the room as the device's
+*suggested area* (applied when the device is new there); the health card shows it next to each
+device. Statistics and the Bridge pick it up in their next versions. Apple Home has no way for
+a bridge to place accessories in rooms — the same names make the Home app's room picker a
+five-second job, not an automatic one.
+
+API: `POST api/devices/<ieee>/room {room}`, `GET api/rooms`, `POST api/rooms/assign {ieees, room}`,
+`POST api/rooms/rename {from, to}`, `POST api/rooms/floor {room, floor}`; device JSON gains
+`room` and `room_suggestion`. Audited as `device_roomed`, `room_renamed`, `room_floor_set`.
+
 ## [2.20.0] — 2026-09-12
 
 ### Added — "switched off at the wall"
