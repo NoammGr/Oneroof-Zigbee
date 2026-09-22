@@ -110,6 +110,16 @@ Category `ir` — an infrared remote section (the One Roof **IRBlaster**, manufa
 `temperature_offset`, `led_brightness`, `led_quiet` are `config`. Writes to `learn_key`/`send_key` are commands:
 the value is not kept in state; the device answers through `last_result` and `code_count`.
 
+Category `rf` — a 433 MHz remotes section (the One Roof **GateController**, manufacturer `NoammGr`): `rf_learn`
+(enum w gate/relay2/both/cancel: learn the next remote press and bind it), `rf_last` (text r), `rf_count` (numeric r),
+`rf_delete` (text w: a remote number, or 255 for all). The gate itself is the standard cover (`position`, `cover`) plus
+`gate_state` (enum r unknown/closed/open/opening/closing/stopped) and `trigger` (action w: one START pulse); its relays
+are `relay1` / `relay2` (the On/Off outputs on endpoints 2 and 3), its sensor inputs `input_1` / `input_2` (Binary Input
+0x000F on endpoints 5 and 6, binary r). Everything else is `config` (`pulse_ms`, `pulse2_ms`, `travel_s`, `relay1_mode`,
+`relay2_mode`, `max_on_s`, `in1_role`, `in2_role`, `in1_invert`, `in2_invert`, `tx_power`, `max_children` — 0 makes a
+router never accept a child, the device reboots to apply — `temperature_offset`, `calibrate`, `led_brightness`,
+`led_quiet`) or `diagnostic` (`role`, `channel`, `overtemp`, `board_temperature`, `die_temperature`, `last_result`).
+
 New POST routes (all JSON + `X-OneRoof: 1`):
 
 | Path | Body | Effect |

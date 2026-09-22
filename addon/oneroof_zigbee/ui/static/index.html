@@ -526,6 +526,7 @@ const HELP={
   fan_mode:'Fan speed of the air conditioner: low, medium, high or auto.',
   target_temperature:'The set temperature — one setpoint for cooling and heating, as on the remote.',
   swing:'Louver swing / oscillation on or off.',
+  rf_learn:'Press gate, relay2 or both, then within 30 s press the button on the 433 MHz remote. Fixed-code remotes only (EV1527 / PT2262 class); rolling-code originals cannot be learned and keep working through the gate\'s own receiver.',
   learn_key:'Set the climate (mode, temperature, fan, swing) the way you want it first, then press Learn current state and, within 20 s, the matching button on the AC remote. Or type a code key (off, c24a1 …) or a name for an extra button (light, turbo) and press Learn.',
   send_key:'Transmit a stored code by its key: off, c24a1 = cool 24 °C fan auto swing on, or a name you learned such as light.',
   protocol:'learn replays the frames you learned; auto adopts the protocol detected from a learned frame; coolix/gree/daikin/electra use the native encoder so every state works without learning.',
@@ -843,7 +844,7 @@ views.dashboard={
   DASH_ROWS:5,
   headline(ex){
     const rank=f=>{const i=this.DASH_ORDER.indexOf(f.base||f.key);return i<0?99:i;};
-    const usable=ex.filter(f=>f.category!=='diagnostic'&&f.category!=='config'&&f.category!=='ir'&&f.key!=='identify'&&(f.base||f.key)!=='battery');
+    const usable=ex.filter(f=>f.category!=='diagnostic'&&f.category!=='config'&&f.category!=='ir'&&f.category!=='rf'&&f.key!=='identify'&&(f.base||f.key)!=='battery');
     let pick=usable.filter(f=>rank(f)<99).sort((a,b)=>rank(a)-rank(b)||String(a.key).localeCompare(String(b.key)));
     if(!pick.length)pick=usable;                       // an unusual device still shows something
     return {rows:pick.slice(0,this.DASH_ROWS),hidden:Math.max(0,usable.length-Math.min(pick.length,this.DASH_ROWS))};
@@ -874,7 +875,7 @@ views.dashboard={
 const TABS=[['about','About'],['controls','Controls'],['state','State'],['clusters','Clusters'],['reporting','Reporting'],['bind','Bind'],['firmware','Firmware']];
 const hasDatapoints=d=>!!d&&clusters(d).has(0xef00);
 const devTabs=d=>hasDatapoints(d)?[...TABS.slice(0,3),['datapoints','Datapoints'],...TABS.slice(3)]:TABS;
-const CATS=[['control','Controls'],['ir','IR remote'],['sensor','Sensors'],['config','Configuration'],['diagnostic','Diagnostics']];
+const CATS=[['control','Controls'],['ir','IR remote'],['rf','433 MHz remotes'],['sensor','Sensors'],['config','Configuration'],['diagnostic','Diagnostics']];
 const DEF_CATS=[['light','Light'],['plug','Smart plug'],['switch','Switch'],['sensor','Sensor'],['remote','Button/remote'],['cover','Cover'],['climate','Thermostat'],['lock','Lock'],['meter','Electricity meter'],['unknown','Unknown']];
 views.device={
   tab:'about',d:null,ieee:null,upd:new Map(),

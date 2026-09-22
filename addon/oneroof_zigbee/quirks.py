@@ -272,6 +272,44 @@ _IRBLASTER_ATTRS = (
     PrivateAttr(0x0008, "led_quiet", DataType.bool_, values=_ONOFF),
 )
 
+# One Roof gate controller: its own cluster (Garage-Gate/firmware/main/zb.h)
+_GATE = 0xFC01
+_GATE_STATES = {0: "unknown", 1: "closed", 2: "open", 3: "opening", 4: "closing", 5: "stopped"}
+_IN_ROLES = {0: "none", 1: "closed_sensor", 2: "open_sensor"}
+_RELAY_MODES = {0: "pulse", 1: "latch"}
+_RF_ACTIONS = {0: "cancel", 1: "gate", 2: "relay2", 3: "both"}
+_ZB_ROLES = {0: "router", 1: "end_device"}
+_GATE_ATTRS = (
+    PrivateAttr(0x0000, "gate_state", DataType.enum8, values=_GATE_STATES),
+    PrivateAttr(0x0001, "trigger", DataType.bool_),
+    PrivateAttr(0x0002, "pulse_ms", DataType.uint16),
+    PrivateAttr(0x0003, "travel_s", DataType.uint16),
+    PrivateAttr(0x0004, "in1_role", DataType.enum8, values=_IN_ROLES),
+    PrivateAttr(0x0005, "in2_role", DataType.enum8, values=_IN_ROLES),
+    PrivateAttr(0x0006, "in1_invert", DataType.bool_, values=_ONOFF),
+    PrivateAttr(0x0007, "in2_invert", DataType.bool_, values=_ONOFF),
+    PrivateAttr(0x0008, "rf_learn", DataType.uint8, values=_RF_ACTIONS),
+    PrivateAttr(0x0009, "rf_count", DataType.uint16),
+    PrivateAttr(0x000A, "rf_last", DataType.string),
+    PrivateAttr(0x000B, "rf_delete", DataType.uint8),
+    PrivateAttr(0x000C, "last_result", DataType.string),
+    PrivateAttr(0x000D, "tx_power", DataType.int8),
+    PrivateAttr(0x000E, "led_brightness", DataType.uint8),
+    PrivateAttr(0x000F, "led_quiet", DataType.bool_, values=_ONOFF),
+    PrivateAttr(0x0010, "temperature_offset", DataType.int16, scale=100),
+    PrivateAttr(0x0011, "calibrate", DataType.int16, scale=100),
+    PrivateAttr(0x0012, "die_temperature", DataType.int16, scale=100),
+    PrivateAttr(0x0013, "relay1_mode", DataType.enum8, values=_RELAY_MODES),
+    PrivateAttr(0x0014, "relay2_mode", DataType.enum8, values=_RELAY_MODES),
+    PrivateAttr(0x0015, "pulse2_ms", DataType.uint16),
+    PrivateAttr(0x0016, "max_on_s", DataType.uint16),
+    PrivateAttr(0x0017, "overtemp", DataType.bool_),
+    PrivateAttr(0x0018, "board_temperature", DataType.int16, scale=100),
+    PrivateAttr(0x0019, "channel", DataType.uint8),
+    PrivateAttr(0x001A, "max_children", DataType.uint8),
+    PrivateAttr(0x001B, "role", DataType.enum8, values=_ZB_ROLES),
+)
+
 
 def _lumi_sensor(kind: str, models: tuple[str, ...] | str, **kw: Any) -> Quirk:
     base: dict[str, Any] = {**_LUMI_SENSOR, "add": _LUMI_SENSOR_EXTRAS + (_battery(),), "category": "sensor"}
@@ -580,6 +618,57 @@ QUIRKS: tuple[Quirk, ...] = (
        ),
        reporting={_IRB: ((0x0003, DataType.string, 1, 3600, None),)},
        read_on_join={_IRB: (0x0002, 0x0003, 0x0004, 0x0005, 0x0006, 0x0007, 0x0008)}),
+    # Gate / garage door controller. Endpoint 1 is a standard Window Covering (the gate: open /
+    # close / stop, lift percentage 0 = open) plus 0xFC01, the device's own cluster for everything
+    # else; endpoints 2 and 3 are On/Off outputs (relay 1 = the gate controller's START input,
+    # relay 2 auxiliary), endpoint 4 the on-board temperature/humidity sensor, endpoints 5 and 6
+    # Binary Inputs (the reed / limit switches). 433 MHz remotes are learned through rf_learn.
+    _q("NoammGr", "Gate controller", "cover", "NoammGr", "GateController",
+       description="Gate / garage door controller: START pulse relay, auxiliary relay, two position sensors, 433 MHz remotes, on-board temperature",
+       remove=("countdown", "power_on_behavior"),
+       relabel={(2, "state"): {"key": "relay1", "name": "Relay 1 (gate)", "description": "The gate controller's START contact: ON = one pulse (or held on in latch mode)", "icon": "power"},
+                (3, "state"): {"key": "relay2", "name": "Relay 2 (aux)", "description": "Auxiliary contact - pedestrian, stop or light: ON = one pulse (or held on in latch mode)", "icon": "power"}},
+       private_attrs={_GATE: _GATE_ATTRS},
+       add=(
+           _f("gate_state", "Gate state", "Measured at the end sensors (closed / open), estimated in between from the travel time", "enum", "r",
+              icon="arrows", category="control", cluster=_GATE, values=list(_GATE_STATES.values())),
+           _f("trigger", "Trigger", "One START pulse on relay 1, like pressing the remote", "action", "w", icon="hand", category="control", cluster=_GATE),
+           _f("rf_learn", "Learn a 433 MHz remote", "Press one, then the remote button within 30 s: gate, relay 2 or both. cancel stops a learn in progress",
+              "enum", "w", icon="remote", category="rf", cluster=_GATE, values=["gate", "relay2", "both", "cancel"]),
+           _f("rf_last", "Last remote event", "The last 433 MHz frame: which stored remote fired, or an unknown code to learn", "text", "r", icon="remote", category="rf", cluster=_GATE),
+           _f("rf_count", "Stored remotes", "Number of 433 MHz remotes the device has learned (up to 32)", "numeric", "r", icon="counter", category="rf", cluster=_GATE),
+           _f("rf_delete", "Delete remote", "The number of a stored remote to delete (1-32), or 255 for all of them", "text", "w", icon="remote", category="rf", cluster=_GATE, max_length=3),
+           _f("pulse_ms", "Pulse length", "How long relay 1 closes for one START pulse", "numeric", "rw", icon="clock", category="config", cluster=_GATE, min=100, max=5000, step=50, unit="ms"),
+           _f("pulse2_ms", "Relay 2 pulse length", "How long relay 2 closes for one pulse", "numeric", "rw", icon="clock", category="config", cluster=_GATE, min=100, max=5000, step=50, unit="ms"),
+           _f("travel_s", "Travel time", "Full open-to-close time of the gate, for the position estimate", "numeric", "rw", icon="clock", category="config", cluster=_GATE, min=1, max=600, step=1, unit="s"),
+           _f("relay1_mode", "Relay 1 mode", "pulse = momentary START contact; latch = a plain on/off switch", "enum", "rw", icon="sliders", category="config", cluster=_GATE, values=list(_RELAY_MODES.values())),
+           _f("relay2_mode", "Relay 2 mode", "pulse = momentary contact; latch = a plain on/off switch", "enum", "rw", icon="sliders", category="config", cluster=_GATE, values=list(_RELAY_MODES.values())),
+           _f("max_on_s", "Latch auto-off", "In latch mode the relay switches off by itself after this many seconds (0 = never)", "numeric", "rw", icon="clock", category="config", cluster=_GATE, min=0, max=3600, step=1, unit="s"),
+           _f("in1_role", "Input 1 is", "What the IN1 terminal is wired to", "enum", "rw", icon="sliders", category="config", cluster=_GATE, values=list(_IN_ROLES.values())),
+           _f("in2_role", "Input 2 is", "What the IN2 terminal is wired to", "enum", "rw", icon="sliders", category="config", cluster=_GATE, values=list(_IN_ROLES.values())),
+           _f("in1_invert", "Input 1 inverted", "ON for a normally-closed sensor contact", "binary", "rw", icon="sliders", category="config", cluster=_GATE, value_on="ON", value_off="OFF"),
+           _f("in2_invert", "Input 2 inverted", "ON for a normally-closed sensor contact", "binary", "rw", icon="sliders", category="config", cluster=_GATE, value_on="ON", value_off="OFF"),
+           _f("input_1", "Input 1", "IN1 sensor active (contact closed)", "binary", "r", icon="hand", category="sensor", endpoint=5, cluster=0x000F, base="present_value", value_on=True, value_off=False),
+           _f("input_2", "Input 2", "IN2 sensor active (contact closed)", "binary", "r", icon="hand", category="sensor", endpoint=6, cluster=0x000F, base="present_value", value_on=True, value_off=False),
+           _f("tx_power", "Radio power", "Zigbee transmit power in dBm (external antenna). Saved on the device", "numeric", "rw", icon="signal", category="config", cluster=_GATE, min=-24, max=20, step=1, unit="dBm"),
+           _f("max_children", "Max children", "Router only: how many battery devices may use this device as their parent. 0 = never a parent (the last device on the edge of the mesh). Changing it reboots the device",
+              "numeric", "rw", icon="signal", category="config", cluster=_GATE, min=0, max=32, step=1),
+           _f("role", "Zigbee role", "router relays for the mesh; end_device never does (chosen when the firmware was built)", "enum", "r", icon="signal", category="diagnostic", cluster=_GATE, values=list(_ZB_ROLES.values())),
+           _f("channel", "Zigbee channel", "The channel the device joined on", "numeric", "r", icon="signal", category="diagnostic", cluster=_GATE),
+           _f("overtemp", "Over temperature", "The board has been above 75 °C for a minute or more", "binary", "r", icon="thermometer", category="diagnostic", cluster=_GATE, value_on=True, value_off=False),
+           _f("board_temperature", "Board temperature", "Raw on-board sensor reading - the enclosure, before self-heating correction", "numeric", "r", icon="thermometer", category="diagnostic", cluster=_GATE, unit="°C"),
+           _f("die_temperature", "Die temperature", "ESP32 die temperature", "numeric", "r", icon="thermometer", category="diagnostic", cluster=_GATE, unit="°C"),
+           _f("temperature_offset", "Temperature offset", "Residual trim on the temperature reading", "numeric", "rw", icon="thermometer", category="config", cluster=_GATE, min=-20, max=20, step=0.1, unit="°C"),
+           _f("calibrate", "Calibrate", "Write the reading of a trusted thermometer placed next to the box; the device derives its own correction", "text", "w", icon="thermometer", category="config", cluster=_GATE, max_length=6),
+           _f("led_brightness", "LED brightness", "Status LED brightness", "numeric", "rw", icon="sun", category="config", cluster=_GATE, min=1, max=100, step=1, unit="%"),
+           _f("led_quiet", "LED quiet", "LED off while joined and healthy", "binary", "rw", icon="sun", category="config", cluster=_GATE, value_on="ON", value_off="OFF"),
+           _f("last_result", "Last result", "Feedback from the last command", "text", "r", icon="text", category="diagnostic", cluster=_GATE),
+       ),
+       reporting={_GATE: ((0x0000, DataType.enum8, 0, 3600, None), (0x000A, DataType.string, 1, 3600, None), (0x000C, DataType.string, 1, 3600, None),
+                          (0x0009, DataType.uint16, 1, 3600, 1), (0x0017, DataType.bool_, 1, 3600, None), (0x0018, DataType.int16, 30, 3600, 20)),
+                  0x000F: ((0x0055, DataType.bool_, 0, 3600, None),)},
+       read_on_join={_GATE: tuple(pa.attr for pa in _GATE_ATTRS if pa.key not in ("trigger", "rf_learn", "rf_delete", "calibrate")),
+                     0x000F: (0x0055,)}),
     # One Roof router: our own CC2652P range extender (the coordinator firmware repo, TARGET=router). A pure relay —
     # one endpoint (8) with Basic + Identify; Basic 0x1337 is the radio's transmit power, readable and writable,
     # persisted on the stick. Identify blinks its green LED.

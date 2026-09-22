@@ -150,6 +150,17 @@ CASES = [
      "Switch actuator", "switch", {"state", "battery"}, {"countdown", "power_on_behavior"}, {"switch": ("switch", None)}),
     ("danfoss_trv", "Danfoss", "eTRV0100", {1: ([0x0000, 0x0001, 0x0003, 0x000A, 0x0020, 0x0201, 0x0204, 0x0B05], [0x0000, 0x0019], 0x0301)}, "battery", False, None,
      "Thermostat/TRV", "climate", {"current_heating_setpoint", "local_temperature", "battery"}, set(), {"climate": ("climate", None)}),
+    ("oneroof_gate", "NoammGr", "GateController", {1: ([0x0000, 0x0003, 0x0102, 0xFC01], [0x0019], 0x0202), 2: ([0x0000, 0x0003, 0x0006], [], 0x0002),
+                                                  3: ([0x0000, 0x0003, 0x0006], [], 0x0002), 4: ([0x0000, 0x0003, 0x0402, 0x0405], [], 0x0302),
+                                                  5: ([0x0000, 0x0003, 0x000F], [], 0x000C), 6: ([0x0000, 0x0003, 0x000F], [], 0x000C)}, "mains", True, None,
+     "Gate controller", "cover",
+     {"position", "cover", "gate_state", "trigger", "relay1", "relay2", "input_1", "input_2", "temperature", "humidity", "rf_learn", "rf_last", "rf_count",
+      "rf_delete", "pulse_ms", "travel_s", "in1_role", "in2_role", "in1_invert", "in2_invert", "tx_power", "max_children", "role", "channel", "overtemp",
+      "board_temperature", "led_brightness", "led_quiet", "last_result"},
+     {"state", "state_l1", "state_l2", "countdown", "power_on_behavior", "action"},
+     {"cover": ("cover", None), "relay1": ("switch", None), "relay2": ("switch", None), "gate_state": ("sensor", None), "input_1": ("binary_sensor", None),
+      "rf_learn": ("select", None), "rf_last": ("sensor", None), "max_children": ("number", None), "tx_power": ("number", None), "in1_role": ("select", None),
+      "in1_invert": ("switch", None), "temperature": ("sensor", "temperature"), "humidity": ("sensor", "humidity"), "overtemp": ("binary_sensor", None)}),
     ("oneroof_irblaster", "NoammGr", "IRBlaster", {1: ([0x0000, 0x0003, 0x0201, 0x0202, 0xFC00], [0x0019], 0x0301), 2: ([0x0006], [], 0x0002),
                                                     3: ([0x0402, 0x0405], [], 0x0302)}, "mains", True, None,
      "AC IR blaster", "climate",
@@ -831,6 +842,82 @@ def test_irblaster_private_attribute_encoding_types_and_limits():
         quirks.encode_private_attribute(dev, 0xFC00, "learn_key", "a" * 16)
     assert quirks.feedback_reads(dev, 0xFC00) == (0x0003, 0x0004, 0x0006)
     assert quirks.extra_reporting(dev) == {0xFC00: ((0x0003, DataType.string, 1, 3600, None),)}
+
+
+# ---------------------------------------------------------------------------------------------
+# The One Roof gate controller: a cover, two relays, two inputs, 433 MHz remotes, mesh settings
+# ---------------------------------------------------------------------------------------------
+
+GATE_EPS = {1: ([0x0000, 0x0003, 0x0102, 0xFC01], [0x0019], 0x0202), 2: ([0x0000, 0x0003, 0x0006], [], 0x0002), 3: ([0x0000, 0x0003, 0x0006], [], 0x0002),
+            4: ([0x0000, 0x0003, 0x0402, 0x0405], [], 0x0302), 5: ([0x0000, 0x0003, 0x000F], [], 0x000C), 6: ([0x0000, 0x0003, 0x000F], [], 0x000C)}
+
+
+def gate() -> Device:
+    return mk("NoammGr", "GateController", GATE_EPS, power="mains", router=True, ieee=0x00124B0022AA5678)
+
+
+def test_gate_controller_features_and_discovery():
+    dev = gate()
+    f = keys(dev)
+    assert f["relay1"]["base"] == "state" and f["relay1"]["endpoint"] == 2 and f["relay2"]["endpoint"] == 3 and f["relay1"]["cluster"] == 0x0006
+    assert f["position"]["endpoint"] == 1 and f["cover"]["values"] == ["OPEN", "STOP", "CLOSE"]
+    assert {k for k, x in f.items() if x["category"] == "rf"} == {"rf_learn", "rf_last", "rf_count", "rf_delete"}
+    assert f["rf_learn"]["access"] == "w" and f["rf_learn"]["values"] == ["gate", "relay2", "both", "cancel"]
+    assert f["max_children"]["category"] == "config" and (f["max_children"]["min"], f["max_children"]["max"]) == (0, 32)
+    assert f["tx_power"]["unit"] == "dBm" and (f["tx_power"]["min"], f["tx_power"]["max"]) == (-24, 20)
+    assert f["input_1"]["endpoint"] == 5 and f["input_1"]["base"] == "present_value" and f["input_1"]["access"] == "r"
+    assert f["gate_state"]["values"] == ["unknown", "closed", "open", "opening", "closing", "stopped"]
+    disc = ha(dev)
+    cov = disc["cover"][1]
+    assert cov["payload_open"] == '{"state": "OPEN"}' and cov["set_position_template"] == '{"position": {{ position }} }'
+    assert disc["relay1"][1]["payload_on"] == '{"relay1": "ON"}' and disc["relay1"][1]["name"] == "Relay 1 (gate)"
+    assert disc["max_children"][1]["command_template"] == '{"max_children": {{ value }} }' and disc["max_children"][1]["entity_category"] == "config"
+    assert disc["rf_learn"][1]["options"] == ["gate", "relay2", "both", "cancel"]
+    assert disc["role"][0] == "sensor" and disc["role"][1]["entity_category"] == "diagnostic"
+
+
+def test_gate_controller_reports_translate_to_its_keys():
+    dev = gate()
+    # the gate cluster: enums by name, strings, scaled temperatures
+    recs = [(0x0000, 0x30, 3, None), (0x000A, 0x42, b"remote #2 -> gate", None), (0x0009, 0x21, 2, None), (0x001A, 0x20, 0, None),
+            (0x001B, 0x30, 0, None), (0x000D, 0x28, 14, None), (0x0018, 0x29, 4215, None), (0x0017, 0x10, 0, None), (0x0004, 0x30, 1, None)]
+    state, used = quirks.decode_vendor_attributes(dev, 1, 0xFC01, recs)
+    assert state == {"gate_state": "opening", "rf_last": "remote #2 -> gate", "rf_count": 2, "max_children": 0, "role": "router",
+                     "tx_power": 14, "board_temperature": 42.15, "overtemp": False, "in1_role": "closed_sensor"}
+    assert used == {0x0000, 0x000A, 0x0009, 0x001A, 0x001B, 0x000D, 0x0018, 0x0017, 0x0004}
+    # the cover: ZCL lift 0 = open -> position 100 = open
+    assert quirks.translate_state(dev, 1, decode_attributes(0x0102, [(0x0008, 0)])) == {"position": 100}
+    assert quirks.translate_state(dev, 1, decode_attributes(0x0102, [(0x0008, 100)])) == {"position": 0}
+    # relays and inputs land on their own keys, per endpoint
+    assert quirks.translate_state(dev, 2, decode_attributes(0x0006, [(0x0000, 1)])) == {"relay1": "ON"}
+    assert quirks.translate_state(dev, 3, decode_attributes(0x0006, [(0x0000, 0)])) == {"relay2": "OFF"}
+    assert quirks.translate_state(dev, 5, decode_attributes(0x000F, [(0x0055, 1)])) == {"input_1": True}
+    assert quirks.translate_state(dev, 6, decode_attributes(0x000F, [(0x0055, 0)])) == {"input_2": False}
+
+
+def test_gate_controller_private_writes_reads_and_reporting():
+    dev = gate()
+    from oneroof_zigbee.zcl.types import DataType
+    assert quirks.encode_private_attribute(dev, 0xFC01, "max_children", 0) == (0x001A, DataType.uint8, 0)
+    assert quirks.encode_private_attribute(dev, 0xFC01, "tx_power", -3) == (0x000D, DataType.int8, -3)
+    assert quirks.encode_private_attribute(dev, 0xFC01, "rf_learn", "gate") == (0x0008, DataType.uint8, 1)
+    assert quirks.encode_private_attribute(dev, 0xFC01, "rf_learn", "cancel") == (0x0008, DataType.uint8, 0)
+    assert quirks.encode_private_attribute(dev, 0xFC01, "rf_delete", "255") == (0x000B, DataType.uint8, 255)
+    assert quirks.encode_private_attribute(dev, 0xFC01, "in1_role", "open_sensor") == (0x0004, DataType.enum8, 2)
+    assert quirks.encode_private_attribute(dev, 0xFC01, "relay1_mode", "latch") == (0x0013, DataType.enum8, 1)
+    assert quirks.encode_private_attribute(dev, 0xFC01, "in2_invert", "ON") == (0x0007, DataType.bool_, True)
+    assert quirks.encode_private_attribute(dev, 0xFC01, "trigger", True) == (0x0001, DataType.bool_, True)
+    assert quirks.encode_private_attribute(dev, 0xFC01, "pulse_ms", 750) == (0x0002, DataType.uint16, 750)
+    assert quirks.encode_private_attribute(dev, 0xFC01, "calibrate", "21.5") == (0x0011, DataType.int16, 2150)
+    with pytest.raises(ValueError):
+        quirks.encode_private_attribute(dev, 0xFC01, "rf_learn", "everything")
+    # a learn / delete / trigger is a command in disguise: the device answers through these
+    fb = quirks.feedback_reads(dev, 0xFC01)
+    assert {0x0000, 0x0009, 0x000A, 0x000C} <= set(fb) and 0x0001 not in fb and 0x0008 not in fb
+    rep = quirks.extra_reporting(dev)
+    assert (0x0055, DataType.bool_, 0, 3600, None) in rep[0x000F] and any(r[0] == 0x0000 for r in rep[0xFC01])
+    reads = quirks.extra_reads(dev)
+    assert 0x001A in reads[0xFC01] and 0x0001 not in reads[0xFC01] and reads[0x000F] == (0x0055,)
 
 
 def oneroof_router() -> Device:

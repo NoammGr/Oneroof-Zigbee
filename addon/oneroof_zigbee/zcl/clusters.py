@@ -443,6 +443,11 @@ def _dec_door_lock(a: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _dec_binary(a: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    v = a.get("present_value")
+    return {"present_value": bool(v)} if isinstance(v, (bool, int)) else {}
+
+
 def _dec_multistate(a: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
     v = a.get("present_value")
     return {"present_value": v} if _num(v) else {}
@@ -763,6 +768,8 @@ def _make_clusters() -> dict[int, Cluster]:
     )
 
     clusters.append(Cluster(0x0005, "scenes", _attrs((0x0000, "scene_count", U8), (0x0001, "current_scene", U8), (0x0002, "current_group", U16))))
+    clusters.append(Cluster(0x000F, "binary_input", _attrs((0x0004, "active_text", STR), (0x001C, "description", STR), (0x002E, "inactive_text", STR),
+                                                          (0x0051, "out_of_service", BOOL), (0x0055, "present_value", BOOL), (0x006F, "status_flags", B8)), decoder=_dec_binary))
     clusters.append(Cluster(0x000C, "analog_input", _attrs((0x001C, "description", STR), (0x0055, "present_value", DataType.single)), decoder=_dec_analog))
     clusters.append(Cluster(0x000D, "analog_output", _attrs((0x001C, "description", STR), (0x0055, "present_value", DataType.single, True)), decoder=_dec_analog))
     clusters.append(Cluster(0x0012, "multistate_input", _attrs((0x001C, "description", STR), (0x0055, "present_value", U16)), decoder=_dec_multistate))

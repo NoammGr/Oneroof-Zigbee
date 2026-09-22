@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.22.0] — 2026-09-22
+
+### Added — the One Roof GateController
+The Zigbee gate / garage door controller (`NoammGr` / `GateController`) is a known model: a **cover**
+(open / close / stop / position) with a `gate_state` measured at its end sensors, its two relays as
+switches (`relay1` = the gate's START contact, `relay2` auxiliary), its two sensor inputs as binary
+sensors, the on-board temperature/humidity, and a **433 MHz remotes** section on the device page
+(`rf_learn` gate / relay2 / both, `rf_last`, `rf_count`, `rf_delete`). Pulse length, travel time,
+relay modes, input roles and inversion, LED, temperature trim and calibration are Configuration.
+Two mesh settings are there too: `tx_power` (the external antenna's radio power) and
+`max_children` — set it to 0 and the device stays a router that never becomes a battery device's
+parent, for a unit on the far edge of the mesh; `role` shows whether the router or the end-device
+firmware is running.
+
+### Added — Binary Input cluster
+`0x000F` is decoded (`present_value`, description, status flags) so a device's contact inputs can
+be exposed by the model table instead of surfacing as a raw cluster/attribute key.
+
 ## [2.21.3] — 2026-09-12
 
 ### Fixed — after a restart a marked bulb came up offline
