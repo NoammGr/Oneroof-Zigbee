@@ -1,5 +1,20 @@
 # Changelog
 
+## [2.22.1] — 2026-09-24
+
+### Fixed — a newer smoke detector joined as an unknown Tuya device
+The photoelectric smoke detector on Tuya's newer module (`TS0601` / `_TZE284_rccxox8p`) is the
+same product as the `_TZE200_rccxox8p` the gateway already knows, and is now recognised as a
+**Smoke detector** the moment it joins — before it has reported a single datapoint, which a
+battery device may not do for hours. Until now it sat as "Tuya device (datapoints)" with nothing
+but a link quality.
+
+### Added — three more readings on the Tuya smoke detectors
+The datapoints these detectors report as raw numbers now have names, on every model in the
+family: **Smoke concentration** (the chamber's obscuration in ppm, which rises before the alarm
+trips), **Sensor fault** (a malfunction flag, a problem sensor in Home Assistant) and **Silence
+alarm** (a switch that mutes a sounding alarm; the device clears it itself).
+
 ## [2.22.0] — 2026-09-22
 
 ### Added — the One Roof GateController

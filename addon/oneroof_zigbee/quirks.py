@@ -235,8 +235,14 @@ _DP_COVER = (
 _DP_COVER_BATTERY = _DP_COVER + (Dp(13, "battery", "Battery", unit="%", icon="battery", category="diagnostic", min=0, max=100),)
 _DP_SMOKE = (
     Dp(1, "smoke", "Smoke", type="binary", values={0: "true", 1: "false"}, icon="shield", dtype=vz.TUYA_ENUM),  # 0 = alarm
+    Dp(2, "smoke_concentration", "Smoke concentration", scale=10, unit="ppm", icon="gauge", min=0, max=100,
+       description="Obscuration measured by the chamber; rises before the alarm trips"),
+    Dp(11, "fault", "Sensor fault", type="binary", values={0: "false", 1: "true"}, icon="shield", category="diagnostic", dtype=vz.TUYA_BOOL,
+       device_class="problem", description="The chamber reports a malfunction"),
     Dp(14, "battery_low", "Battery low", type="binary", values={0: "true", 1: "false", 2: "false"}, icon="battery", category="diagnostic", dtype=vz.TUYA_ENUM),
     Dp(15, "battery", "Battery", unit="%", icon="battery", category="diagnostic", min=0, max=100),
+    Dp(16, "silence", "Silence alarm", type="binary", access="rw", values={0: "OFF", 1: "ON"}, icon="shield", category="config", dtype=vz.TUYA_BOOL,
+       description="Mute a sounding alarm; the device clears it by itself"),
     Dp(101, "test", "Self-test", type="binary", values={0: "false", 1: "true"}, icon="shield", category="diagnostic", dtype=vz.TUYA_BOOL),
 )
 _DP_PRESENCE_RADAR = (
@@ -395,8 +401,8 @@ QUIRKS: tuple[Quirk, ...] = (
     _q("Tuya", "Bulb (colour temperature)", "light", ("_TZ3000_*", "_TZ3210_*"), ("TS0502B", "TS0502A")),
     _q("Tuya", "Bulb (colour)", "light", ("_TZ3000_*", "_TZ3210_*"), ("TS0503B", "TS0503A", "TS0504B", "TS0504A", "TS0505B", "TS0505A")),
     _q("Tuya", "Curtain module", "cover", ("_TZ3000_*", "_TZ3210_*"), ("TS130F",), remove=("state", "power_on_behavior", "countdown")),
-    _q("Tuya", "Smoke detector", "sensor", ("_TZE200_rccxox8p", "_TZE200_ntcy3xu1", "_TZE200_m9skfctm", "_TZE200_dq1mfjug", "_TZE200_vzekyi4c",
-                                            "_TZE204_ntcy3xu1", "_TZE200_e2bedvo9", "_TZE200_aycxwiau"), "TS0601",
+    _q("Tuya", "Smoke detector", "sensor", ("_TZE200_rccxox8p", "_TZE284_rccxox8p", "_TZE200_ntcy3xu1", "_TZE200_m9skfctm", "_TZE200_dq1mfjug",
+                                            "_TZE200_vzekyi4c", "_TZE204_ntcy3xu1", "_TZE200_e2bedvo9", "_TZE200_aycxwiau"), "TS0601",
        remove=_SENSOR_CONTROLS, dps=_DP_SMOKE, bind=(), description="Smoke alarm reported through datapoints"),
     _q("Tuya", "Temperature/humidity sensor", "sensor", ("_TZE200_bjawzodf", "_TZE200_zl1kmjqx"), "TS0601", remove=_SENSOR_CONTROLS, dps=_DP_TEMP_HUM_DIV10, bind=()),
     _q("Tuya", "Temperature/humidity sensor", "sensor", ("_TZE200_locansqn", "_TZE200_bq5c8xfe", "_TZE200_qoy0ekbd", "_TZE200_znbl8dj5", "_TZE200_a8sdabtg",

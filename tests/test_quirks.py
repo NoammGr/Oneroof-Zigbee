@@ -648,6 +648,25 @@ def test_legacy_identities_for_aqara_h1_switch_tuya_smoke_and_motion():
     assert smoke.kind == "Smoke detector"
     assert {"0xa4c1380000000002_smoke_zigbee2mqtt", "0xa4c1380000000002_battery_zigbee2mqtt"} <= uids(smoke)
 
+    # the same detector on the newer Tuya module: recognised the moment it joins, before it has
+    # reported a single datapoint, with the chamber reading, fault flag and silence switch named
+    smoke2 = Device(ieee=0xA4C1380000000003, nwk=0x4568, friendly_name="Smoke 2", manufacturer="_TZE284_rccxox8p", model="TS0601")
+    smoke2.endpoints[1] = Endpoint(1, 0x0104, 0x0051, [0, 4, 5, 0xED00, 0xEF00], [0x19, 0xA], "sensor")
+    smoke2.interviewed = True
+    assert smoke2.kind == "Smoke detector"
+    assert {"0xa4c1380000000003_smoke_zigbee2mqtt", "0xa4c1380000000003_battery_zigbee2mqtt",
+            "0xa4c1380000000003_smoke_concentration_zigbee2mqtt", "0xa4c1380000000003_fault_zigbee2mqtt",
+            "0xa4c1380000000003_silence_zigbee2mqtt"} <= uids(smoke2)
+    from oneroof_zigbee.quirks import decode_tuya_values
+    from oneroof_zigbee.zcl import vendor as vz
+    decoded = decode_tuya_values(smoke2, [(1, vz.TUYA_ENUM, 0), (2, vz.TUYA_VALUE, 35), (11, vz.TUYA_BOOL, False),
+                                          (15, vz.TUYA_VALUE, 100), (16, vz.TUYA_BOOL, True)])
+    assert decoded["smoke"] is True, "enum 0 is the alarm on this family"
+    assert decoded["smoke_concentration"] == 3.5
+    assert decoded["fault"] is False and decoded["battery"] == 100
+    assert decoded["silence"] == "ON"
+    assert decode_tuya_values(smoke2, [(1, vz.TUYA_ENUM, 1)])["smoke"] is False
+
     motion = Device(ieee=0x00158D0000000002, nwk=0x3457, friendly_name="Stairs", manufacturer="LUMI", model="lumi.sensor_motion.aq2")
     motion.endpoints[1] = Endpoint(1, 0x0104, 0x0107, [0, 0xFFFF, 0x406, 0x400, 0x500, 1, 3], [0, 0x19], "sensor")
     motion.interviewed = True
