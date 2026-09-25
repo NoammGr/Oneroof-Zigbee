@@ -39,12 +39,32 @@ def test_findings_name_the_device_and_say_why():
     assert ("quiet", "Hall - Lamp") not in kinds
     weak = next(f for f in r["findings"] if f["kind"] == "weak_link")
     assert "Hall - Lamp" in weak["detail"] and "LQI 70" in weak["detail"] and weak["severity"] == "warn"
+    assert "no parent to switch to" in weak["detail"], "a bulb is a router: the advice is about moving it"
     flap = next(f for f in r["findings"] if f["kind"] == "flapping")
     assert "4 times" in flap["detail"]
     assert r["verdict"] == "bad" and r["walked"] and r["devices"] == 5
     assert r["counts"] == {"offline": 1, "weak_link": 1, "flapping": 1, "quiet": 2, "busy_router": 0, "battery": 0, "wall_off": 0, "wall_hint": 0}
     # the worst first, then by name
     assert [f["severity"] for f in r["findings"]] == sorted((f["severity"] for f in r["findings"]), key=lambda s: s != "bad")
+
+
+def test_weak_link_advice_follows_the_device_role():
+    devs = [
+        {"ieee": C, "name": "Coordinator", "kind": "coordinator", "available": True, "last_seen": 1e6},
+        {"ieee": "0x00158d0000000010", "name": "Hall - Lamp", "kind": "router", "available": True, "last_seen": 1e6 - 10},
+        {"ieee": "0x00158d0000000011", "name": "Porch - Contact", "kind": "end_device", "available": True, "last_seen": 1e6 - 10, "battery": True},
+        {"ieee": "0x00158d0000000012", "name": "Basement - Extender", "kind": "router", "available": True, "last_seen": 1e6 - 10, "extender": True},
+    ]
+    links = [
+        {"source": C, "target": "0x00158d0000000010", "lqi": 30},
+        {"source": "0x00158d0000000010", "target": "0x00158d0000000011", "lqi": 40},
+        {"source": C, "target": "0x00158d0000000012", "lqi": 1},
+    ]
+    r = network_health(devs, links, {}, now=1e6)
+    by = {f["name"]: f["detail"] for f in r["findings"] if f["kind"] == "weak_link"}
+    assert "a parent next door" in by["Porch - Contact"]
+    assert "no parent to switch to" in by["Hall - Lamp"] and "router in between" in by["Hall - Lamp"]
+    assert "midway between the coordinator" in by["Basement - Extender"] and "LQI 1" in by["Basement - Extender"]
 
 
 def test_without_a_walk_links_are_not_judged_and_a_healthy_net_is_ok():

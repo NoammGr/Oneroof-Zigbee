@@ -53,6 +53,50 @@ def test_sequence_jump_needs_two_unmatched_values_and_lqi_swing_alerts():
     assert alerts[0]["ieee"] == "0x0000000000000001"
 
 
+def test_two_routes_are_two_levels_and_alert_once():
+    """A router heard directly at one quality and through a neighbour at another alternates
+    between the two for good. The second level is worth one alert when it first appears;
+    after that the alternation is routing, and the log must stay quiet through the night."""
+    m, alerts, clock = make()
+    feed(m, clock, 3, 40, lqi=40)
+    assert alerts == []
+    clock.t += 30
+    m.observe(3, seq=41, lqi=140, is_command=False, mains=True)     # a new level: heard via a neighbour
+    assert [a["kind"] for a in alerts] == ["link_quality_swing"]
+    assert alerts[0]["seen"] == 140 and alerts[0]["levels"] == [40]
+    seq = 42
+    for _hour in range(8):                                          # a night of alternating routes
+        for lqi in (40, 140, 40, 40, 140):
+            clock.t += 900 + 1                                      # past every cooldown
+            m.observe(3, seq=seq & 0xFF, lqi=lqi, is_command=False, mains=True)
+            seq += 1
+    assert len(alerts) == 1, "known levels never alert again"
+    clock.t += 30
+    m.observe(3, seq=seq & 0xFF, lqi=250, is_command=False, mains=True)   # far from both: a third level
+    assert len(alerts) == 2 and alerts[1]["seen"] == 250 and alerts[1]["levels"] == [40, 140]
+
+
+def test_zero_link_quality_is_no_reading():
+    m, alerts, clock = make()
+    feed(m, clock, 4, 40, lqi=200)
+    for _ in range(3):
+        clock.t += 1000
+        m.observe(4, seq=200, lqi=0, is_command=False, mains=True)
+    assert alerts == []
+    assert m.profiles[4].lqi_levels == [200.0] or len(m.profiles[4].lqi_levels) == 1
+
+
+def test_expected_silence_is_returned_but_not_alerted():
+    """A lamp the owner marked as switched off at the wall goes quiet on purpose: the caller
+    still learns about it (to show it off), but the security log stays clean."""
+    m, alerts, clock = make()
+    feed(m, clock, 7, 50, gap=120.0, mains=True)
+    clock.t += 2000
+    assert m.sweep([(7, True, True)]) == [(7, "went_silent")]
+    assert alerts == []
+    assert m.sweep([(7, True, True)]) == [], "once per outage, like the alerting kind"
+
+
 def test_multiple_counter_streams_never_alert():
     """Tuya plugs interleave counters (time requests vs. reports): ping-ponging between streams is
     normal and must stay quiet."""

@@ -9,8 +9,11 @@ device and raises `device_anomaly` security alerts when:
 * **sequence jump** — the ZCL transaction sequence from a device skips far
   ahead or runs backwards outside the normal wrap (an impersonator keeps
   its own counter);
-* **link-quality swing** — LQI differs wildly from the device's running
-  average (a different radio in a different place);
+* **link-quality swing** — a frame arrives at a link quality unlike any level
+  the device has been heard at (a different radio in a different place). A
+  device with two routes to the coordinator is heard at two levels, and
+  alternating between known levels is routing, not an anomaly: each level
+  alerts once, when it first appears;
 * **unexpected command** — a device that has only ever *reported* suddenly
   sends cluster commands (sensors do not send on/off commands);
 * **burst** — far more frames per minute than the device ever produced;
@@ -32,7 +35,8 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 SEQ_JUMP = 40            # ZCL seq is mod 256 and normally advances by 1..few
-LQI_SWING = 80           # absolute LQI deviation from the running mean (needs >= 20 samples)
+LQI_SWING = 80           # a frame this far from every known level is a new level (needs >= 20 samples)
+LQI_LEVELS = 4           # how many distinct levels a device may be heard at before the oldest is forgotten
 BURST_FACTOR = 5.0       # frames/minute vs. the device's highest observed minute
 BURST_MIN_FRAMES = 30    # and at least this many frames in the minute
 SILENCE_AFTER_BURST_S = 600
@@ -50,6 +54,7 @@ class Profile:
     silent_alerted: bool = False
     lqi_mean: float = 0.0
     lqi_n: int = 0
+    lqi_levels: list[float] = field(default_factory=list)  # the link qualities this device is heard at (routes)
     commands_seen: bool = False
     minute: int = 0
     minute_frames: int = 0
@@ -137,11 +142,9 @@ class Monitor:
         if seq is not None:
             p.last_seq = seq
 
-        if lqi is not None:
-            if p.lqi_n >= 20 and abs(lqi - p.lqi_mean) > LQI_SWING:
-                raised += self._raise(p, ieee, "link_quality_swing", now, mean=round(p.lqi_mean), seen=lqi)
-            p.lqi_n += 1
-            p.lqi_mean += (lqi - p.lqi_mean) / min(p.lqi_n, 50)
+        if lqi is not None and lqi > 0:
+            # Zero is "no reading" on this stack, never a real link; it must not open a level.
+            raised += self._track_lqi(p, ieee, lqi, now)
 
         if is_command and not p.commands_seen:
             if p.frames > 50:
@@ -164,12 +167,17 @@ class Monitor:
         p.last_seen = now
         return raised
 
-    def sweep(self, devices: list[tuple[int, bool]]) -> list[tuple[int, str]]:
-        """Periodic liveness pass over (ieee, mains) pairs. Returns (ieee, kind) per anomaly
-        raised, so the caller can act per device (e.g. mark it offline)."""
+    def sweep(self, devices: list[tuple[int, bool] | tuple[int, bool, bool]]) -> list[tuple[int, str]]:
+        """Periodic liveness pass over (ieee, mains[, quiet_expected]) tuples. Returns (ieee, kind)
+        per finding, so the caller can act per device (e.g. mark it offline). A device whose
+        silence is expected - it is marked as switched off at the wall - is still returned
+        as ``went_silent`` so the caller can show it off, but it raises no security alert:
+        a lamp cut from power is not a supervised line gone quiet."""
         now = self._now()
         raised: list[tuple[int, str]] = []
-        for ieee, mains in devices:
+        for entry in devices:
+            ieee, mains = entry[0], entry[1]
+            quiet_expected = bool(entry[2]) if len(entry) > 2 else False
             p = self.profiles.get(ieee)
             if not p or not p.last_seen:
                 continue
@@ -183,7 +191,29 @@ class Monitor:
                     # Once per outage: the flag clears when the device is heard again, so a bulb cut
                     # from power (wall switch) alerts once, not every sweep until eternity.
                     p.silent_alerted = True
-                    raised += [(ieee, k) for k in self._raise(p, ieee, "went_silent", now, silent_s=int(silent), typical_s=int(p.typical_gap))]
+                    if quiet_expected:
+                        raised.append((ieee, "went_silent"))
+                    else:
+                        raised += [(ieee, k) for k in self._raise(p, ieee, "went_silent", now, silent_s=int(silent), typical_s=int(p.typical_gap))]
+        return raised
+
+    def _track_lqi(self, p: Profile, ieee: int, lqi: int, now: float) -> list[str]:
+        """Link quality as a set of levels rather than one average. A router that is heard
+        directly at 40 and through a neighbour at 180 is at two levels, for good; both are
+        its own. Only a level no frame has been near before is worth a word, and it is said
+        once, when the level appears - not every cooldown for as long as the routes alternate."""
+        raised: list[str] = []
+        near = min(p.lqi_levels, key=lambda c: abs(c - lqi), default=None)
+        if near is not None and abs(near - lqi) <= LQI_SWING:
+            p.lqi_levels[p.lqi_levels.index(near)] = near + (lqi - near) / 20.0
+        else:
+            if p.lqi_n >= 20:
+                raised += self._raise(p, ieee, "link_quality_swing", now, mean=round(p.lqi_mean), seen=lqi,
+                                      levels=[round(c) for c in p.lqi_levels])
+            p.lqi_levels.append(float(lqi))
+            del p.lqi_levels[:-LQI_LEVELS]
+        p.lqi_n += 1
+        p.lqi_mean += (lqi - p.lqi_mean) / min(p.lqi_n, 50)
         return raised
 
     def _raise(self, p: Profile, ieee: int, kind: str, now: float, **evidence: Any) -> list[str]:

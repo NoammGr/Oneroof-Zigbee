@@ -2,12 +2,16 @@
 
 Findings, each naming a device and saying why in plain words:
 * offline      — the gateway cannot reach it right now
-* weak_link    — its best hop to a relay is under LQI 80 (a router in between would help)
+* weak_link    — its best hop to a relay is under LQI 80. For a battery device a router in
+                 between would give it a parent next door; a router has no parent to switch
+                 to, so the advice is to move it, raise its transmit power, or add a router
+                 between; an extender the coordinator can barely hear helps nobody, and
+                 belongs midway between the coordinator and the devices it should serve
 * flapping     — went offline/online four times or more in the last day
 * quiet        — not heard for far longer than its kind should be (mains 6 h, battery 26 h)
 * busy_router  — a router carrying more children than is comfortable
 * battery      — at or under 15 %, or about two weeks from empty on its own trend
-* wall_off     — (info) a device the owner marked "switched off at the wall" is off right now
+* wall_off     — (info) a device marked "switched off at the wall" is off right now
 * wall_hint    — (info) a router that went silent while ON several times: probably a wall switch
 
 The same numbers feed the health line every One Roof add-on publishes to Home Assistant
@@ -130,11 +134,20 @@ def network_health(devices: list[dict[str, Any]], links: list[dict[str, Any]],
     parents = best_parents(devices, links) if links else {}
     children: dict[str, int] = {}
     wall_ieees = {d["ieee"].lower() for d in devices if d.get("wall_switched")}
+    roles = {d["ieee"].lower(): ("extender" if d.get("extender") else d["kind"]) for d in devices}
     for ieee, (relay, lqi) in parents.items():
         children[relay] = children.get(relay, 0) + 1
         if lqi < WEAK_LQI and ieee not in wall_ieees:
-            add("weak_link", "bad" if lqi < 50 else "warn", ieee,
-                f"reaches {names.get(relay, relay)} at LQI {lqi} — a router in between would give it a parent next door")
+            role = roles.get(ieee, "end_device")
+            if role == "extender":
+                advice = ("an extender the coordinator can barely hear helps nobody — place it midway between "
+                          "the coordinator and the devices it should serve, and raise its transmit power")
+            elif role == "router":
+                advice = ("a router has no parent to switch to — move it closer, raise its transmit power "
+                          "if it has that setting, or put a router in between")
+            else:
+                advice = "a router in between would give it a parent next door"
+            add("weak_link", "bad" if lqi < 50 else "warn", ieee, f"reaches {names.get(relay, relay)} at LQI {lqi} — {advice}")
     for relay, n in children.items():
         if n > BUSY_CHILDREN:
             add("busy_router", "warn", relay, f"carries {n} devices — another router nearby would share the load")

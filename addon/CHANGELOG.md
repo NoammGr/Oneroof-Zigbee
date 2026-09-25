@@ -1,5 +1,29 @@
 # Changelog
 
+## [2.22.2] — 2026-09-25
+
+### Fixed — a router with two routes filled the security log all night
+A mains device that reaches the coordinator both directly and through a neighbour is heard at
+two link qualities, and it alternates between them for as long as both routes exist. The
+link-quality watch compared every frame to one running average, so each swing between the two
+raised a "link quality swing" alert, once per cooldown, every quarter hour, all night. The watch
+now keeps the *levels* a device is heard at: a level is worth one alert when it first appears —
+that is still a different radio in a different place — and moving between known levels is
+routing. A frame with no link-quality reading (zero) no longer counts as a level either.
+
+### Fixed — a lamp switched off at the wall raised a liveness alert
+A lamp marked as wall-switched showed "off at the wall" on its page, and the security log still
+said it went silent past its rhythm. A bug: the liveness sweep did not know about the wall
+switch. Expected silence is now told apart from a supervised line gone quiet: the lamp still
+shows as off, and the security log stays clean.
+
+### Changed — weak-link advice fits the device
+"A router in between would give it a parent next door" is right for a battery sensor and wrong
+for everything else. A router has no parent to switch to, so the advice is to move it, raise its
+transmit power where it has that setting, or add a router between. An extender the coordinator
+can barely hear helps nobody, and the finding now says where it belongs: midway between the
+coordinator and the devices it should serve.
+
 ## [2.22.1] — 2026-09-24
 
 ### Fixed — a newer smoke detector joined as an unknown Tuya device

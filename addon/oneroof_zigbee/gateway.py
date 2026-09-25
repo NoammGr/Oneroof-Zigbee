@@ -313,7 +313,8 @@ class Gateway:
             await asyncio.sleep(60)
             tick += 1
             try:
-                gone = self.monitor.sweep([(d.ieee, bool(d.is_router or d.rx_on_when_idle)) for d in self.registry.all()])
+                gone = self.monitor.sweep([(d.ieee, bool(d.is_router or d.rx_on_when_idle), bool(d.wall_switched))
+                                           for d in self.registry.all()])
                 for ieee, kind in gone:
                     if kind != "went_silent":
                         continue
@@ -1635,7 +1636,9 @@ class Gateway:
                         "battery_pct": pct if isinstance(pct, (int, float)) and not isinstance(pct, bool) else None,
                         "battery_log": d.context.get("battery_log"),
                         "wall_switched": d.wall_switched, "wall_off": bool(d.context.get("wall_off")),
-                        "wall_pattern": int(d.context.get("wall_pattern", 0))})
+                        "wall_pattern": int(d.context.get("wall_pattern", 0)),
+                        # a pure relay: its only job is to be heard well, so a weak link is advice about placement
+                        "extender": d.kind == "One Roof Router"})
         return out
 
     def health_report(self, links: list[dict[str, Any]] | None = None) -> dict[str, Any]:
