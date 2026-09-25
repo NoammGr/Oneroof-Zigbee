@@ -203,6 +203,11 @@ class Monitor:
         its own. Only a level no frame has been near before is worth a word, and it is said
         once, when the level appears - not every cooldown for as long as the routes alternate."""
         raised: list[str] = []
+        if not p.lqi_levels and p.lqi_n:
+            # A profile written before levels existed knows only its running average: that
+            # average is the one level it has been heard at, not an empty history. Without
+            # this, every device's first frame after an upgrade read as a new level.
+            p.lqi_levels.append(p.lqi_mean)
         near = min(p.lqi_levels, key=lambda c: abs(c - lqi), default=None)
         if near is not None and abs(near - lqi) <= LQI_SWING:
             p.lqi_levels[p.lqi_levels.index(near)] = near + (lqi - near) / 20.0

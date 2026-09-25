@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.22.3] — 2026-09-25
+
+### Fixed — every device raised one "link quality swing" right after the 2.22.2 update
+Behaviour profiles saved by earlier versions know a device's running average but have no list
+of levels, a field that did not exist yet. The first frame after the restart therefore read as a
+new level for every device. A profile from before now starts with its average as the one known
+level, so the update itself raises nothing.
+
 ## [2.22.2] — 2026-09-25
 
 ### Fixed — a router with two routes filled the security log all night

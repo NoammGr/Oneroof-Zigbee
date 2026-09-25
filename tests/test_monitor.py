@@ -76,6 +76,19 @@ def test_two_routes_are_two_levels_and_alert_once():
     assert len(alerts) == 2 and alerts[1]["seen"] == 250 and alerts[1]["levels"] == [40, 140]
 
 
+def test_profiles_from_before_levels_existed_do_not_alert_on_the_first_frame():
+    """An upgrade must not turn every device's first frame into an anomaly: a profile saved by
+    the previous version has a mature sample count and a running average but no levels list."""
+    m, alerts, clock = make()
+    m.load({"0x0000000000000009": {"frames": 300, "lqi_mean": 200.0, "lqi_n": 300, "last_seen": clock.t - 60}})
+    m.observe(9, seq=1, lqi=204, is_command=False, mains=True)
+    assert alerts == []
+    assert m.profiles[9].lqi_levels and abs(m.profiles[9].lqi_levels[0] - 200) < 2
+    clock.t += 30
+    m.observe(9, seq=2, lqi=40, is_command=False, mains=True)     # genuinely elsewhere: still one alert
+    assert [a["kind"] for a in alerts] == ["link_quality_swing"] and alerts[0]["levels"] == [200]
+
+
 def test_zero_link_quality_is_no_reading():
     m, alerts, clock = make()
     feed(m, clock, 4, 40, lqi=200)
