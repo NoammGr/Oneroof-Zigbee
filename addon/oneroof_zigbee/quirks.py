@@ -276,6 +276,7 @@ _IRBLASTER_ATTRS = (
     PrivateAttr(0x0006, "protocol", DataType.string),
     PrivateAttr(0x0007, "led_brightness", DataType.uint8),
     PrivateAttr(0x0008, "led_quiet", DataType.bool_, values=_ONOFF),
+    PrivateAttr(0x000C, "erase_codes", DataType.bool_),
 )
 
 # One Roof gate controller: its own cluster (Garage-Gate/firmware/main/zb.h)
@@ -611,6 +612,8 @@ QUIRKS: tuple[Quirk, ...] = (
               "text", "w", icon="remote", category="ir", cluster=_IRB, max_length=15),
            _f("send_key", "Send code", "Transmit a stored code by its key — off, c24a1 (cool 24 °C fan auto swing on) or a named code such as light",
               "text", "w", icon="remote", category="ir", cluster=_IRB, max_length=15),
+           _f("erase_codes", "Forget all codes", "Delete every learned code from the blaster (firmware 1.0.2+). The protocol in force and its template stay, so a native protocol keeps working",
+              "action", "w", icon="counter", category="ir", cluster=_IRB),
            _f("protocol", "IR protocol", "learn replays the learned frames; auto adopts the protocol detected from a learned frame; or a native encoder",
               "enum", "rw", icon="sliders", category="ir", cluster=_IRB, values=["learn", "auto", "coolix", "gree", "daikin", "electra"]),
            _f("hold", "Hold (local thermostat)", "Cycle the AC around the setpoint using the board's own temperature sensor",

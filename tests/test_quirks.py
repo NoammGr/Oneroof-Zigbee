@@ -165,7 +165,7 @@ CASES = [
                                                     3: ([0x0402, 0x0405], [], 0x0302)}, "mains", True, None,
      "AC IR blaster", "climate",
      {"current_heating_setpoint", "system_mode", "fan_mode", "swing", "local_temperature", "temperature", "humidity", "learn_key", "send_key", "protocol",
-      "hold", "last_result", "code_count", "temperature_offset", "led_brightness", "led_quiet"},
+      "hold", "last_result", "code_count", "temperature_offset", "led_brightness", "led_quiet", "erase_codes"},
      {"state", "countdown", "power_on_behavior", "running_state", "current_cooling_setpoint", "target_temperature"},
      {"climate": ("climate", None), "protocol": ("select", None), "learn_key": ("text", None), "send_key": ("text", None),
       "hold": ("switch", None), "led_quiet": ("switch", None), "temperature_offset": ("number", None), "led_brightness": ("number", None),
@@ -777,7 +777,7 @@ def test_irblaster_features_exposes_and_discovery():
     assert (tt["min"], tt["max"], tt["step"], tt["cluster"], tt["endpoint"]) == (16, 30, 1, 0x0201, 1)
     assert f["system_mode"]["values"] == ["off", "auto", "cool", "heat", "dry", "fan_only"]
     assert f["swing"]["base"] == "state" and f["swing"]["endpoint"] == 2 and f["swing"]["cluster"] == 0x0006 and f["swing"]["name"] == "Swing"
-    assert {k for k, x in f.items() if x["category"] == "ir"} == {"learn_key", "send_key", "protocol", "hold", "last_result", "code_count"}
+    assert {k for k, x in f.items() if x["category"] == "ir"} == {"learn_key", "send_key", "protocol", "hold", "last_result", "code_count", "erase_codes"}
     assert f["learn_key"]["access"] == "w" and f["learn_key"]["max_length"] == 15 and f["learn_key"]["cluster"] == 0xFC00
     assert f["temperature_offset"]["category"] == "config" and f["temperature_offset"]["step"] == 0.1
     disc = ha(dev)

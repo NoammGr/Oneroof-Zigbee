@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.23.1] — 2026-10-02
+
+### Added — "Forget all codes" on the IR blaster's page
+A button that deletes every learned code on the blaster (firmware 1.0.2 or newer); the protocol
+in force and its template stay. Until now that took a cable and the console - and a count erased
+that way stayed stale on the page, because the device never said so. The firmware now reports
+the count whenever it changes, from the console as well.
+
 ## [2.23.0] — 2026-10-02
 
 ### Added — an air conditioner set up from one press of its remote
