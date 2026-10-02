@@ -310,7 +310,8 @@ dialog .acts{display:flex;gap:8px;justify-content:flex-end;margin-top:16px}
   .shell{grid-template-columns:minmax(0,1fr)}
   nav.side{display:none}
   .tabs{display:flex;position:fixed;bottom:0;left:0;right:0;background:var(--card);border-top:1px solid var(--line);z-index:5;justify-content:space-around;padding:6px 4px calc(6px + env(safe-area-inset-bottom))}
-  .tabs a{flex-direction:column;gap:2px;font-size:11px;padding:5px 10px;margin:0;border-radius:14px}
+  .tabs a{flex-direction:column;gap:2px;font-size:10px;padding:5px 4px;margin:0;border-radius:14px;flex:1 1 0;min-width:0}
+  .tabs a span{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .tabs a.active{color:var(--accent);background:var(--accent-soft)}
   .tabs a svg.i{font-size:22px}
   .notice.restart{top:60px}
@@ -322,7 +323,12 @@ dialog .acts{display:flex;gap:8px;justify-content:flex-end;margin-top:16px}
   main{padding:20px 14px 96px}
   h1{font-size:24px}
   .pair{grid-template-columns:1fr}
-  .devtab th:nth-child(2),.devtab td:nth-child(2),.devtab th:nth-child(3),.devtab td:nth-child(3){display:none}
+  /* the first column is the tick box: on a phone the model, type and link quality go, the name stays */
+  .devtab th:nth-child(3),.devtab td:nth-child(3),.devtab th:nth-child(4),.devtab td:nth-child(4),.devtab th:nth-child(5),.devtab td:nth-child(5),.devtab th:nth-child(6),.devtab td:nth-child(6),.devtab th:nth-child(8),.devtab td:nth-child(8){display:none}
+  /* the quick controls live on the device page; the row keeps the name, the state and the menu */
+  .devtab .name{white-space:normal;word-break:break-word;overflow-wrap:anywhere}.devtab td .sub,.devtab td.sub{white-space:normal;word-break:break-all}
+  /* a field smaller than 16px makes iPhones zoom in when it is tapped */
+  input:not([type=checkbox]):not([type=range]),select,textarea{font-size:16px}
   .log .row{grid-template-columns:84px 52px 1fr}
   #mapc{height:440px}
   #toasts{left:16px;max-width:none;bottom:80px}
@@ -332,6 +338,8 @@ dialog .acts{display:flex;gap:8px;justify-content:flex-end;margin-top:16px}
   .grid2{grid-template-columns:1fr}
   .card{padding:16px}
 }
+/* eight tabs on a narrow phone: icons for all, the name under the one that is open */
+@media (max-width:430px){.tabs a span{display:none}.tabs a.active span{display:block}.tabs a{padding:6px 2px}}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
 </head>

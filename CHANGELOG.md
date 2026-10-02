@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.23.2] — 2026-10-02
+
+### Fixed — the Devices list and the tab bar on a phone
+The phone layout hid the wrong two columns of the device table - the name and the model instead
+of the model and the type - so a phone showed a list of devices without their names, and the
+rest of the row still ran off the screen. A phone now shows the name, the state and the menu;
+the model, type, link quality, last-seen time and the quick controls stay on the device's page.
+The eight tabs at the bottom overlapped each other's labels on a narrow phone; now every tab
+shows its icon and only the open one its name. Text fields are 16px on a phone, so tapping one
+no longer makes an iPhone zoom in.
+
 ## [2.23.1] — 2026-10-02
 
 ### Added — "Forget all codes" on the IR blaster's page
