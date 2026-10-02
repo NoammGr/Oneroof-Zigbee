@@ -607,7 +607,7 @@ QUIRKS: tuple[Quirk, ...] = (
        context_defaults={"thermostat_sequence": 4, "cool_setpoint_min": 16, "cool_setpoint_max": 30, "heat_setpoint_min": 16, "heat_setpoint_max": 30},
        private_attrs={_IRB: _IRBLASTER_ATTRS},
        add=(
-           _f("learn_key", "Learn code", "Write a code key or * to learn the next remote press for the current AC state (press the remote within 20 s)",
+           _f("learn_key", "Learn code", "Write ? to set up from one press of the remote's on/off, * to learn the next remote press for the current AC state, or a code key (press the remote within 20 s)",
               "text", "w", icon="remote", category="ir", cluster=_IRB, max_length=15),
            _f("send_key", "Send code", "Transmit a stored code by its key — off, c24a1 (cool 24 °C fan auto swing on) or a named code such as light",
               "text", "w", icon="remote", category="ir", cluster=_IRB, max_length=15),

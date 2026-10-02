@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.23.0] — 2026-10-02
+
+### Added — an air conditioner set up from one press of its remote
+The IR blaster's page has a new card, *Set up from the remote*: press Start, press the AC
+remote's on/off button once, and the frame itself says which brand's protocol the AC speaks and
+what state the remote sent (blaster firmware 1.0.1 names the code by the frame, never by a
+guess - which is how an Off could end up holding an ON). The card then offers a handful of trial
+commands - cool 24, off, fan high, swing, heat - each with *Worked* and *Didn't*: keep the
+protocol, try the next one, or fall back to learning codes one state at a time, guided, for a
+remote no protocol understands.
+
 ## [2.22.4] — 2026-10-02
 
 ### Fixed — a command sent while the coordinator was out of room is tried again

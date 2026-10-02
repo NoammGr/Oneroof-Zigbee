@@ -229,6 +229,10 @@ details summary{cursor:pointer;font-weight:700;padding:4px 0}
 .sub-panel{margin-top:18px;padding:14px 16px;background:var(--card-2);border-radius:var(--rb)}
 .imp-found{margin:0 0 14px}.imp-found h3{margin:0 0 4px}.imp-row{display:flex;align-items:center;gap:10px 14px;flex-wrap:wrap;padding:10px 12px;border:1px solid transparent;border-radius:var(--rb);background:var(--card);margin-top:8px}.imp-row.sel{border-color:var(--accent);background:var(--accent-soft)}.imp-row .path{flex:1 1 200px;min-width:0;overflow-wrap:anywhere;font-size:13px}.imp-row .chips{flex:1 1 auto}.imp-row .chip.miss{color:var(--mute);opacity:.7}.imp-row .chip.have{background:var(--ok-soft);color:var(--ok)}.imp-or{display:flex;align-items:center;gap:10px;margin:14px 0 10px;color:var(--mute);font-size:12px}.imp-or::before,.imp-or::after{content:'';flex:1;border-top:1px solid var(--line,var(--card-2))}
 .steps{margin:6px 0 0;padding-left:20px}.steps li{margin:3px 0}
+.wiz .trial{display:grid;grid-template-columns:1fr auto auto auto;gap:8px;align-items:center;padding:8px 0;border-top:1px solid var(--line)}
+.wiz .trial:first-of-type{border-top:0}.wiz .trial .btn.sm{padding:5px 10px;font-size:12px}
+.wiz .trial.ok .lab::after{content:' ✓';color:var(--ok,#3a8)}.wiz .trial.bad .lab::after{content:' ✗';color:var(--danger)}
+.wiz .state{font-size:13px;color:var(--mute);margin:6px 0 10px}.wiz .foot{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
 .twrap.flat{box-shadow:none;margin-bottom:8px}
 .utab td{vertical-align:top}.utab .acts{gap:4px;justify-content:flex-end}
 .utab details summary{font-weight:600;font-size:12px;color:var(--accent)}
@@ -527,6 +531,7 @@ const HELP={
   target_temperature:'The set temperature — one setpoint for cooling and heating, as on the remote.',
   swing:'Louver swing / oscillation on or off.',
   rf_learn:'Press gate, relay2 or both, then within 30 s press the button on the 433 MHz remote. Fixed-code remotes only (EV1527 / PT2262 class); rolling-code originals cannot be learned and keep working through the gate\'s own receiver.',
+  ir_setup:'One press of the AC remote tells the blaster which brand\'s protocol the AC speaks and what state the remote sent. Then try a few commands through that protocol and say what happened: keep it, try the next protocol, or learn codes one by one for a remote no protocol understands.',
   learn_key:'Set the climate (mode, temperature, fan, swing) the way you want it first, then press Learn current state and, within 20 s, the matching button on the AC remote. Or type a code key (off, c24a1 …) or a name for an extra button (light, turbo) and press Learn.',
   send_key:'Transmit a stored code by its key: off, c24a1 = cool 24 °C fan auto swing on, or a name you learned such as light.',
   protocol:'learn replays the frames you learned; auto adopts the protocol detected from a learned frame; coolix/gree/daikin/electra use the native encoder so every state works without learning.',
@@ -876,6 +881,27 @@ const TABS=[['about','About'],['controls','Controls'],['state','State'],['cluste
 const hasDatapoints=d=>!!d&&clusters(d).has(0xef00);
 const devTabs=d=>hasDatapoints(d)?[...TABS.slice(0,3),['datapoints','Datapoints'],...TABS.slice(3)]:TABS;
 const CATS=[['control','Controls'],['ir','IR remote'],['rf','433 MHz remotes'],['sensor','Sensors'],['config','Configuration'],['diagnostic','Diagnostics']];
+// ---- IR blaster: set up from one press of the remote ------------------------------------------
+// The firmware answers learn_key "?" with the frame's own verdict in last_result; the stage of the
+// setup is read from that text and from the protocol in force, nothing is kept server-side.
+const IR_PROTOCOLS=['coolix','gree','daikin','electra'];
+const IR_TRIALS=[
+  {id:'on',label:'Turn on, cool 24 °C',cmd:{system_mode:'cool',current_heating_setpoint:24}},
+  {id:'off',label:'Turn off',cmd:{system_mode:'off'}},
+  {id:'fan',label:'Cool, fan high',cmd:{system_mode:'cool',fan_mode:'high'}},
+  {id:'swing',label:'Swing on',cmd:{swing:'ON'}},
+  {id:'heat',label:'Heat 24 °C',cmd:{system_mode:'heat',current_heating_setpoint:24}}];
+function irSetupStage(st,started){
+  const r=String((st||{}).last_result||''),proto=String((st||{}).protocol||'learn').toLowerCase();
+  let m=r.match(/^detected: (\w+) enabled \((.*)\)$/);if(m)return{stage:'trial',proto:m[1],detail:m[2]};
+  if(/^press on\/off on the AC remote now/.test(r))return{stage:'listening'};
+  if(/^no known protocol in that frame/.test(r))return{stage:'manual',detail:r};
+  if(/^learn \? failed/.test(r))return{stage:'failed',detail:r};
+  if(started&&proto&&proto!=='learn')return{stage:'trial',proto:proto,detail:''};
+  if(started&&proto==='learn')return{stage:'manual',detail:''};
+  return{stage:'idle',proto:proto};
+}
+function irIsBlaster(d){const ex=d.exposes||[];return ex.some(f=>f.key==='learn_key')&&ex.some(f=>f.key==='protocol');}
 const DEF_CATS=[['light','Light'],['plug','Smart plug'],['switch','Switch'],['sensor','Sensor'],['remote','Button/remote'],['cover','Cover'],['climate','Thermostat'],['lock','Lock'],['meter','Electricity meter'],['unknown','Unknown']];
 views.device={
   tab:'about',d:null,ieee:null,upd:new Map(),
@@ -1054,7 +1080,42 @@ views.device={
   tab_controls(b,d){
     const ex=d.exposes||[];if(!ex.length){b.append(el('div',{class:'empty',text:'No features exposed yet. Re-interview the device to derive them from its clusters.'}));return;}
     const byCat=new Map();for(const f of ex){const c=CATS.some(x=>x[0]===f.category)?f.category:'control';if(!byCat.has(c))byCat.set(c,[]);byCat.get(c).push(f);}
+    if(irIsBlaster(d))this.irSetup(b,d);
     for(const[c,label]of CATS){const list=byCat.get(c);if(!list)continue;b.append(el('h2',{text:label}));const card=el('div',{class:'card',style:'padding-top:4px;padding-bottom:4px'});for(const f of list)card.append(this.feature(f,d));b.append(card);}
+  },
+  irSetup(b,d){
+    const w=this.wiz=this.wiz&&this.wiz.ieee===d.ieee?this.wiz:{ieee:d.ieee,started:false,done:false,sent:{},verdict:{},tried:[]};
+    const card=el('div',{class:'card wiz'});b.append(el('h2',null,'Set up from the remote',help('ir_setup',null,'Set up from the remote')),card);
+    const ok=can();
+    const draw=()=>{
+      clear(card);const st=d.state||{};const s=irSetupStage(st,w.started);
+      const start=label=>el('button',{class:'btn primary',text:label,disabled:!ok,title:ok?'':NOCTL,onclick:()=>{w.started=true;w.sent={};w.verdict={};this.set({learn_key:'?'}).then(draw);}});
+      if(w.done){card.append(el('p',{class:'state',text:'Done - '+(w.done)+' in use. The blaster also follows the physical remote, so the state stays right whichever one is used.'}),el('div',{class:'foot'},start('Set up again')));return;}
+      if(s.stage==='idle'){card.append(el('p',{class:'sub',text:'Point the AC remote at the front of the blaster, press Start, then press the remote\'s on/off button within 20 seconds. One press is enough: the frame says which protocol the AC speaks.'}),el('div',{class:'foot'},start('Start')));return;}
+      if(s.stage==='listening'){card.append(el('p',{class:'state',text:'Listening… press the on/off button on the AC remote now (20 s).'}));return;}
+      if(s.stage==='failed'){card.append(el('p',{class:'state',text:'Nothing received. Hold the remote closer to the front of the case and try again.'}),el('div',{class:'foot'},start('Try again')));return;}
+      if(s.stage==='manual'){
+        card.append(el('p',{class:'sub',text:(s.detail?'No known protocol understands that remote. ':'')+'Learn its codes one state at a time: each step sets the AC the way the step says, then waits for the matching button on the remote.'}));
+        for(const t of IR_TRIALS){const row=el('div',{class:'trial'+(w.verdict[t.id]==='ok'?' ok':'')},el('span',{class:'lab',text:t.label}),el('span',{class:'sub',text:w.sent[t.id]?'press the matching button now (20 s)':''}),
+          el('button',{class:'btn sm',text:'Set & learn',disabled:!ok,onclick:async()=>{w.sent[t.id]=true;draw();await this.set(t.cmd);await new Promise(r=>setTimeout(r,800));await this.set({learn_key:'*'});}}),
+          el('button',{class:'btn sm',text:'Learned',disabled:!w.sent[t.id],onclick:()=>{w.verdict[t.id]='ok';draw();}}));card.append(row);}
+        card.append(el('p',{class:'state',text:'Last result: '+(st.last_result||'—')+' · '+(st.code_count??0)+' code(s) stored'}),
+          el('div',{class:'foot'},el('button',{class:'btn primary',text:'Finish',onclick:()=>{w.done='learned codes';draw();}}),start('Start over from one press')));return;}
+      // trial: a protocol is in force - try it
+      const proto=s.proto;if(!w.tried.includes(proto))w.tried.push(proto);
+      card.append(el('p',{class:'sub'},el('b',{text:'Detected '+proto}),s.detail?' - the remote sent '+s.detail+'.':'.',' Try these and say what the AC did:'));
+      for(const t of IR_TRIALS){const v=w.verdict[t.id];const row=el('div',{class:'trial'+(v==='ok'?' ok':v==='bad'?' bad':'')},el('span',{class:'lab',text:t.label}),
+        el('button',{class:'btn sm',text:w.sent[t.id]?'Send again':'Send',disabled:!ok,onclick:()=>{w.sent[t.id]=true;draw();this.set(t.cmd);}}),
+        el('button',{class:'btn sm',text:'Worked',disabled:!w.sent[t.id],onclick:()=>{w.verdict[t.id]='ok';draw();}}),
+        el('button',{class:'btn sm',text:'Didn\'t',disabled:!w.sent[t.id],onclick:()=>{w.verdict[t.id]='bad';draw();}}));card.append(row);}
+      const vals=Object.values(w.verdict),good=vals.filter(x=>x==='ok').length,bad=vals.filter(x=>x==='bad').length;
+      const next=IR_PROTOCOLS.find(p=>!w.tried.includes(p));
+      card.append(el('p',{class:'state',text:good+' worked · '+bad+' didn\'t · last result: '+(st.last_result||'—')}),el('div',{class:'foot'},
+        el('button',{class:'btn primary',text:'Keep '+proto,disabled:!good,onclick:()=>{w.done=proto+' protocol';draw();}}),
+        next?el('button',{class:'btn',text:'Try '+next+' instead',disabled:!ok,onclick:()=>{w.sent={};w.verdict={};this.set({protocol:next}).then(draw);}}):null,
+        el('button',{class:'btn',text:'Learn codes one by one instead',disabled:!ok,onclick:()=>{w.sent={};w.verdict={};this.set({protocol:'learn'}).then(draw);}})));
+    };
+    draw();this.upd.set('__ir_setup',draw);
   },
   feature(f,d){
     const r=featureControl(d,f,{set:p=>this.set(p)});this.upd.set(f.key,r.update);
