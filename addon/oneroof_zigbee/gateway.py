@@ -98,6 +98,9 @@ class Gateway:
         self._locate_task: asyncio.Task[None] | None = None
         self._settled: set[int] = set()  # Tuya devices given their settle read this run
         self._dirty = False  # a state / last-seen change not yet written to the registry file
+        self._profiles_written: str | None = None
+        self._unknown_nwk_frames: dict[int, int] = {}
+        self._poll_asked: dict[int, float] = {}  # ieee -> when it was last polled
         # When a device last gave evidence of what it IS (an on/off, level or thermostat read or
         # report) — the silent-router poll goes by this, not by any frame: a plug that reports its
         # power every ten seconds says nothing about whether someone pressed its button.
@@ -283,10 +286,15 @@ class Gateway:
             log.debug("profiles.json unreadable", exc_info=True)
 
     def _save_profiles(self) -> None:
+        """profiles.json is written when it changed, not every minute regardless."""
         try:
+            payload = json.dumps(self.monitor.export())
+            if payload == self._profiles_written:
+                return
             tmp = self._profiles_path().with_suffix(".tmp")
-            tmp.write_text(json.dumps(self.monitor.export()))
+            tmp.write_text(payload)
             tmp.replace(self._profiles_path())
+            self._profiles_written = payload
         except OSError:
             log.debug("profiles.json not saved", exc_info=True)
 
@@ -325,7 +333,11 @@ class Gateway:
                         # behind a wall switch, off at the wall.
                         await self._went_silent(dev)
                 self._save_profiles()
-                self._save_if_dirty()
+                # the file is the whole registry, rewritten in full: a busy network changes some
+                # state every minute, so its last words are written every five minutes here (and
+                # at once on stop); structural changes save themselves where they happen
+                if tick % 5 == 0:
+                    self._save_if_dirty()
                 await self._poll_silent_routers()  # cheap: it only acts on devices past their own interval
                 await self._release_name_holds()
                 if tick % 5 == 0:
@@ -445,7 +457,8 @@ class Gateway:
         """How long a device may stay silent before we ask it for an attribute. A device whose
         reporting the firmware refused cannot tell us about a physical press, so it is asked far
         more often than one that reports for itself."""
-        if any(not str(r.get("status", "")).startswith("ok") for r in (dev.reporting or [])):
+        if any(not str(r.get("status", "")).startswith("ok") and r.get("cluster") in self._REFRESH_CLUSTERS
+               for r in (dev.reporting or [])):
             return self.UNREPORTED_POLL_AFTER_S
         return self.ROUTER_POLL_AFTER_S
 
@@ -471,9 +484,17 @@ class Gateway:
             # A device with nothing to switch is asked for its name when silent: that keeps its
             # last-seen and link quality honest, which is all there is to know about it.
             since = self._state_evidence.get(dev.ieee, 0.0) if self._has_state_cluster(dev) else (dev.last_seen or 0.0)
+            # a device that answers but never with a state (a Tuya device before its first
+            # datapoint) is asked once, then waits its interval like the others - not every
+            # minute for ever; one that does not answer at all is handled by the miss count
+            if not since:
+                since = self._poll_asked.get(dev.ieee, 0.0)
             if since and now - since < self._poll_after(dev):
                 continue
+            evidence_before = self._state_evidence.get(dev.ieee, 0.0)
             heard = await self._refresh_state(dev)
+            if heard and self._state_evidence.get(dev.ieee, 0.0) == evidence_before:
+                self._poll_asked[dev.ieee] = now   # answered, but with no state: its own clock from here
             if not heard:
                 n = self._poll_failures[dev.ieee] = self._poll_failures.get(dev.ieee, 0) + 1
                 first_miss = self._poll_first_miss.setdefault(dev.ieee, now)
@@ -1068,7 +1089,11 @@ class Gateway:
                                         cluster=f"{m.cluster:#06x}", frames=known["frames"],
                                         hint="see Pair → Unknown devices to adopt or evict")
             else:
-                self.audit.security("traffic_from_unknown_device", nwk=f"{m.src_addr:#06x}", cluster=f"{m.cluster:#06x}")
+                # no record at all: the same 1/10/100/1000 rhythm, or a chatty stranger would
+                # write an audit line, a warning, a retained message and a phone alert per frame
+                n = self._unknown_nwk_frames[m.src_addr] = self._unknown_nwk_frames.get(m.src_addr, 0) + 1
+                if n in (1, 10, 100, 1000):
+                    self.audit.security("traffic_from_unknown_device", nwk=f"{m.src_addr:#06x}", cluster=f"{m.cluster:#06x}", frames=n)
             return
         dev.last_seen = time.time()
         dev.lqi = m.lqi

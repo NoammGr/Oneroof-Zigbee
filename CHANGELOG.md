@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.23.3] — 2026-10-02
+
+### Changed — fewer writes to the card, fewer reads over the air
+The registry file - the whole device list, rewritten in full - was saved every minute whenever
+any device had changed state, and the behaviour profiles every minute regardless. State changes
+are now written every five minutes (and at once on stop; structural changes still save where
+they happen), and the profiles only when they changed. A mains device that answers polls but
+never with a state - a Tuya device before its first datapoint - was asked every minute for ever;
+it is asked once, then waits its interval like the others. A failed reporting row on a
+measurement cluster no longer puts a device on one-minute polling; only a failed state cluster
+does.
+
+### Fixed — a stranger on the network wrote an audit line per frame
+Traffic from a short address with no record at all was written up on every frame - an audit
+line, a warning, a retained message and a phone alert each - so a chatty unknown device meant
+hundreds a minute. It is now written up on the first frame, then the tenth, hundredth and
+thousandth, like a known unregistered device.
+
 ## [2.23.2] — 2026-10-02
 
 ### Fixed — the Devices list and the tab bar on a phone

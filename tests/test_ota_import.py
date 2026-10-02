@@ -251,13 +251,15 @@ async def test_imported_device_without_endpoints_gets_full_interview(ui, tmp_pat
     assert d.nwk == 0x98C3, "short address learned via ZDO IEEE lookup"
     assert d.interviewed and d.endpoints[1].in_clusters == [0, 6, 8], "full interview ran on first contact"
     assert d.friendly_name == "Workshop - Smart Plug"
-    # a genuinely unknown short address is still alerted, and lookups are rate-limited
+    # a genuinely unknown short address is still alerted - on its first frame, then the tenth,
+    # hundredth and thousandth, not on every frame - and lookups are rate-limited
     alerts = []
     gw.audit.subscribe(lambda r: alerts.append(r) if r["level"] == "security" else None)
-    fake.emit_incoming(0x7777, 0x0006, bytes([0x18, 0x01, 0x0A, 0x00, 0x00, 0x10, 0x01]))
-    fake.emit_incoming(0x7777, 0x0006, bytes([0x18, 0x02, 0x0A, 0x00, 0x00, 0x10, 0x01]))
-    await asyncio.sleep(0.2)
-    assert [a["type"] for a in alerts].count("traffic_from_unknown_device") == 2
+    for seq in range(1, 11):
+        fake.emit_incoming(0x7777, 0x0006, bytes([0x18, seq, 0x0A, 0x00, 0x00, 0x10, 0x01]))
+    await asyncio.sleep(0.3)
+    assert [a["type"] for a in alerts].count("traffic_from_unknown_device") == 2, "frame 1 and frame 10"
+    assert [a.get("frames") for a in alerts if a["type"] == "traffic_from_unknown_device"] == [1, 10]
     assert sum(1 for f in fake.requests if f.subsystem.name == "ZDO" and f.command == 0x01 and int.from_bytes(f.data[0:2], "little") == 0x7777) == 1
 
 
