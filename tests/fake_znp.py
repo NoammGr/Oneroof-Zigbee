@@ -70,6 +70,7 @@ class FakeZnp:
         self.refuse_scan = False
         self.on_data_request = None  # optional hook: Frame -> list[Frame] of AREQs to emit
         self.bind_status = 0x00  # ZDO status the "device" answers a bind request with (0x8C: table full)
+        self.af_srsp_statuses: list[int] = []  # statuses the next AF data requests are refused with, in order
         # neighbour tables per asked address: {nwk: [(ieee, nwk, lqi, relationship, depth)]}; an
         # address not listed answers the one stock neighbour below
         self.neighbours: dict[int, list[tuple]] = {}
@@ -337,6 +338,10 @@ class FakeZnp:
             if cmd == c.AfCmd.REGISTER:
                 self._srsp(f, b"\x00")
             elif cmd == c.AfCmd.DATA_REQUEST:
+                if self.af_srsp_statuses:
+                    # the coordinator momentarily refusing to queue a frame (BUFFER_FULL and the like)
+                    self._srsp(f, bytes([self.af_srsp_statuses.pop(0)]))
+                    return
                 self._srsp(f, b"\x00")
                 tid = f.data[6]
                 self.emit(Frame(FrameType.AREQ, Subsystem.AF, c.AfCmd.DATA_CONFIRM, bytes([0, f.data[3], tid])))

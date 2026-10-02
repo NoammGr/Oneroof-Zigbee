@@ -4,6 +4,7 @@ import pytest
 
 from oneroof_zigbee.security import Audit, JoinGuard, JoinPolicy, JoinPolicyError, NetworkSecrets, parse_install_code
 from oneroof_zigbee.znp import Coordinator, Transport
+from oneroof_zigbee.znp.transport import ZnpStatusError
 from oneroof_zigbee.znp import commands as c
 from oneroof_zigbee.znp.unpi import Frame, FrameType, Subsystem
 from oneroof_zigbee.znp.wire import Writer
@@ -833,4 +834,32 @@ async def test_a_secure_rejoin_during_someone_elses_window_is_not_exposure():
     assert joins and not joins[0].plain_join, \
         "a secure rejoin received no key — window or no window, there is nothing to retire"
     assert not joins[0].rejoin, "inside a window it still counts as a join for interview purposes"
+    await t.close()
+
+
+async def test_send_aps_retries_when_the_coordinator_is_out_of_buffers():
+    """Two learn commands sent one after the other: the second came back as "AF:0x01 failed with
+    status 0x11" - the coordinator out of room for one more frame, a moment later fine. That is
+    retried, with a short wait; a real refusal (no route) is still raised at once."""
+    fake, coord, t = await make()
+    fake.af_srsp_statuses = [0x11, 0x10]
+    n0 = sum(1 for f in fake.requests if f.subsystem is c.Subsystem.AF and f.command == c.AfCmd.DATA_REQUEST)
+    status = await coord.send_aps(0x1234, 1, 0xFC01, b"\x00\x01\x02")
+    assert status == 0
+    n1 = sum(1 for f in fake.requests if f.subsystem is c.Subsystem.AF and f.command == c.AfCmd.DATA_REQUEST)
+    assert n1 - n0 == 3, "refused twice, sent the third time"
+    fake.af_srsp_statuses = [0xCD]
+    try:
+        await coord.send_aps(0x1234, 1, 0xFC01, b"\x00")
+    except ZnpStatusError as e:
+        assert e.status == 0xCD
+    else:
+        raise AssertionError("no route must not be retried as if it were a full buffer")
+    fake.af_srsp_statuses = [0x11, 0x11, 0x11, 0x11]
+    try:
+        await coord.send_aps(0x1234, 1, 0xFC01, b"\x00")
+    except ZnpStatusError as e:
+        assert e.status == 0x11, "after the retries are spent the status is reported"
+    else:
+        raise AssertionError("a coordinator that never finds room is reported")
     await t.close()

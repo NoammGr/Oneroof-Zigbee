@@ -1232,8 +1232,29 @@ class Coordinator:
         self._trans_id = (self._trans_id % 255) + 1
         return self._trans_id
 
+    # The coordinator answers with these when it is momentarily out of room for one more frame -
+    # a burst of commands, or retries to a far device still in flight. Nothing about the request
+    # is wrong; a moment later it goes. Everything else (no route, no ack, bad parameter) is
+    # reported as it is.
+    _TRANSIENT_AF_STATUS = frozenset({0x10, 0x11})   # MEM_ERROR, BUFFER_FULL
+    _AF_RETRY_WAITS = (0.2, 0.4, 0.8)
+
     async def send_aps(self, dst: int, dst_ep: int, cluster: int, payload: bytes, *, src_ep: int = GATEWAY_ENDPOINT,
                        wait_confirm: bool = True, timeout: float = 10.0) -> int:
+        for wait in (*self._AF_RETRY_WAITS, None):
+            try:
+                return await self._send_aps_once(dst, dst_ep, cluster, payload, src_ep=src_ep,
+                                                 wait_confirm=wait_confirm, timeout=timeout)
+            except ZnpStatusError as e:
+                if e.status not in self._TRANSIENT_AF_STATUS or wait is None:
+                    raise
+                log.info("coordinator has no room for a frame to %#06x (status %#04x) - retrying in %.1f s",
+                         dst, e.status, wait)
+                await asyncio.sleep(wait)
+        raise AssertionError("unreachable")
+
+    async def _send_aps_once(self, dst: int, dst_ep: int, cluster: int, payload: bytes, *, src_ep: int,
+                             wait_confirm: bool, timeout: float) -> int:
         # the outgoing half of the wire log: with debug on, a device's whole conversation is visible
         log.debug("-> %#06x ep%d cluster %#06x len=%d", dst, dst_ep, cluster, len(payload))
         tid = self._next_trans_id()

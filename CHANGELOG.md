@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.22.4] — 2026-10-02
+
+### Fixed — a command sent while the coordinator was out of room is tried again
+Two commands sent one after the other (learning two remotes, say) could come back as
+"AF:0x01 failed with status 0x11": the coordinator momentarily out of buffers for one more
+frame, while retries to a far device were still in flight. Nothing about the command was wrong,
+and a moment later it would have gone. Such a refusal is now retried, three times with a short
+wait, and only then reported; a real refusal - no route, no acknowledgement - is still reported
+at once.
+
 ## [2.22.3] — 2026-09-25
 
 ### Fixed — every device raised one "link quality swing" right after the 2.22.2 update
