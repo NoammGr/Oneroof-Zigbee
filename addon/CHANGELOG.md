@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.23.5] — 2026-10-03
+
+### Added — a device that comes back with new firmware is interviewed again
+A device that updates itself over the air reboots and rejoins. A rejoin is deliberately not an
+interview (that storm is over), so the hub kept showing the old version and never learned about
+clusters the new firmware added. Now one read follows every rejoin of a mains device: if the
+firmware version differs from the one on record, the change is written to the audit log and the
+device is interviewed once. The gate controller and the IR blaster gain an OTA client in their
+next firmware (gate 1.0.2, blaster 1.0.3); from then on their updates are uploaded on the
+Firmware page and installed over Zigbee, and this is what makes the new version show up.
+
 ## [2.23.4] — 2026-10-03
 
 ### Fixed — a command delivered twice: the gate started closing, then stopped

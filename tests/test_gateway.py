@@ -1728,6 +1728,52 @@ async def test_a_rejoining_device_is_asked_what_it_is(tmp_path):
     await t.close()
 
 
+async def test_a_rejoin_with_new_firmware_is_interviewed_again(tmp_path):
+    """A device that updated itself over the air reboots and rejoins with another version - and
+    maybe new clusters. The rejoin itself is not an interview (no storm), but its version is read
+    once and, when it changed, the device is interviewed again and the change is on record."""
+    from oneroof_zigbee.znp import JoinedDevice
+    fake, coord, broker, gw, t = await make(tmp_path)
+    dev = _bulb(gw, IEEE + 66, NWK + 66)
+    dev.sw_build = "1.0.1"
+    asked, events = [], []
+    gw.audit.subscribe(lambda r: events.append(r))
+
+    async def answer(d, ep, cluster, attrs):
+        asked.append((cluster, tuple(attrs)))
+        return {"sw_build_id": "1.0.2"} if cluster == 0x0000 else {}
+
+    gw.read_attributes = answer
+    gw._schedule_refresh = lambda d, delay=3.0: None
+    gw.FIRMWARE_CHECK_DELAY_S = 0.05
+    await gw._on_joined(JoinedDevice(ieee=dev.ieee, nwk=dev.nwk, parent=None, capabilities=0x8E, rejoin=True))
+    assert dev.ieee not in gw._interview_tasks, "the rejoin alone is not an interview"
+    assert dev.ieee in gw._firmware_checks
+    for _ in range(50):
+        await asyncio.sleep(0.02)
+        if dev.ieee not in gw._firmware_checks:
+            break
+    assert (0x0000, (0x4000,)) in asked, "exactly the version is read, nothing more"
+    assert dev.sw_build == "1.0.2"
+    kinds = [(e["type"], e.get("ieee")) for e in events]
+    assert ("firmware_changed", dev.ieee_str) in kinds and ("interview_started", dev.ieee_str) in kinds, \
+        "a new version means new clusters may exist: interview it"
+    assert kinds.index(("firmware_changed", dev.ieee_str)) < kinds.index(("interview_started", dev.ieee_str))
+    assert any(e["type"] == "firmware_changed" and e.get("old") == "1.0.1" and e.get("new") == "1.0.2" for e in events)
+    # same version again: one read, no interview
+    dev2 = _bulb(gw, IEEE + 67, NWK + 67)
+    dev2.sw_build = "1.0.2"
+    asked.clear()
+    await gw._on_joined(JoinedDevice(ieee=dev2.ieee, nwk=dev2.nwk, parent=None, capabilities=0x8E, rejoin=True))
+    for _ in range(50):
+        await asyncio.sleep(0.02)
+        if dev2.ieee not in gw._firmware_checks:
+            break
+    assert asked == [(0x0000, (0x4000,))]
+    assert ("interview_started", dev2.ieee_str) not in [(e["type"], e.get("ieee")) for e in events], "same version: no interview"
+    await t.close()
+
+
 async def test_a_router_that_stops_answering_goes_offline(tmp_path):
     """A bulb cut from power at the wall answers nothing. Two unanswered polls and it is offline -
     Apple Home shows "No Response" instead of the last thing it said - and it is polled less

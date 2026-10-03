@@ -112,6 +112,7 @@ class Gateway:
         self._set_locks: dict[int, asyncio.Lock] = {}  # commands to one device run in order
         self._poll_not_before: dict[int, float] = {}  # a device already marked offline is asked less often
         self._refresh_tasks: dict[int, asyncio.Task] = {}  # one pending "ask it what it is" per device
+        self._firmware_checks: dict[int, asyncio.Task] = {}  # one pending "did your firmware change?" per rejoin
         self._refresh_task: asyncio.Task | None = None  # the sweep of every device after a (re)start
         self.unknown_devices: dict[int, dict[str, Any]] = {}  # ieee -> what we know about an unregistered device on our network
         self._rotation: Any = None  # KeyRotation, created on first use
@@ -612,6 +613,45 @@ class Gateway:
             # It came back from something - most often a power cut - and may well have come back
             # in another state than it left (a bulb switched at the wall is ON when power returns).
             self._schedule_refresh(dev)
+            # ... or with new firmware: a device that just updated itself over the air reboots and
+            # rejoins. Its version, and possibly its clusters, changed; that one is interviewed.
+            self._schedule_firmware_check(dev)
+
+    FIRMWARE_CHECK_DELAY_S = 6.0
+
+    def _schedule_firmware_check(self, dev: Device) -> None:
+        """After a rejoin, read the firmware version once; if it differs from the one on record the
+        device is re-interviewed (new version shown, new clusters learned, reporting re-done).
+        One read, a few seconds after the rejoin so the device has settled; silence is fine."""
+        if not dev.nwk or not dev.endpoints or dev.ieee in self._firmware_checks:
+            return
+
+        async def run() -> None:
+            try:
+                await asyncio.sleep(self.FIRMWARE_CHECK_DELAY_S)
+                if dev.ieee in self._interview_tasks:
+                    return
+                basic_ep = next((e.id for e in dev.endpoints.values() if 0x0000 in e.in_clusters), None)
+                if basic_ep is None:
+                    return
+                try:
+                    attrs = await self.read_attributes(dev, basic_ep, 0x0000, [0x4000])
+                except (ZnpError, asyncio.TimeoutError):
+                    return
+                build = attrs.get("sw_build_id")
+                if not build or build == dev.sw_build:
+                    return
+                old = dev.sw_build
+                dev.sw_build = build
+                self._dirty = True
+                log.info("%s: firmware %s -> %s after rejoin; interviewing it again", dev.ieee_str, old, build)
+                self.audit.event("firmware_changed", ieee=dev.ieee_str, old=old, new=build)
+                self._emit_device_event("firmware_changed", dev)
+                self._start_interview(dev)
+            finally:
+                self._firmware_checks.pop(dev.ieee, None)
+
+        self._firmware_checks[dev.ieee] = asyncio.create_task(run(), name=f"fwcheck-{dev.ieee_str}")
 
     async def _maybe_rotate_after_join(self, dev: Device) -> None:
         """A device paired without an install code received the network key under the public key,
