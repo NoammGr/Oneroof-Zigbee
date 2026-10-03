@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.23.8] — 2026-10-03
+
+### Added — what a device did is in the Logs too
+A remote press, a relay pulse and who asked for it, an unknown remote, a device's last result or
+a button's action used to live only in that device's Activity tab. Each is now also one line in
+the gateway log, the device's name first, so the Logs page tells the story without opening the
+device.
+
 ## [2.23.7] — 2026-10-03
 
 ### Added — the gate controller's event trail

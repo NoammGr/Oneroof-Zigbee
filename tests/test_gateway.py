@@ -1774,6 +1774,24 @@ async def test_a_rejoin_with_new_firmware_is_interviewed_again(tmp_path):
     await t.close()
 
 
+async def test_what_a_device_did_is_written_to_the_gateway_log(tmp_path, caplog):
+    """A remote press, a pulse and who asked for it, an unknown remote: the device's Activity tab
+    has them, and so does the Logs page - one line, the device's name first - without digging."""
+    import logging
+    fake, coord, broker, gw, t = await make(tmp_path)
+    dev = _bulb(gw, IEEE + 68, NWK + 68)
+    dev.friendly_name = "Garage Gate"
+    with caplog.at_level(logging.INFO, logger="oneroof_zigbee.gateway"):
+        gw._apply_changes(dev, {"last_event": "pulse relay 1: remote #1", "state": "ON"})
+        gw._apply_changes(dev, {"last_event": "pulse relay 1: remote #1"})   # same sentence again: not repeated
+        gw._apply_changes(dev, {"action": "single"})
+    lines = [r.getMessage() for r in caplog.records if r.name == "oneroof_zigbee.gateway"]
+    assert lines.count("Garage Gate: pulse relay 1: remote #1") == 1
+    assert "Garage Gate: action single" in lines
+    assert not any("ON" in ln and "Garage Gate" in ln for ln in lines), "plain state changes stay in Activity"
+    await t.close()
+
+
 async def test_a_router_that_stops_answering_goes_offline(tmp_path):
     """A bulb cut from power at the wall answers nothing. Two unanswered polls and it is offline -
     Apple Home shows "No Response" instead of the last thing it said - and it is polled less

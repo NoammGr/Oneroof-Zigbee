@@ -1382,6 +1382,9 @@ class Gateway:
     # state: they go to the device record (About tab) and never into state/Activity/Home Assistant.
     _IDENTITY_KEYS = {"manufacturer_name", "model_id", "date_code", "sw_build_id", "zcl_version", "app_version",
                       "stack_version", "hw_version", "power_source", "battery_backup"}
+    # Keys whose every change is a sentence worth a line in the gateway log (the Logs page), not
+    # only a row in the device's Activity: what a device did and who asked for it.
+    _NARRATED_KEYS = {"last_event", "rf_last", "last_result", "action"}
 
     @staticmethod
     def _json_safe(v: Any) -> Any:
@@ -1415,6 +1418,9 @@ class Gateway:
             if not changed:
                 return []
         events = dev.record_changes(changed, now)
+        for ev in events:
+            if ev["key"] in self._NARRATED_KEYS and ev["new"]:
+                log.info("%s: %s", dev.friendly_name, f"action {ev['new']}" if ev["key"] == "action" else ev["new"])
         if events:
             self._dirty = True
             if any(ev["key"] == "battery" for ev in events):
