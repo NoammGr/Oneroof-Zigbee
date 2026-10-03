@@ -156,7 +156,7 @@ CASES = [
      "Gate controller", "cover",
      {"position", "cover", "gate_state", "set_state", "trigger", "relay1", "relay2", "input_1", "input_2", "temperature", "humidity", "rf_learn", "rf_last", "rf_count",
       "rf_delete", "pulse_ms", "travel_s", "in1_role", "in2_role", "in1_invert", "in2_invert", "tx_power", "max_children", "role", "channel", "overtemp",
-      "board_temperature", "led_brightness", "led_quiet", "last_result"},
+      "board_temperature", "led_brightness", "led_quiet", "last_result", "last_event", "boot_count", "pulse_count"},
      {"state", "state_l1", "state_l2", "countdown", "power_on_behavior", "action"},
      {"cover": ("cover", None), "relay1": ("switch", None), "relay2": ("switch", None), "gate_state": ("sensor", None), "input_1": ("binary_sensor", None),
       "rf_learn": ("select", None), "rf_last": ("sensor", None), "max_children": ("number", None), "tx_power": ("number", None), "in1_role": ("select", None),

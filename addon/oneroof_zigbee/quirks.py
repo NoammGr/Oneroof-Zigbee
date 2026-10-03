@@ -317,6 +317,9 @@ _GATE_ATTRS = (
     PrivateAttr(0x0019, "channel", DataType.uint8),
     PrivateAttr(0x001A, "max_children", DataType.uint8),
     PrivateAttr(0x001B, "role", DataType.enum8, values=_ZB_ROLES),
+    PrivateAttr(0x001C, "last_event", DataType.string),
+    PrivateAttr(0x001D, "boot_count", DataType.uint16),
+    PrivateAttr(0x001E, "pulse_count", DataType.uint16),
 )
 
 
@@ -679,9 +682,14 @@ QUIRKS: tuple[Quirk, ...] = (
            _f("led_brightness", "LED brightness", "Status LED brightness", "numeric", "rw", icon="sun", category="config", cluster=_GATE, min=1, max=100, step=1, unit="%"),
            _f("led_quiet", "LED quiet", "LED off while joined and healthy", "binary", "rw", icon="sun", category="config", cluster=_GATE, value_on="ON", value_off="OFF"),
            _f("last_result", "Last result", "Feedback from the last command", "text", "r", icon="text", category="diagnostic", cluster=_GATE),
+           _f("last_event", "Last event", "What just happened on the controller: a pulse and who asked for it, an ignored press, an unknown remote, a restart and why, the network coming or going. The Activity tab keeps the trail (firmware 1.1.0+)",
+              "text", "r", icon="text", category="diagnostic", cluster=_GATE),
+           _f("boot_count", "Restarts", "How many times the controller has started since it was first powered", "numeric", "r", icon="counter", category="diagnostic", cluster=_GATE),
+           _f("pulse_count", "Gate pulses", "START pulses given to the gate board since the controller was first powered", "numeric", "r", icon="counter", category="diagnostic", cluster=_GATE),
        ),
        reporting={_GATE: ((0x0000, DataType.enum8, 0, 3600, None), (0x000A, DataType.string, 1, 3600, None), (0x000C, DataType.string, 1, 3600, None),
-                          (0x0009, DataType.uint16, 1, 3600, 1), (0x0017, DataType.bool_, 1, 3600, None), (0x0018, DataType.int16, 30, 3600, 20)),
+                          (0x0009, DataType.uint16, 1, 3600, 1), (0x0017, DataType.bool_, 1, 3600, None), (0x0018, DataType.int16, 30, 3600, 20),
+                          (0x001C, DataType.string, 1, 3600, None), (0x001E, DataType.uint16, 1, 3600, 1)),
                   0x000F: ((0x0055, DataType.bool_, 0, 3600, None),)},
        read_on_join={_GATE: tuple(pa.attr for pa in _GATE_ATTRS if pa.key not in ("trigger", "rf_learn", "rf_delete", "calibrate")),
                      0x000F: (0x0055,)}),

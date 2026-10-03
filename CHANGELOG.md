@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.23.7] — 2026-10-03
+
+### Added — the gate controller's event trail
+Gate controller firmware 1.1.0 keeps a trail of what happened on the board - every START pulse
+and who asked for it (a remote by name, the hub, the button), presses it had to ignore, unknown
+remotes, restarts and why, the network coming and going - and the hub now shows it: a "Last event"
+line on the gate's page, with the history in the Activity tab, plus restart and pulse counters.
+The firmware itself was made stubborn: nothing that drives the relays waits for the radio any
+more, every pulse is ended by a hardware timer as well, and a stalled task restarts the board.
+
 ## [2.23.6] — 2026-10-03
 
 ### Added — more AC remotes in the one-press setup
