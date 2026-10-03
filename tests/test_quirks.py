@@ -791,7 +791,7 @@ def test_irblaster_features_exposes_and_discovery():
     assert "swing" not in disc
     assert cl["swing_modes"] == ["ON", "OFF"] and cl["swing_mode_state_template"] == "{{ value_json.swing }}"
     assert disc["learn_key"][1]["command_template"] == '{"learn_key": "{{ value }}" }' and disc["learn_key"][1]["max"] == 15
-    assert disc["protocol"][1]["options"] == ["learn", "auto", "coolix", "gree", "daikin", "electra"]
+    assert disc["protocol"][1]["options"] == ["learn", "auto", "coolix", "gree", "daikin", "electra", "tadiran"]
     assert disc["hold"][1]["payload_on"] == '{"hold": "ON"}'
     assert disc["temperature_offset"][1]["min"] == -10 and disc["temperature_offset"][1]["step"] == 0.1
     assert "switch" not in disc and "running_state" not in disc

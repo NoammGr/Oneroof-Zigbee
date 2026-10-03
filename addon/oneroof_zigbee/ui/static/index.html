@@ -543,7 +543,7 @@ const HELP={
   ir_setup:'One press of the AC remote tells the blaster which brand\'s protocol the AC speaks and what state the remote sent. Then try a few commands through that protocol and say what happened: keep it, try the next protocol, or learn codes one by one for a remote no protocol understands.',
   learn_key:'Set the climate (mode, temperature, fan, swing) the way you want it first, then press Learn current state and, within 20 s, the matching button on the AC remote. Or type a code key (off, c24a1 …) or a name for an extra button (light, turbo) and press Learn.',
   send_key:'Transmit a stored code by its key: off, c24a1 = cool 24 °C fan auto swing on, or a name you learned such as light.',
-  protocol:'learn replays the frames you learned; auto adopts the protocol detected from a learned frame; coolix/gree/daikin/electra use the native encoder so every state works without learning.',
+  protocol:'learn replays the frames you learned; auto adopts the protocol detected from a learned frame; coolix/gree/daikin/electra/tadiran use the native encoder so every state works without learning.',
   hold:'Local thermostat: the blaster switches the AC on and off around the setpoint using its own temperature sensor.',
   last_result:'What the device did last: learned …, remote: …, no code for … — learn it.',
   code_count:'How many IR codes are stored on the device.',
@@ -893,7 +893,7 @@ const CATS=[['control','Controls'],['ir','IR remote'],['rf','433 MHz remotes'],[
 // ---- IR blaster: set up from one press of the remote ------------------------------------------
 // The firmware answers learn_key "?" with the frame's own verdict in last_result; the stage of the
 // setup is read from that text and from the protocol in force, nothing is kept server-side.
-const IR_PROTOCOLS=['coolix','gree','daikin','electra'];
+const IR_PROTOCOLS=['coolix','gree','daikin','electra','tadiran'];
 const IR_TRIALS=[
   {id:'on',label:'Turn on, cool 24 °C',cmd:{system_mode:'cool',current_heating_setpoint:24}},
   {id:'off',label:'Turn off',cmd:{system_mode:'off'}},
@@ -904,7 +904,7 @@ function irSetupStage(st,started){
   const r=String((st||{}).last_result||''),proto=String((st||{}).protocol||'learn').toLowerCase();
   let m=r.match(/^detected: (\w+) enabled \((.*)\)$/);if(m)return{stage:'trial',proto:m[1],detail:m[2]};
   if(/^press on\/off on the AC remote now/.test(r))return{stage:'listening'};
-  if(/^no known protocol in that frame/.test(r))return{stage:'manual',detail:r};
+  if(/^no known protocol in that frame|^unknown remote \(/.test(r))return{stage:'manual',detail:r};
   if(/^learn \? failed/.test(r))return{stage:'failed',detail:r};
   if(started&&proto&&proto!=='learn')return{stage:'trial',proto:proto,detail:''};
   if(started&&proto==='learn')return{stage:'manual',detail:''};

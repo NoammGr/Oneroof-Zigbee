@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.23.6] — 2026-10-03
+
+### Added — more AC remotes in the one-press setup
+The IR blaster's one-press setup recognises another family of AC remotes (blaster firmware 1.0.3
+adds a coding that neither of the earlier protocols covered), and the setup card tries it with
+the others. When a remote is still not recognised, the blaster now says what it heard (pulse
+count, header and bit timings) instead of only "no known protocol", so an unknown remote can be
+added from that line alone.
+
 ## [2.23.5] — 2026-10-03
 
 ### Added — a device that comes back with new firmware is interviewed again

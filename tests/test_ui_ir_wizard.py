@@ -24,6 +24,7 @@ const out = {
   listening: irSetupStage({last_result: 'press on/off on the AC remote now'}, true),
   detected: irSetupStage({last_result: 'detected: electra enabled (cool 24C fan auto swing off)'}, true),
   none: irSetupStage({last_result: 'no known protocol in that frame - learn codes one by one'}, true),
+  none2: irSetupStage({last_result: 'unknown remote (263p hdr 8000/4000 m 550/1600 s 550/1600) - learn codes one by one'}, true),
   failed: irSetupStage({last_result: 'learn ? failed: nothing received'}, true),
   switched: irSetupStage({last_result: 'protocol gree (defaults, learn one frame to calibrate)', protocol: 'gree'}, true),
   manual: irSetupStage({last_result: 'protocol learn', protocol: 'learn'}, true),
@@ -39,9 +40,10 @@ console.log(JSON.stringify(out));
     assert got["detected"] == {"stage": "trial", "proto": "electra", "detail": "cool 24C fan auto swing off"}
     assert got["none"]["stage"] == "manual"
     assert got["failed"]["stage"] == "failed"
+    assert got["none2"]["stage"] == "manual" and got["none2"]["detail"].startswith("unknown remote"), "the fingerprinted message is still the manual stage"
     assert got["switched"] == {"stage": "trial", "proto": "gree", "detail": ""}, "a protocol picked by hand is tried the same way"
     assert got["manual"]["stage"] == "manual"
-    assert got["trials"] == ["on", "off", "fan", "swing", "heat"] and len(got["protocols"]) == 4
+    assert got["trials"] == ["on", "off", "fan", "swing", "heat"] and got["protocols"][-1] == "tadiran" and len(got["protocols"]) == 5
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")

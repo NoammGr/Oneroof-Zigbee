@@ -617,7 +617,7 @@ QUIRKS: tuple[Quirk, ...] = (
            _f("erase_codes", "Forget all codes", "Delete every learned code from the blaster (firmware 1.0.2+). The protocol in force and its template stay, so a native protocol keeps working",
               "action", "w", icon="counter", category="ir", cluster=_IRB),
            _f("protocol", "IR protocol", "learn replays the learned frames; auto adopts the protocol detected from a learned frame; or a native encoder",
-              "enum", "rw", icon="sliders", category="ir", cluster=_IRB, values=["learn", "auto", "coolix", "gree", "daikin", "electra"]),
+              "enum", "rw", icon="sliders", category="ir", cluster=_IRB, values=["learn", "auto", "coolix", "gree", "daikin", "electra", "tadiran"]),
            _f("hold", "Hold (local thermostat)", "Cycle the AC around the setpoint using the board's own temperature sensor",
               "binary", "rw", icon="thermometer", category="ir", cluster=_IRB, value_on="ON", value_off="OFF"),
            _f("last_result", "Last result", "Feedback from the last learn, send or remote press", "text", "r", icon="text", category="ir", cluster=_IRB),
