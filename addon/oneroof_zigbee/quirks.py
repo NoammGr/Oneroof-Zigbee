@@ -116,6 +116,7 @@ class Quirk:
     private_attrs: dict[int, tuple[PrivateAttr, ...]] = field(default_factory=dict)  # device-specific cluster → its attributes
     reporting: dict[int, tuple[tuple[int, DataType, int, int, Any], ...]] = field(default_factory=dict)  # extra reporting: cluster → (attr, dtype, min, max, change)
     read_on_join: dict[int, tuple[int, ...]] = field(default_factory=dict)         # extra attributes to read at interview: cluster → attrs
+    after_write_reads: dict[str, tuple[tuple[int, int, tuple[int, ...]], ...]] = field(default_factory=dict)  # feature key written → ((endpoint, cluster, attrs), …) read back ~1.5 s later
     context_defaults: dict[str, Any] = field(default_factory=dict)                  # converter context the model is known to have (before any read)
 
     def matches(self, manufacturer: str | None, model: str | None) -> bool:
@@ -288,6 +289,7 @@ _RF_ACTIONS = {0: "cancel", 1: "gate", 2: "relay2", 3: "both"}
 _ZB_ROLES = {0: "router", 1: "end_device"}
 _GATE_ATTRS = (
     PrivateAttr(0x0000, "gate_state", DataType.enum8, values=_GATE_STATES),
+    PrivateAttr(0x0000, "set_state", DataType.enum8, values={1: "closed", 2: "open"}),   # the same attribute, written
     PrivateAttr(0x0001, "trigger", DataType.bool_),
     PrivateAttr(0x0002, "pulse_ms", DataType.uint16),
     PrivateAttr(0x0003, "travel_s", DataType.uint16),
@@ -638,9 +640,14 @@ QUIRKS: tuple[Quirk, ...] = (
        relabel={(2, "state"): {"key": "relay1", "name": "Relay 1 (gate)", "description": "The gate controller's START contact: ON = one pulse (or held on in latch mode)", "icon": "power"},
                 (3, "state"): {"key": "relay2", "name": "Relay 2 (aux)", "description": "Auxiliary contact - pedestrian, stop or light: ON = one pulse (or held on in latch mode)", "icon": "power"}},
        private_attrs={_GATE: _GATE_ATTRS},
+       # a pulse relay reports ON then OFF half a second later; on a thin link the OFF can be lost
+       # and the page would say ON until the next report - so the relay is read back after a pulse
+       after_write_reads={"trigger": ((2, 0x0006, (0x0000,)),), "relay1": ((2, 0x0006, (0x0000,)),), "relay2": ((3, 0x0006, (0x0000,)),)},
        add=(
            _f("gate_state", "Gate state", "Measured at the end sensors (closed / open), estimated in between from the travel time", "enum", "r",
               icon="arrows", category="control", cluster=_GATE, values=list(_GATE_STATES.values())),
+           _f("set_state", "Tell the controller the gate is", "Without end sensors the controller only guesses where the gate is; say closed or open once and it counts from there (firmware 1.0.2+)",
+              "enum", "w", icon="arrows", category="control", cluster=_GATE, values=["closed", "open"]),
            _f("trigger", "Trigger", "One START pulse on relay 1, like pressing the remote", "action", "w", icon="hand", category="control", cluster=_GATE),
            _f("rf_learn", "Learn a 433 MHz remote", "Press one, then the remote button within 30 s: gate, relay 2 or both. cancel stops a learn in progress",
               "enum", "w", icon="remote", category="rf", cluster=_GATE, values=["gate", "relay2", "both", "cancel"]),

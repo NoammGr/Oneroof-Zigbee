@@ -101,6 +101,7 @@ class Gateway:
         self._profiles_written: str | None = None
         self._unknown_nwk_frames: dict[int, int] = {}
         self._poll_asked: dict[int, float] = {}  # ieee -> when it was last polled
+        self._last_action: dict[tuple[int, str], float] = {}  # (ieee, action key) -> when it was last sent
         # When a device last gave evidence of what it IS (an on/off, level or thermostat read or
         # report) — the silent-router poll goes by this, not by any frame: a plug that reports its
         # power every ten seconds says nothing about whether someone pressed its button.
@@ -1996,6 +1997,14 @@ class Gateway:
             f = feats.get(base)
             if not f or f["access"] == "r" or quirks.private_attribute(dev, f["cluster"], base) is None:
                 continue
+            if f["type"] == "action":
+                # one pulse is one pulse: the same action again within a moment - a double tap, a
+                # command replayed by a reconnecting client - is not a second one
+                last = self._last_action.get((dev.ieee, base), 0.0)
+                if time.time() - last < self.ACTION_REPEAT_GAP_S:
+                    log.info("%s: %s repeated within %.1fs - ignored", dev.friendly_name, base, self.ACTION_REPEAT_GAP_S)
+                    continue
+                self._last_action[(dev.ieee, base)] = time.time()
             attr, dtype, wire = quirks.encode_private_attribute(dev, f["cluster"], base, value)
             await self._write_attr(dev, ep, f["cluster"], attr, dtype, wire)
             if f["access"] == "w":
@@ -2008,6 +2017,11 @@ class Gateway:
                 touched.setdefault(f["cluster"], False)
         for cluster in touched:
             self._schedule_feedback_read(dev, ep, cluster)
+        q = quirks.find_quirk(dev.manufacturer, dev.model)
+        if q is not None and q.after_write_reads:
+            for key in cmd:
+                for ep2, cluster2, attrs2 in q.after_write_reads.get(key, ()):
+                    self._schedule_read_after(dev, ep2, cluster2, attrs2, self.AFTER_WRITE_READ_DELAY_S)
         if "identify" in cmd and 0x0003 in ins:
             await send(0x0003, "identify", {"time": int(cmd["identify"])})
         if "power_on_behavior" in cmd and 0x0006 in ins:
@@ -2055,6 +2069,24 @@ class Gateway:
         if refused:
             raise ZnpError(f"device refused attribute {attr:#06x} on cluster {cluster:#06x} "
                            f"(status {refused[0].status:#04x})")
+
+    ACTION_REPEAT_GAP_S = 1.5        # the same action again sooner than this is the same press
+    AFTER_WRITE_READ_DELAY_S = 1.5   # after a pulse relay's own pulse, read it back
+
+    def _schedule_read_after(self, dev: Device, ep: int, cluster: int, attrs: tuple[int, ...], delay: float) -> None:
+        """Read attributes a moment after a write: a pulse relay reports ON then OFF, and if the OFF
+        is lost on a thin link the state would say ON for an hour."""
+        async def run() -> None:
+            await asyncio.sleep(delay)
+            try:
+                state = await self.read_attributes(dev, ep, cluster, list(attrs))
+            except (ZnpError, asyncio.TimeoutError) as e:
+                log.info("%s: read-back of %s failed: %s", dev.ieee_str, zcl.cluster_name(cluster), e)
+                return
+            if self._apply_changes(dev, quirks.translate_state(dev, ep, state)):
+                await self._publish_state(dev)
+
+        asyncio.get_running_loop().create_task(run())
 
     def _schedule_feedback_read(self, dev: Device, ep: int, cluster: int) -> None:
         """After writing a device-specific cluster, read back what it says about it (last_result,

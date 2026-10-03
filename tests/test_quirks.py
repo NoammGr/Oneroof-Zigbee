@@ -154,7 +154,7 @@ CASES = [
                                                   3: ([0x0000, 0x0003, 0x0006], [], 0x0002), 4: ([0x0000, 0x0003, 0x0402, 0x0405], [], 0x0302),
                                                   5: ([0x0000, 0x0003, 0x000F], [], 0x000C), 6: ([0x0000, 0x0003, 0x000F], [], 0x000C)}, "mains", True, None,
      "Gate controller", "cover",
-     {"position", "cover", "gate_state", "trigger", "relay1", "relay2", "input_1", "input_2", "temperature", "humidity", "rf_learn", "rf_last", "rf_count",
+     {"position", "cover", "gate_state", "set_state", "trigger", "relay1", "relay2", "input_1", "input_2", "temperature", "humidity", "rf_learn", "rf_last", "rf_count",
       "rf_delete", "pulse_ms", "travel_s", "in1_role", "in2_role", "in1_invert", "in2_invert", "tx_power", "max_children", "role", "channel", "overtemp",
       "board_temperature", "led_brightness", "led_quiet", "last_result"},
      {"state", "state_l1", "state_l2", "countdown", "power_on_behavior", "action"},
@@ -1310,3 +1310,29 @@ def test_a_second_dimmer_channel_is_a_template_light_in_home_assistant():
     assert l2["state_topic"] == "oz/test"
     single = mk("Acme", "Bulb", {1: ([0x0000, 0x0006, 0x0008], [], 0x0101)}, power="mains", router=True)
     assert ha(single)["light"][1]["schema"] == "json", "one channel keeps the JSON schema HA knows best"
+
+
+@pytest.mark.asyncio
+async def test_gate_trigger_is_one_pulse_and_the_relay_is_read_back(tmp_path):
+    """Two triggers within a moment are one press (a replayed command, a double tap), and after a
+    pulse the relay is read back so a lost OFF report cannot leave the page saying ON."""
+    from oneroof_zigbee.znp import commands as c
+    fake, broker, gw, dev, t = await _gateway_with(tmp_path, gate)
+    gw.AFTER_WRITE_READ_DELAY_S = 0.05
+    n0 = len(fake.requests)
+
+    def af_frames():
+        out = []
+        for f in fake.requests[n0:]:
+            if f.subsystem is c.Subsystem.AF and f.command == c.AfCmd.DATA_REQUEST:
+                out.append((f.data[2], int.from_bytes(f.data[4:6], "little")))   # (dst endpoint, cluster)
+        return out
+    await gw.apply_command(dev, {"trigger": True})
+    await gw.apply_command(dev, {"trigger": True})
+    assert af_frames().count((1, 0xFC01)) == 1, "the second trigger within 1.5 s is the same press"
+    await asyncio.sleep(0.3)
+    assert (2, 0x0006) in af_frames(), "relay 1 is read back after the pulse"
+    gw._last_action.clear()
+    await gw.apply_command(dev, {"trigger": True})
+    assert af_frames().count((1, 0xFC01)) == 2, "after the gap a trigger is a new press"
+    await t.close()

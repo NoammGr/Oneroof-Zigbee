@@ -683,3 +683,25 @@ async def test_external_broker_carries_a_last_will(broker: Broker) -> None:
     assert msgs[-1] == ("oz/bridge/state", b"offline"), msgs
     assert broker.retained("oz/bridge/state") == b"offline"
     await watcher.disconnect()
+
+
+async def test_qos1_publish_resent_with_the_same_id_is_acked_but_not_routed_again(broker: Broker) -> None:
+    """A publisher that missed our PUBACK sends the packet again. One subscriber delivery, two acks:
+    a gate's one pulse must not become two."""
+    r, w, ack = await raw_connect(broker, pk.Connect(client_id="raw", username="gw", password=b"gwpw"))
+    w.write(pk.encode(pk.Subscribe(5, [("oz/#", 1)])))
+    await w.drain()
+    assert await read_packet(r) == pk.Suback(5, [1])
+    w.write(pk.encode(pk.Publish("oz/gate/set", b'{"trigger": true}', qos=1, packet_id=42)))
+    w.write(pk.encode(pk.Publish("oz/gate/set", b'{"trigger": true}', qos=1, packet_id=42, dup=True)))
+    await w.drain()
+    got = [await read_packet(r) for _ in range(3)]
+    assert [p for p in got if isinstance(p, pk.Puback)] == [pk.Puback(42), pk.Puback(42)]
+    pubs = [p for p in got if isinstance(p, pk.Publish)]
+    assert len(pubs) == 1, "delivered once"
+    # the same id with a different payload later is a new message (ids wrap)
+    w.write(pk.encode(pk.Publish("oz/gate/set", b'{"relay2": "ON"}', qos=1, packet_id=42)))
+    await w.drain()
+    got = [await read_packet(r) for _ in range(2)]
+    assert len([p for p in got if isinstance(p, pk.Publish)]) == 1
+    w.close()

@@ -79,6 +79,7 @@ class _Session:
         self.subscriptions: dict[str, int] = {}  # filter -> granted qos
         self.subscription_ids: dict[str, int] = {}  # filter -> MQTT 5 subscription identifier (if the client gave one)
         self.inflight: dict[int, float] = {}  # outbound packet id -> send time
+        self._received: dict[int, tuple[float, str, int]] = {}  # inbound QoS 1 packet id -> (when, topic, payload hash)
         self._next_pid = 1
         self._outq: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=MAX_OUTBOUND_QUEUE)
         self._writer_task: asyncio.Task[None] | None = None
@@ -279,6 +280,20 @@ class _Session:
 
     async def _on_publish(self, p: pk.Publish) -> None:
         qos = min(p.qos, 1)  # QoS 2 downgraded
+        if qos == 1 and p.packet_id is not None:
+            # A publisher that missed our PUBACK sends the same packet again. Delivered twice, a
+            # gate's "one pulse" becomes two - start, then stop - so a repeat of a packet id with
+            # the same topic and payload within two minutes is acknowledged and dropped.
+            now = time.monotonic()
+            seen = self._received.get(p.packet_id)
+            if seen is not None and now - seen[0] < 120.0 and seen[1] == p.topic and seen[2] == hash(p.payload):
+                log.info("client %r: duplicate publish id %d to %r dropped", self.client_id, p.packet_id, p.topic)
+                self.send(pk.Puback(p.packet_id))
+                return
+            if len(self._received) >= 512:
+                oldest = min(self._received, key=lambda k: self._received[k][0])
+                self._received.pop(oldest, None)
+            self._received[p.packet_id] = (now, p.topic, hash(p.payload))
         if self.broker._may_publish(self.username, p.topic):
             await self.broker._route(p.topic, p.payload, qos, p.retain, publisher=self.username)
         else:

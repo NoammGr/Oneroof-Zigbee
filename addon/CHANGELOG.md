@@ -1,5 +1,24 @@
 # Changelog
 
+## [2.23.4] — 2026-10-03
+
+### Fixed — a command delivered twice: the gate started closing, then stopped
+A publisher that misses the broker's acknowledgement sends the same packet again, and the broker
+routed it as a new message - so one "trigger" could reach the gate as two pulses, start then
+stop. A repeat of a packet with the same id, topic and payload within two minutes is now
+acknowledged and dropped. The gateway adds a second guard: the same action for the same device
+within 1.5 s is one press.
+
+### Fixed — a relay shown ON after a pulse
+A pulse relay reports ON then OFF half a second later; on a thin link the OFF could be lost and
+the page said ON until the next report, an hour away. After a trigger or a relay write the
+relay is read back a moment later.
+
+### Added — "Tell the controller the gate is" for a gate without sensors
+Without end sensors the controller only guesses where the gate is, and the guess drifts; say
+closed or open once and it counts from there (gate firmware 1.0.2, which also treats open,
+close and stop as one plain pulse in that mode, with no "already open" refusal).
+
 ## [2.23.3] — 2026-10-02
 
 ### Changed — fewer writes to the card, fewer reads over the air
